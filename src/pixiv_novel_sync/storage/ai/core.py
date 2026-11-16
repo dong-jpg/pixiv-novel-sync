@@ -13,6 +13,7 @@ from typing import Any, Literal
 from ...ai.providers import _redact_secrets
 from ...ai.usage import ProviderUsage, merge_usage_snapshot, summarize_usage
 from ...work_analysis.contracts import WorkAnalysisError, WorkCallBinding
+from ...preference_learning.contracts import PreferenceCallBinding
 
 
 class AIJobConflictError(RuntimeError):
@@ -800,6 +801,7 @@ class AiCoreMixin:
         retention_policy: Literal["metadata_only", "keyword_compat"] | None = None,
         validation_status: Literal["not_requested", "passed", "failed"] | None = None,
         work_binding: WorkCallBinding | None = None,
+        preference_binding: PreferenceCallBinding | None = None,
     ) -> None:
         if stage not in _JOB_STAGES:
             raise ValueError("AI job stage 无效")
@@ -831,6 +833,12 @@ class AiCoreMixin:
                 raise ValueError("work binding requires metadata-only retention")
             if parent_job_id is not None or idempotency_key is not None:
                 raise ValueError("work binding cannot use legacy continuation")
+        if preference_binding is not None:
+            if (not isinstance(preference_binding, PreferenceCallBinding)
+                    or retention_policy != "metadata_only" or work_binding is not None):
+                raise ValueError("preference binding requires exclusive metadata-only retention")
+            if parent_job_id is not None or idempotency_key is not None:
+                raise ValueError("preference binding cannot use legacy continuation")
         try:
             serialized_input = json.dumps(input_data, ensure_ascii=False)
         except (TypeError, ValueError, UnicodeError) as exc:
@@ -870,6 +878,8 @@ class AiCoreMixin:
             )
             if work_binding is not None:
                 self._attach_work_analysis_child(conn, work_binding, job_id)
+            if preference_binding is not None:
+                self._attach_preference_learning_child(conn, preference_binding, job_id)
 
     def replace_ai_job_audit(
         self, job_id: str, owner_token: str, audit_payload: Mapping[str, Any],
@@ -1398,6 +1408,7 @@ class AiCoreMixin:
         attempt_index: int | None = None,
         *,
         work_binding: WorkCallBinding | None = None,
+        preference_binding: PreferenceCallBinding | None = None,
         planned_tokens: int | None = None,
     ) -> int:
         if attempt_index is not None:
@@ -1405,13 +1416,17 @@ class AiCoreMixin:
                 raise ValueError("invalid attempt index")
             if self.conn.in_transaction:
                 raise AIJobConflictError("request reservation requires its own durable transaction")
-        if work_binding is not None:
-            if not isinstance(work_binding, WorkCallBinding) or attempt_index is None:
-                raise ValueError("work binding requires a typed attempted invocation")
+        if work_binding is not None and preference_binding is not None:
+            raise ValueError("only one business binding is allowed")
+        binding = work_binding if work_binding is not None else preference_binding
+        if binding is not None:
+            binding_type = WorkCallBinding if work_binding is not None else PreferenceCallBinding
+            if not isinstance(binding, binding_type) or attempt_index is None:
+                raise ValueError("business binding requires a typed attempted invocation")
             if type(planned_tokens) is not int or planned_tokens <= 0:
-                raise ValueError("invalid work planned tokens")
+                raise ValueError("invalid business planned tokens")
         elif planned_tokens is not None:
-            raise ValueError("work planned tokens require a binding")
+            raise ValueError("business planned tokens require a binding")
         try:
             with self.transaction() as conn:
                 job = conn.execute(
@@ -1452,6 +1467,9 @@ class AiCoreMixin:
                     self._reserve_work_analysis_request(
                         conn, work_binding, job_id, next_count, planned_tokens, now=now,
                     )
+                self._reserve_preference_learning_request(
+                    conn, preference_binding, job_id, next_count, planned_tokens, now=now,
+                )
                 conn.execute(
                     "UPDATE ai_jobs SET network_request_count=? "
                     "WHERE job_id=? AND status='running' AND owner_token=?",
@@ -1501,6 +1519,7 @@ class AiCoreMixin:
                         (serialized, job_id, attempt_index, owner_token),
                     )
                 self._record_work_analysis_usage(conn, job_id, request_ordinal, merged)
+                self._record_preference_learning_usage(conn, job_id, request_ordinal, merged)
                 return True
             return False
 

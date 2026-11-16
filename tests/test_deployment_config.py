@@ -62,11 +62,12 @@ def _ai_javascript_location() -> tuple[re.Pattern[str], str]:
     return re.compile(expression), body
 
 
-def test_ai_javascript_cache_policy_matches_only_six_shipped_assets() -> None:
+def test_ai_javascript_cache_policy_matches_only_seven_shipped_assets() -> None:
     expression, _ = _ai_javascript_location()
     names = {
         "ai_settings.js", "ai_picker.js", "ai_provider_onboarding.js",
         "ai_preflight.js", "ai_job_diagnostics.js", "work_analysis.js",
+        "preference_learning.js",
     }
     for name in names:
         assert expression.fullmatch("/static/js/" + name)

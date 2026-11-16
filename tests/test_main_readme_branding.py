@@ -189,10 +189,12 @@ def test_readme_keeps_ai_optional_and_discloses_provider_privacy() -> None:
     assert README.index("## 部署与安全") < README.index("## 可选进阶")
     assert re.search(r"(?:无需|不需要)[^。\n]*AI[^。\n]*同步[^。\n]*阅读", ai)
     assert "本地统计" in README and "规则" in README
-    assert "仅用于" in ai and "关键词清洗" in ai
+    assert "关键词清洗" in ai and "个人画像 AI 总结" in ai
+    assert "跨批次累计总预算" in ai and "明确阅读评价" in ai
     assert "clean_keywords" in ai and "原始统计词" in ai
     assert "失败" in ai
-    assert re.search(r"(?:未接入|不提供)[^。\n]*总结[^。\n]*推荐解释", ai)
+    assert "推荐解释由确定性规则给出" in ai
+    assert re.search(r"个人画像[^。\n]*显式启用到推荐", ai)
     assert "PIXIV_NOVEL_SYNC_AI_SECRET_KEY" in ai
     assert "跨 Provider" in ai and "Prompt" in ai
     assert "多个 Provider" in ai

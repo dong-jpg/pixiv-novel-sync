@@ -330,6 +330,7 @@ def test_route_contract_field_order_and_immutability() -> None:
         "invocation",
         "retention_policy",
         "work_binding",
+        "preference_binding",
     ]
     assert [field.name for field in fields(RouteResult)] == [
         "job_id",
@@ -345,6 +346,7 @@ def test_route_contract_field_order_and_immutability() -> None:
         "usage_summary",
         "job_status",
         "work_error_code",
+        "preference_error_code",
     ]
     assert [field.name for field in fields(PromptBudget)] == [
         "effective_context_window",
@@ -360,6 +362,8 @@ def test_route_contract_field_order_and_immutability() -> None:
     legacy_result = RouteResult("legacy", "", snapshot.snapshot_hash, (), "succeeded")
     assert legacy_request.work_binding is None
     assert legacy_result.work_error_code is None
+    assert legacy_request.preference_binding is None
+    assert legacy_result.preference_error_code is None
     with pytest.raises(FrozenInstanceError):
         legacy_result.work_error_code = None  # type: ignore[misc]
 

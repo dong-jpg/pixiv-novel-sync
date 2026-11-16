@@ -159,11 +159,12 @@ def test_invoke_text_enforces_retention_in_sql_not_just_projection(invocation_en
     assert_no_raw_text(env, caplog)
 
 
-@pytest.mark.parametrize("field", ["retention_policy", "validator", "tools", "raw", "work_binding"])
+@pytest.mark.parametrize("field", ["retention_policy", "validator", "tools", "raw", "work_binding", "preference_binding"])
 def test_invoke_text_has_no_retention_or_validator_escape(invocation_env, field):
     env = invocation_env
     assert set(inspect.signature(env.service.invoke_text).parameters) == {
         "agent_id", "payload", "stop_requested", "deadline_at", "on_delta", "on_progress", "work_binding",
+        "preference_binding",
     }
     with pytest.raises(InvocationValidationError) as caught:
         env.service.invoke_text(env.agent_id, {**PAYLOAD, field: "INPUT_SENTINEL"})

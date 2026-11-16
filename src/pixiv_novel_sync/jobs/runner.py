@@ -21,7 +21,7 @@ class JobRunner:
 
         acquired = self.manager.acquire_run_slot(job_id)
         if not acquired:
-            if state.spec.job_type == JobType.WORK_ANALYSIS:
+            if state.spec.job_type in {JobType.WORK_ANALYSIS, JobType.PREFERENCE_SUMMARIZE}:
                 self.manager.defer_work_start(job_id)
             else:
                 self.manager.mark_failed(job_id, "已有任务正在运行")

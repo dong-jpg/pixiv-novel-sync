@@ -1,9 +1,16 @@
 {% extends "base.html" %}
 
-{% block title %}偏好分析 - Pixiv 小说同步器{% endblock %}
+{% block title %}{% if work_learning_view %}偏好学习{% else %}偏好分析{% endif %} - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-{% if work_analysis_view %}
+<nav class="max-w-7xl mx-auto flex flex-wrap gap-2 mb-4" aria-label="偏好分析视图">
+  <a href="/dashboard/preferences" class="library-btn {% if not work_analysis_view and not work_learning_view %}library-btn-primary{% endif %}" {% if not work_analysis_view and not work_learning_view %}aria-current="page"{% endif %}>偏好与推荐</a>
+  <a href="/dashboard/preferences?view=work-analysis" class="library-btn {% if work_analysis_view %}library-btn-primary{% endif %}" {% if work_analysis_view %}aria-current="page"{% endif %}>单作品分析</a>
+  <a href="/dashboard/preferences?view=learning" class="library-btn {% if work_learning_view %}library-btn-primary{% endif %}" {% if work_learning_view %}aria-current="page"{% endif %}>偏好学习</a>
+</nav>
+{% if work_learning_view %}
+{% include "dashboard_preference_learning.html" %}
+{% elif work_analysis_view %}
 {% include "dashboard_work_analysis.html" %}
 {% else %}
 <div class="library-page pns-recommendations-page max-w-7xl mx-auto">
@@ -21,6 +28,7 @@
         <div>
           <h2 id="recommendation-results-heading" tabindex="-1" class="library-section-title">推书结果</h2>
           <p class="text-sm library-muted mt-1">最新一轮在前 · 作品在 Pixiv 原站打开</p>
+          <p class="text-xs library-muted mt-1">每轮按最新画像和阅读反馈重建推荐；AI 画像的启用状态与依据可在<a href="/dashboard/preferences?view=learning" class="underline">偏好学习</a>查看。</p>
         </div>
         <div class="recommendation-controls">
           <button type="button" @click="loadRecommendationItems(1)" :disabled="loadingRecommendations" class="library-btn disabled:opacity-50">刷新</button>
@@ -95,6 +103,7 @@
           <div>
             <h2 class="text-lg font-bold text-gray-900">{{ selected?.name || '本地偏好画像' }}</h2>
             <p class="text-sm text-pixiv-gray mt-1">{{ selected?.profile?.summary || '还没有生成本地偏好画像。点击上方按钮开始增量分析。' }}</p>
+            <p class="text-xs library-muted mt-2">本地统计提供基础画像；启用的 AI 画像与最新评价参与下一轮搜索与排序。</p>
           </div>
         </div>
         <div v-if="selected" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -174,7 +183,9 @@
 {% endblock %}
 
 {% block extra_scripts %}
-{% if work_analysis_view %}
+{% if work_learning_view %}
+{% include "dashboard_preference_learning_scripts.html" %}
+{% elif work_analysis_view %}
 {% include "dashboard_work_analysis_scripts.html" %}
 {% else %}
 {% include "recommendation_components.html" %}
@@ -261,23 +272,29 @@ window.initVueApp({
     }
 
     async function buildSearchPlan() {
-      if (!selected.value) return;
+      searchPlan.value = null;
+      if (!selected.value) return false;
       const res = await fetchJson('/api/dashboard/recommendations/search-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile_id: selected.value.id, filters: { max_queries: 12, per_query_limit: 20 } })
       });
       const data = await res.json();
-      if (!data.ok) return showMessage('生成搜索计划失败：' + window.errorText(data, res), 'error');
+      if (!res.ok || !data.ok) {
+        showMessage('生成搜索计划失败：' + window.errorText(data, res), 'error');
+        return false;
+      }
       searchPlan.value = data.data;
       showMessage('搜索计划已生成');
+      return true;
     }
 
     async function runRecommendations() {
-      if (!selected.value) return;
-      if (!searchPlan.value) await buildSearchPlan();
+      if (!selected.value || recommendationLoading.value) return;
       recommendationLoading.value = true;
       try {
+        // Every run consumes the current activated profile and feedback, including changes in other tabs.
+        if (!await buildSearchPlan()) return;
         // Phase 7.6: 启动后台job
         const res = await fetchJson('/api/dashboard/recommendations/run', {
           method: 'POST',

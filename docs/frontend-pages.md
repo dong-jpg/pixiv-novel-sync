@@ -2,7 +2,7 @@
 
 本文档记录 Library OS 前端页面、模板、主要接口与交互。前端重写保持 Flask/Jinja 页面路由不变。
 
-> AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支不再包含。main 保留模型目录 / 模型池 / Agent 绑定等基础设施页面，另有原偏好页内的手动作品分析独立视图，不恢复写作或个人画像 AI 总结。
+> AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护。当前代码保留模型目录 / 模型池 / Agent 绑定、手动作品分析，并在偏好页内新增“偏好学习”：明确阅读评价、个人 AI 偏好 / XP 画像、全库及新同步作品分析、推荐反馈消费。实现与生产部署分开记录，见 [项目现状](STATUS.md)。
 
 ## 本轮交互更新（2026-10-08，main）
 
@@ -46,6 +46,7 @@
 | `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、数据保留期 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences?view=work-analysis` | `dashboard_preferences.html` 内 `dashboard_work_analysis.html` | 手动已归档单作品内容报告 | 复用 Library OS；不替换默认偏好页 |
+| `/dashboard/preferences?view=learning` | `dashboard_preferences.html` 内 `dashboard_preference_learning.html` | 阅读喜恶、AI 画像、全库批次与持续自动分析 | 与默认推荐 / 单作品视图通过页内导航互通 |
 | `/dashboard/novels?category=rescue` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 拯救成功小说与系列 | 已接入 `library-page` / `library-page-header` |
 
 ## Shared layout
@@ -318,9 +319,11 @@ APIs:
 
 Template: `dashboard_preferences.html`
 
-默认用途：偏好画像、推荐搜索计划、推荐反馈、屏蔽管理。无 `view`（或非 `work-analysis` 值）保持原页面与接口。
+默认用途：本地统计画像、推荐搜索计划、推荐反馈、屏蔽管理。无 `view`（或非 `work-analysis/learning` 值）保留默认页面。三种视图共用页内导航，分别只 mount 自己的 Vue setup，不把新分析请求自动加到旧页。
 
 默认先展示与首页相同的推荐卡片/过滤/分页；画像、增量分析和搜索管理折叠在结果之后。画像读取独立于推荐，不因画像失败挡住推荐；画像错误在折叠内容之外持续提示，并提供只读重试。推荐部分失败（例如作者屏蔽已成功但反馈失败）必须明确说明并重新读取实际列表。
+
+每次“按当前画像推书”先重建搜索计划，包含最新的有效学习信号；构建失败不得拿旧缓存继续提交，构建期间双击只发起一次推书流程。卡片匹配到明确阅读评价时显示来源，使用启用 AI 画像时可通过 `?view=learning&profile_run_id=<id>` 核对该画像。推荐项感兴趣 / 不感兴趣仍是原有推荐反馈，不自动等同于读后喜欢 / 不喜欢。
 
 APIs:
 
@@ -339,6 +342,29 @@ APIs:
 - 证据链接为 `/dashboard/novels/<id>?analysis_id=<run>&evidence_id=<id>#work-analysis-evidence`，只携带 ID。阅读页经受保护接口校验同 hash 与服务器 code point 偏移，渲染有界前文/引文/后文；不以浏览器 UTF-16 下标推算。正文改变或删除返回 410，不高亮新版本；同 hash 元数据刷新仍可定位，系列新增章另标 `archive_outdated`。证据标题不能被阅读顶栏遮挡。
 
 实际三宽度浏览器、视觉与真机/软键盘验收边界见 [项目现状](STATUS.md)；Node VM 不代替真实浏览器或设备。
+
+#### 偏好学习独立视图
+
+`/dashboard/preferences?view=learning` 使用 `dashboard_preference_learning.html`、`dashboard_preference_learning_scripts.html`、`static/js/preference_learning.js`；契约见 [Preference Learning APIs](frontend-api-contract.md#preference-learning-apis)，操作步骤见 [使用指南](PREFERENCE_LEARNING_GUIDE.md)。模型选择器复用 `GET /api/dashboard/ai/agents` 的数值 Agent ID，不新增自动模型探测。
+
+- 顶部统计明确喜欢 / 不喜欢、有报告和评价的作品数、缺有效报告数；读取 `GET /preference-learning/state`。state 仅是摘要，初始不加载画像正文。显式 `profile_run_id` 深链会读取指定详情，但画像内容仍折叠。`admission_ready=false` 时显示执行不可用，禁止新创建 / 自动启用 / 批次恢复；读取、停止、取消和删除仍按当前状态可用。
+- “这部作品合你的口味吗”组件允许选择本地单篇 / 系列 ID，读取现有评价后保存或撤回。明确评价是独立版本对象；未评价版本为 0。每次保存带 observed `expected_version`，不能在读取前默认覆盖旧评价。保存本身不调用模型，成功后刷新当前学习概览。
+- AI 画像表单包含 Agent、输出预留和三个初始为空的支出预算。预览显示来源作品数、缺报告数、最低预留和所有可能目标；明确外发 / 预算同意后才创建。预算、Agent、输出上限变化或主动刷新预览都清除旧同意，按钮与方法入口同时检查，不能沿用旧确认。
+- 画像记录显示 `status,version,active,stale,source_count`。选中后主动读取结果，summary / preferences / counterexamples / uncertainties 使用文本节点；来源和短证据逐层折叠。polarity 区分偏好 / 回避 / 混合 / 中立，certainty 区分暂时推测和有依据，不显示为统计概率。来源链接进入原作品报告，短证据进入已有同版本阅读定位。
+- queued / running 的画像可取消；只有 succeeded 且未过期的画像，在再次确认后才能“启用到推荐”。首个 AI 画像启用时会确保基础默认画像存在，因此新用户也能直接回默认页推书。删除需要显式确认，清理结果并停止使用该版；state 不列出已删除项时，当前已开结果先清空，再读取详情核对墓碑。
+- 全库 / 自动分析共用另一套独立表单：手动单批次或持续发现、`all|new` 范围、Agent、每作品预算、累计预算、作品数及发现间隔。scope / mode / Agent / 任一预算变化均使预览失效。预览用 `purpose:manual|policy` 区分新增起点；create / policy 不发送 purpose。
+- 自动 new 从首次启用后新增 / 正文更新算起，暂停 / 恢复 / 增额不重置起点；手动 new 从本功能跟踪开始算起。全库按系列归并、跳过已有同版本匹配结果。归档不完整与现有章序须单独确认，不能从批次数量推断完整原作。
+- 手动批次的总预算是本批上限；持续策略的总预算和作品数跨批次累计，不随定时 tick、关闭 / 开启重置。页面展示已分配额度、总授权、已纳入作品和下次发现时间；没有默认支出授权。到达额度需要重新预览并增加上限。
+- 批次详情分页显示 target status 和真实 `run_status`，链接保留到原单作品视图。`completed` 明确展示“批次发现已结束”，不是所有作品报告成功。暂停 / 取消作用于本批后续发现及在执行的相关子任务；恢复只续原累计预算和由批次停止的有效工作，原先失败的作品须另行核对。
+- 停止自动分析同时暂停未完成的自动批次；当前调用须等待实际退出，已进入最终保存的结果仍可完成。重启后的未完成工作不自动重发可能已付费的请求。状态原因和未知用量可见，不把缺失用量当作零。
+
+整个学习页面的未知创建只允许原 body / 原幂等键重试；未知控制或策略写入须先 GET 核对。版本未变才允许同一 CAS 重试，版本变了只显示当前状态，不声称已证明原写入成功。读取有请求所有权、旧版本保护及删除墓碑保护；浏览器隐藏 / 恢复、页面卸载会停止或重新建立相应读取。画像 / 评价 / 原请求 / 确认不写 localStorage 或 sessionStorage，不执行 HTML，不用 SSE 驱动任务执行。
+
+#### 小说与系列的阅读评价
+
+两种详情页 include `preference_feedback.html` 和 `preference_feedback_scripts.html`，仅在“评价与修改”展开后 GET 对应 `feedback/<kind>/<source_id>`。普通阅读不开新增偏好 API 请求，也不自动外发正文。表单提供喜欢 / 不喜欢 / 中立、最多 500 字说明、保存与撤回；当前版本读取失败时禁止保存，提交未知时锁定并核对，防止用新默认值覆盖另一页已修改的评价。关闭 / 重新打开会重新核对，读请求切换或失效后旧说明不得填进新作品。
+
+现有阅读进度缓存仍保留其原有约定；新增评价与画像不使用浏览器持久缓存。评价会影响后续推荐，但不会仅因保存就触发付费画像生成。
 
 ### `/dashboard/novels?category=rescue`
 
@@ -418,6 +444,7 @@ APIs:
 | `dashboard_ai_health_band.html` | `dashboard_settings_models.html`、`dashboard_settings_agents.html` | AI 配置只读健康横幅，数据来自 `GET /api/dashboard/ai/health` |
 | `recommendation_components.html` | `dashboard.html`、`dashboard_preferences.html` | 推荐卡片、共享列表/反馈控制器、页内注册钩子与局部样式 |
 | `navigation_helpers.html` | 小说库、关注作者、作者详情、系列详情、小说阅读 | 安全返回 URL、列表滚动保存/取消/恢复，不读取正文或凭据 |
+| `preference_feedback.html`、`preference_feedback_scripts.html` | 偏好学习、小说详情、系列详情 | 按需读取版本化读后评价、保存 / 撤回及未知写入核对；普通阅读不自动请求偏好 API |
 
 ## Validation checklist
 

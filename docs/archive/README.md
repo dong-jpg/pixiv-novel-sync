@@ -29,6 +29,7 @@
 | [AI_SETTINGS_ACCEPTANCE_2026-11-03.md](AI_SETTINGS_ACCEPTANCE_2026-11-03.md) | AI 设置与统一调用第一阶段：最终代码审查、同提交跨平台回归、浏览器边界与发布产物 |
 | [SERVER_DEPLOYMENT_REPORT_2026-11-04.md](SERVER_DEPLOYMENT_REPORT_2026-11-04.md) | AI 第一阶段受保护部署、canonical 源码校验、私有迁移/恢复及 Cloudflare JS 缓存修订 |
 | [WORK_ANALYSIS_ACCEPTANCE_2026-11-10.md](WORK_ANALYSIS_ACCEPTANCE_2026-11-10.md) | 作品全文与 XP 分析第二阶段：统一修复复审、同源跨平台/浏览器/安装包验收；仅本地完成，未部署 |
+| [PREFERENCE_LEARNING_ACCEPTANCE_2026-11-12.md](PREFERENCE_LEARNING_ACCEPTANCE_2026-11-12.md) | 个人画像、全库自动分析与推荐闭环；累计预算/取消/迁移复核、双平台全量与浏览器/安装包验收，未部署 |
 
 ## 旧版快照
 

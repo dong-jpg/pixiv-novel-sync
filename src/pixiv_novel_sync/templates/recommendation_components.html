@@ -114,9 +114,17 @@
           month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
         }));
         const statusText = computed(() => ({new: '新推荐', interested: '感兴趣', dismissed: '不感兴趣', saved: '已保存', muted: '已屏蔽'}[props.item.status] || props.item.status || '新推荐'));
+        const learningSource = computed(() => {
+          if (!props.item.matched?.reading_feedback?.length) return '';
+          return props.item.matched.preference_summary_id ? '依据：读后评价、作品报告与已启用 AI 画像' : '依据：读后评价与作品报告';
+        });
+        const learningHref = computed(() => {
+          const id = props.item.matched?.preference_summary_id;
+          return '/dashboard/preferences?view=learning' + (typeof id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(id) ? '&profile_run_id=' + encodeURIComponent(id) : '');
+        });
         const sendFeedback = type => { if (!props.busy) emit('feedback', type); };
         const muteAuthor = () => { if (!props.busy && props.allowMute && props.item.author_id) emit('mute-author'); };
-        return { reasonExpanded, toggleReason, itemUrl, lengthText, timeText, statusText, sendFeedback, muteAuthor };
+        return { reasonExpanded, toggleReason, itemUrl, lengthText, timeText, statusText, learningSource, learningHref, sendFeedback, muteAuthor };
       },
       template: `
         <article class="recommendation-card" :aria-busy="busy">
@@ -131,6 +139,7 @@
             <span v-if="timeText" class="recommendation-time">{{ timeText }}</span>
           </div>
           <p class="recommendation-author">{{ item.author_name || '未知作者' }} · {{ lengthText }}</p>
+          <a v-if="learningSource" :href="learningHref" class="text-xs text-brand-700 underline">{{ learningSource }}</a>
           <p :id="'recommendation-reason-' + item.id" class="recommendation-reason-text" :class="{ 'is-expanded': reasonExpanded }">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
           <button v-if="item.reason || item.caption" type="button" class="recommendation-reason-toggle" @click="toggleReason" :aria-expanded="reasonExpanded" :aria-controls="'recommendation-reason-' + item.id">{{ reasonExpanded ? '收起理由' : '展开理由' }}</button>
           <div v-if="item.tags?.length" class="recommendation-tags" aria-label="作品标签">
@@ -142,6 +151,7 @@
             <button type="button" class="library-btn recommendation-dismissed" :disabled="busy" @click="sendFeedback('dismissed')">不感兴趣</button>
             <button v-if="allowMute && item.author_id" type="button" class="library-btn" :disabled="busy" @click="muteAuthor">屏蔽作者</button>
           </div>
+          <p class="text-xs library-muted mt-2">这些反馈影响后续推荐；读后喜欢与不喜欢可在本地作品页评价。</p>
           <p v-if="busy" class="recommendation-notice library-muted" role="status">正在提交反馈…</p>
           <p v-if="error" class="recommendation-notice text-red-700" role="alert">{{ error }}</p>
         </article>

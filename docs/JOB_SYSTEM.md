@@ -27,7 +27,7 @@ task_stats dict → merge_stats() 累加进 JobState.stats
 关键类型(`jobs/models.py`,均为 `slots=True` dataclass 或 `str` Enum):
 
 - `JobSource`:`WEB` / `CLI` / `SCHEDULER` / `SYSTEMD` — 触发来源标记。
-- `JobType`:`SYNC` / `STATUS_CHECK` / `PENDING_DELETION_DETECTION` / `USER_BACKUP` / `PREFERENCE_ANALYZE` / `RECOMMENDATION_RUN`。
+- `JobType`:`SYNC` / `STATUS_CHECK` / `PENDING_DELETION_DETECTION` / `USER_BACKUP` / `PREFERENCE_ANALYZE` / `RECOMMENDATION_RUN` / `WORK_ANALYSIS` / `PREFERENCE_SUMMARIZE`。
 - `JobSpec`:一次提交的静态描述;`task_types` 是**普通字符串列表**(如 `"bookmark"`、`"user_backup:12345"`),不是枚举。
 - `JobState`:运行时状态,内含 `logs`(`JobLogEntry` 列表,上限 `max_logs=500`)、`progress`、`stats`。
 
@@ -70,6 +70,10 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - `_run_shared_web_job`:调用 `shared_job_runner.run(job_id)`,结束后按最终 `JobStatus` 把 stats/logs/error 回写到 `task_logs` 表(`db.update_task_log`)——这就是「任务日志」页的数据来源。内存 JobState 是实时视图,task_logs 是持久化镜像。
 
 ### 2.3 Scheduler(`web/managers.py:AutoSyncScheduler`)
+
+2026-11-12 的 `WORK_ANALYSIS` 与 `PREFERENCE_SUMMARIZE` 是 Web 业务任务，由持久业务意图进入同一个共享槽，优先级为4；同步仍优先。全库自动发现只读取有界元数据并准备原作品父任务，不增加生成队列或 CLI 执行器。画像通用 JobSpec 只携带 run_id，结果日志只含计数/ID；个人画像保存在独立业务表。
+
+自动作品策略与普通同步总开关独立：策略开启时关闭自动同步仍保留原调度线程，循环不提交普通同步任务。进程重启暂停作品/批次、停止遗留画像并保留预算，不自动重发付费调用。等待画像取消后通过窄完成回调立即同步业务终态，即使没有下一次调度 tick 也不会残留 queued。
 
 - `create_app` 里按 `_scheduler_registry_key(db_path)` 的模块级注册表 + Werkzeug reloader 检测(`WERKZEUG_RUN_MAIN`)保证只启动一份。
 - 调度器持有回调:`submit_task=_submit_scheduler_task`(内部走 `_submit_shared_job(..., is_auto_sync=True, run_async=False)`)、`run_task=_run_shared_web_job`、`cancel_task=shared_job_manager.request_cancel`——即定时任务与手动 web 任务**共用同一个 JobManager**,天然互斥。

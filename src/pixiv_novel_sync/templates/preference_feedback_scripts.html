@@ -1,0 +1,129 @@
+<script nonce="{[ csp_nonce() ]}">
+(function (root) {
+  'use strict';
+  const BASE = '/api/dashboard/preference-learning/feedback/';
+  const reactions = ['liked', 'disliked', 'neutral', 'clear'];
+  const reactionText = value => ({liked: '喜欢', disliked: '不喜欢', neutral: '中立', clear: '尚未评价'}[value] || '尚未评价');
+  async function request(url, options = {}) {
+    const response = await root.csrfFetch(url, {credentials: 'same-origin', cache: 'no-store', ...options});
+    let value;
+    try { value = await response.json(); } catch (_) { throw Object.assign(new Error('invalid_response'), {status: null}); }
+    if (!response.ok || value.ok !== true || !Object.prototype.hasOwnProperty.call(value, 'data')) {
+      throw Object.assign(new Error('request_failed'), {status: response.status});
+    }
+    return value.data;
+  }
+  function createController(Vue, sourceKind = 'novel', sourceId = '', send = request, onSaved = () => {}) {
+    const f = Vue.reactive({source_kind: sourceKind, source_id: sourceId, fixed: sourceId !== '', open: false,
+      record: null, reaction: 'neutral', note: '', loading: false, pending: null, error: '', notice: ''});
+    let live = true, owner = null, loadedFor = '';
+    const identity = () => f.source_kind + ':' + f.source_id;
+    function cancelRead() { if (owner) owner.abort(); owner = null; f.loading = false; }
+    function path() {
+      const id = String(f.source_id);
+      if (!['novel', 'series'].includes(f.source_kind) || !/^[1-9][0-9]*$/.test(id) || !Number.isSafeInteger(Number(id))) {
+        throw new Error('请填写有效的本地作品类型和 ID。');
+      }
+      return BASE + f.source_kind + '/' + encodeURIComponent(id);
+    }
+    function apply(value, target) {
+      if (identity() !== target) return;
+      if (loadedFor === target && f.record && f.record.version > value.version) return;
+      f.record = value; loadedFor = target; f.reaction = value.reaction === 'clear' ? 'neutral' : value.reaction;
+      f.note = value.note || '';
+    }
+    const stop = Vue.watch(identity, () => {
+      cancelRead(); loadedFor = ''; f.record = null; f.note = ''; f.reaction = 'neutral'; f.error = ''; f.notice = '';
+    }, {flush: 'sync'});
+    async function load() {
+      if (!live || f.pending) return false;
+      let url;
+      try { url = path(); } catch (error) { f.error = error.message; return false; }
+      const target = identity(); cancelRead(); const mine = new AbortController(); owner = mine;
+      f.loading = true; f.error = ''; f.open = true;
+      try {
+        const value = await send(url, {signal: mine.signal});
+        if (!live || owner !== mine || identity() !== target) return false;
+        apply(value, target); return true;
+      } catch (error) {
+        if (live && owner === mine && error.name !== 'AbortError') f.error = '评价读取失败，请重试或重新登录。';
+        return false;
+      } finally { if (live && owner === mine) { owner = null; f.loading = false; } }
+    }
+    async function toggle() {
+      if (f.pending) return false;
+      f.open = !f.open;
+      if (!f.open) { cancelRead(); return true; }
+      if (!f.fixed && !String(f.source_id)) return true;
+      return load();
+    }
+    function canSave() {
+      return live && !f.pending && !f.loading && !!f.record && loadedFor === identity() &&
+        reactions.includes(f.reaction) && typeof f.note === 'string' && Array.from(f.note).length <= 500;
+    }
+    async function sendPending() {
+      const operation = f.pending;
+      if (!live || !operation || operation.sending) return false;
+      cancelRead(); operation.sending = true; operation.phase = 'sending'; f.error = '';
+      try {
+        const value = await send(operation.url, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: operation.body});
+        if (!live || f.pending !== operation) return false;
+        f.pending = null; apply(value, operation.target); f.notice = '评价已保存；后续推荐会使用这条反馈，AI 画像可在偏好学习页更新。';
+        try { await onSaved(); } catch (_) { if (live) f.notice = '评价已保存，概览刷新失败，请只重试读取。'; }
+        return true;
+      } catch (error) {
+        if (!live || f.pending !== operation) return false;
+        if (error.status == null || error.status >= 500) {
+          operation.phase = 'unknown'; f.error = '保存结果未知，请先核对当前评价，不要重复提交。';
+        } else {
+          f.pending = null; f.error = error.status === 409 ? '评价已被更新，请重新读取后再保存。' : '保存失败，请重新读取或登录后重试。';
+        }
+        return false;
+      } finally { if (live && f.pending === operation) operation.sending = false; }
+    }
+    function save(clear = false) {
+      if (!canSave()) return Promise.resolve(false);
+      const body = {reaction: clear ? 'clear' : f.reaction, note: clear ? '' : f.note, expected_version: f.record.version};
+      f.pending = {url: path(), target: identity(), expectedVersion: f.record.version,
+        body: JSON.stringify(body), phase: 'ready', sending: false, canRetry: false};
+      return sendPending();
+    }
+    async function reconcile() {
+      const operation = f.pending;
+      if (!live || !operation || operation.phase !== 'unknown' || operation.sending) return false;
+      cancelRead(); const mine = new AbortController(); owner = mine; f.loading = true; operation.canRetry = false;
+      try {
+        const value = await send(operation.url, {signal: mine.signal});
+        if (!live || owner !== mine || f.pending !== operation || operation.sending) return false;
+        const newest = loadedFor === operation.target && f.record ? f.record.version : operation.expectedVersion;
+        if (value.version < Math.max(newest, operation.expectedVersion)) { f.error = '读取结果较旧，请重新核对。'; return false; }
+        apply(value, operation.target);
+        if (value.version === operation.expectedVersion) { operation.canRetry = true; f.notice = '评价版本未变化，可以重试同一保存。'; }
+        else { f.pending = null; f.error = ''; f.notice = '当前评价已核对；原提交结果仍未知，未重复保存。'; }
+        return true;
+      } catch (error) {
+        if (live && owner === mine && error.name !== 'AbortError') f.error = '核对失败，原保存结果仍未知。';
+        return false;
+      } finally { if (live && owner === mine) { owner = null; f.loading = false; } }
+    }
+    function retry() {
+      const operation = f.pending;
+      if (!operation || operation.phase !== 'unknown' || !operation.canRetry || f.loading ||
+          loadedFor !== operation.target || !f.record || f.record.version !== operation.expectedVersion) return Promise.resolve(false);
+      return sendPending();
+    }
+    const beforeUnload = event => { if (f.pending) { event.preventDefault(); event.returnValue = ''; } };
+    const hide = event => { cancelRead(); if (!event.persisted) dispose(); };
+    const show = event => { if (event.persisted && live && f.open && !f.pending) load(); };
+    function dispose() {
+      if (!live) return;
+      live = false; cancelRead(); if (typeof stop === 'function') stop();
+      root.removeEventListener('beforeunload', beforeUnload); root.removeEventListener('pagehide', hide); root.removeEventListener('pageshow', show);
+    }
+    root.addEventListener('beforeunload', beforeUnload); root.addEventListener('pagehide', hide); root.addEventListener('pageshow', show);
+    Vue.onUnmounted(dispose);
+    return {f, load, toggle, canSave, save, reconcile, retry, reactionText, dispose};
+  }
+  root.PreferenceFeedback = {createController};
+})(window);
+</script>

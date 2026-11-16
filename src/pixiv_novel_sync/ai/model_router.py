@@ -19,6 +19,7 @@ from ..storage.ai.core import (
     AIWorkAdmissionDenied,
 )
 from ..work_analysis.contracts import WorkCallBinding
+from ..preference_learning.contracts import PreferenceCallBinding
 from .invocation import InvocationValidationError, TextInvocation, invocation_fingerprint, invocation_messages
 from .invocation_candidates import collect_candidate_profiles, model_execution_config_hash
 from .invocation_planner import (
@@ -161,6 +162,7 @@ class RouteRequest:
     invocation: TextInvocation | None = None
     retention_policy: Literal["metadata_only", "keyword_compat"] | None = None
     work_binding: WorkCallBinding | None = None
+    preference_binding: PreferenceCallBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +185,7 @@ class RouteResult:
     usage_summary: dict[str, Any] | None = None
     job_status: Literal["succeeded", "failed", "partial", "cancelled"] | None = None
     work_error_code: str | None = None
+    preference_error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1323,7 +1326,7 @@ class ModelRouter:
         try:
             self._active_route_state(db, request)
             try:
-                if request.work_binding is None:
+                if request.work_binding is None and request.preference_binding is None:
                     return db.claim_ai_job_network_request(request.job_id, request.owner_token, attempt_index)
                 if not isinstance(request.candidate_snapshot, PlannedCandidateSnapshot):
                     raise AIWorkAdmissionDenied("configuration_changed")
@@ -1336,6 +1339,8 @@ class ModelRouter:
                 return db.claim_ai_job_network_request(
                     request.job_id, request.owner_token, attempt_index,
                     work_binding=request.work_binding,
+                    **({"preference_binding": request.preference_binding}
+                       if request.preference_binding is not None else {}),
                     planned_tokens=(budget.input_tokens + budget.message_overhead
                                     + budget.safety_margin + budget.output_reserve),
                 )
@@ -1974,7 +1979,7 @@ class ModelRouter:
                 db.finish_ai_model_attempt(
                     request.job_id, current_attempt, request.owner_token,
                     "partial" if partial else "failed", error_scope="model",
-                    error_message="Work analysis admission denied", error_category="route_budget_exhausted",
+                    error_message="Business analysis admission denied", error_category="route_budget_exhausted",
                     finish_reason="error", output_started=current_output_started,
                     latency_ms=max(0, int((time.monotonic() - started_at) * 1000))
                     if started_at is not None else 0,
@@ -1982,11 +1987,12 @@ class ModelRouter:
                 current_attempt = None
             db.finish_ai_job_cas(
                 request.job_id, request.owner_token, "partial" if partial else "failed",
-                error_message="Work analysis admission denied", error_category="route_budget_exhausted",
+                error_message="Business analysis admission denied", error_category="route_budget_exhausted",
             )
             return replace(
                 self._terminal_race_result(db, request, memory_output=""),
-                work_error_code=error.code,
+                work_error_code=error.code if request.work_binding is not None else None,
+                preference_error_code=error.code if request.preference_binding is not None else None,
             )
         except AIRouteBudgetExhausted as error:
             return self._finish_job_failure(

@@ -2,7 +2,7 @@
 
 > **main 行为与范围更新（2026-10-08）**：查询异常与候选异常分开统计，单个坏候选不再误判全部搜索失败；Web 增量分析保留未提供的 `name` / `description`。最新验证见 [项目现状](STATUS.md)。
 
-> **阅读口径**：第 1–17 节保留 2026-06-01 需求稿，目标和空勾不是当前功能清单；第 18 节记录 main 现状。搜索计划持久表、`RECOMMENDATION_SYNC`、偏好 SSE、AI 结构化总结/解释来源和完整多画像工作流为 [UNIFIED §1.3](UNIFIED_PROJECT_REQUIREMENTS.md#13-2026-09-14-明确不做) 的 OUT。写作/成人接入仅属 ai-writing，main 不实现，也不按旧任务恢复。
+> **阅读口径**：第 1–17 节保留 2026-06-01 需求稿，目标和空勾不是当前功能清单；第 18 节记录当前代码。2026-11-12 用户扩展 AI 个人画像、全库自动分析和推荐反馈闭环，见 [偏好学习指南](PREFERENCE_LEARNING_GUIDE.md) 与 [UNIFIED §12.6](UNIFIED_PROJECT_REQUIREMENTS.md#126-偏好学习全库分析与推荐闭环2026-11-12-扩展)。搜索计划持久表、`RECOMMENDATION_SYNC`、偏好 SSE、独立 explanation_source 字段和完整多画像工作流继续 OUT。写作/成人接入仅属 ai-writing。
 
 > 版本：v0.1  
 > 日期：2026-06-01  
@@ -808,7 +808,7 @@ CREATE TABLE IF NOT EXISTS recommendation_mutes (
 
 ---
 
-## 18. 当前实现状态（2026-10-08，main）
+## 18. 当前实现状态（2026-11-12）
 
 本节替代旧的 08-13 当前状态表；历史发现保留在 [08-13 审计快照](archive/AUDIT_REPORT_2026-08-13.md)，最新验证集中于 [项目现状](STATUS.md)。不把历史缺口重新当作待办，也不凭 API 存在宣称完整用户验收。
 
@@ -819,7 +819,9 @@ CREATE TABLE IF NOT EXISTS recommendation_mutes (
 | 画像保存、默认、删除 | `CURRENT/OUT` | 保留已有 API/存储；页面围绕默认画像，完整多画像工作流明确 OUT。 |
 | 搜索计划生成 | `CURRENT/OUT` | 当次请求中生成、截断并去重；不新增 recommendation_search_plans 表或跨次计划 CRUD，三个偏好/推荐 stream 端点为 OUT。 |
 | 推荐搜索、过滤、打分 | `CURRENT` | 保留 Pixiv 搜索、字数/归档过滤、系列去重和确定性规则解释；query_errors 与 candidate_errors 分开统计。 |
-| AI 总结与解释来源 | `OUT` | 不新增 AI 结构化总结或 explanation_source；现有规则理由不冒充 LLM 输出。 |
+| AI 个人画像 | `CURRENT` | 基于明确评价与有效作品报告，独立版本化保存、严格引用校验、显式启用到推荐；旧统计不会覆盖。没有新增 explanation_source 字段，规则理由不冒充模型自由生成解释。 |
+| 全库与新增作品分析 | `CURRENT` | 默认关闭，系列去重、现有报告复用、持久尝试去重、每作品及跨批次累计总预算、暂停/恢复/重启保护；实际执行复用原作品链路。 |
+| 明确评价与推荐闭环 | `CURRENT` | 阅读页/系列页喜欢、不喜欢、中立与撤回影响后续搜索和排序；兴趣/收藏/仅已读不会推断为喜欢。源变更或撤回使派生画像失效。 |
 | 推荐反馈与屏蔽 | `CURRENT` | 以 [API 契约](frontend-api-contract.md) 和现有页面为准；不新增 RECOMMENDATION_SYNC 任务类型。 |
 | 写作/成人偏好接入 | `OUT（main）` | 对应需求和实现仅在 ai-writing；本分支不恢复写作功能或未实现的请求字段。 |
 | 推荐失败/取消语义 | `CURRENT` | 候选先在内存收集，成功时单事务发布；失败/取消不落半截推荐。只有全部已尝试查询失败才判定整轮搜索失败；坏候选不会误计为查询失败。 |

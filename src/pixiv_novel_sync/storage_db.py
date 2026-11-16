@@ -23,6 +23,8 @@ from .storage.ai.catalog import CatalogMixin
 from .storage.ai.model_sync import ModelSyncStorageMixin
 from .storage.ai.pools import PoolsMixin
 from .storage.work_analysis import WorkAnalysisMixin
+from .storage.preference_learning import PreferenceLearningMixin
+from .storage.library_analysis import LibraryAnalysisMixin
 
 
 def prepare_schema(db: Any) -> Any:
@@ -55,6 +57,8 @@ class Database(
     ModelSyncStorageMixin,
     PoolsMixin,
     WorkAnalysisMixin,
+    PreferenceLearningMixin,
+    LibraryAnalysisMixin,
     SchemaMixin,
     DatabaseConnection,
 ):

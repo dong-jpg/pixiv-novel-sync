@@ -171,9 +171,13 @@ class SchemaMixin:
         self._migrate_core_foreign_keys()
         self._migrate_query_indexes()
         from .work_analysis.schema import migrate_work_analysis
+        from .preference_learning import migrate_preference_learning
+        from .library_analysis import migrate_library_analysis
 
         with self.transaction() as conn:
             migrate_work_analysis(conn)
+            migrate_preference_learning(conn)
+            migrate_library_analysis(conn)
         self._commit_if_needed()
 
     def _migrate_query_indexes(self) -> None:
@@ -339,11 +343,27 @@ class SchemaMixin:
         # foreign_keys 开关不能放进事务。
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
-            with self.transaction():
+            with self.transaction() as conn:
+                restore_library_triggers = table_name == "novel_texts" and conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('library_analysis_clock','library_analysis_sources')"
+                ).fetchone()[0] == 2
+                if restore_library_triggers:
+                    # SQLite rewrites cross-table trigger references during a
+                    # rename. A restored legacy text table can therefore leave
+                    # this novels trigger pointing at an already removed table,
+                    # preventing ALTER TABLE from validating the schema.
+                    conn.execute("DROP TRIGGER IF EXISTS library_analysis_membership")
                 self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
                 self.conn.execute(create_sql)
                 self.conn.execute(copy_sql)
                 self.conn.execute(f"DROP TABLE {old_name}")
+                if restore_library_triggers:
+                    from .library_analysis import create_library_analysis_source_triggers
+
+                    # Reinstall after copying: migrating unchanged texts must
+                    # not become a stream of newly authorized analysis targets.
+                    create_library_analysis_source_triggers(conn)
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
 

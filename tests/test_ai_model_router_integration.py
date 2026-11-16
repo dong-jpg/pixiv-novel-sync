@@ -287,6 +287,7 @@ def test_route_job_context_contract_field_order(route_context: Any) -> None:
         "invocation",
         "retention_policy",
         "work_binding",
+        "preference_binding",
     ]
     assert route_context.work_binding is None
 

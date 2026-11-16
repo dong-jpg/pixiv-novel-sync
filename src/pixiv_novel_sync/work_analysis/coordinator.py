@@ -35,7 +35,33 @@ class WorkAnalysisCoordinator:
         self._gate = threading.RLock()
         self._recovered = False
         self._closed = False
+        self._discovery_hook = None
+        self._discovery_running = False
         self.manager.set_slot_released_callback(lambda: self.wake("slot_released"))
+
+    def set_discovery_hook(self, callback):
+        if callback is not None and not callable(callback):
+            raise TypeError("discovery hook must be callable")
+        with self._gate:
+            self._discovery_hook = callback
+
+    def _discover(self, reason):
+        # Planning may read a bounded work body. It must not hold the shared
+        # cancellation/admission lock, and recursive wakes must not rescan.
+        if getattr(self._gate, "_is_owned", lambda: False)():
+            return
+        with self._gate:
+            if self._closed or not self._recovered or self._discovery_running or self._discovery_hook is None:
+                return
+            callback = self._discovery_hook
+            self._discovery_running = True
+        try:
+            callback(reason)
+        except Exception as error:
+            logger.warning("Business discovery deferred (%s)", type(error).__name__)
+        finally:
+            with self._gate:
+                self._discovery_running = False
 
     @contextmanager
     def work_control_scope(self):
@@ -109,19 +135,26 @@ class WorkAnalysisCoordinator:
     def _cancel_waiting(self, job):
         self.manager.mark_cancelled(job.job_id)
         log_id = job.progress.get("log_id")
-        if type(log_id) is not int:
-            return
-        db = self.db_factory()
-        try:
-            db.update_task_log(log_id, "cancelled", error_message="cancelled before admission")
-        except Exception:
-            logger.warning("Waiting shared task log finalization failed")
-        finally:
-            db.close()
+        if type(log_id) is int:
+            db = None
+            try:
+                db = self.db_factory()
+                db.update_task_log(log_id, "cancelled", error_message="cancelled before admission")
+            except Exception:
+                logger.warning("Waiting shared task log finalization failed")
+            finally:
+                if db is not None:
+                    db.close()
+        # This narrow metadata callback is safe inside the control gate. The
+        # general discovery hook can prepare full texts and must stay outside it.
+        callback = getattr(self, "preference_job_finished", None)
+        if job.spec.job_type.value == "preference_summarize" and callable(callback):
+            callback(job.job_id)
 
     def wake(self, reason):
         if reason not in {"created", "resumed", "completion", "slot_released", "scheduler_tick", "manual_sync"}:
             raise ValueError("invalid_work_wake")
+        self._discover(reason)
         with self._gate:
             if self._closed or not self._recovered:
                 return False
@@ -139,6 +172,10 @@ class WorkAnalysisCoordinator:
                 work = next((job for job in active if job.spec.job_type == JobType.WORK_ANALYSIS), None)
                 if work is not None and self.challenger_priority() is not None:
                     self.cancel_shared_job(work.job_id, action="sync_yield")
+                summary = next((job for job in active if job.spec.job_type.value == "preference_summarize"), None)
+                challenger = self.challenger_priority() if summary is not None else None
+                if summary is not None and challenger is not None and challenger < 4:
+                    self.cancel_shared_job(summary.job_id, action="sync_yield")
                 return work is not None or any(job.shared_priority is not None for job in active)
             due = self._due_priority()
             if waiting:
@@ -182,7 +219,7 @@ class WorkAnalysisCoordinator:
             return self.submit_shared(spec, settings, task_type, task_name, progress=progress)
         with self._gate:
             active, waiting = self.manager.shared_admission_snapshot()
-            work_present = any(job.spec.job_type == JobType.WORK_ANALYSIS for job in active + waiting)
+            work_present = any(job.spec.job_type.value in {"work_analysis", "preference_summarize"} for job in active + waiting)
             bridge_waiters = any(job.shared_priority is not None for job in waiting)
             if not work_present and not bridge_waiters:
                 return self.submit_shared(spec, settings, task_type, task_name, progress=progress)

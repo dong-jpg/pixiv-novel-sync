@@ -163,12 +163,13 @@ class JobManager:
     def check_work_waiting_admission(self, spec: JobSpec, priority: int) -> None:
         if type(priority) is not int or not 1 <= priority <= 4 or spec.source.value != "web":
             raise ValueError("invalid_shared_admission")
-        is_work = spec.job_type == JobType.WORK_ANALYSIS
+        business_types = {JobType.WORK_ANALYSIS, JobType.PREFERENCE_SUMMARIZE}
+        is_work = spec.job_type in business_types
         if is_work != (priority == 4):
             raise ValueError("invalid_shared_admission")
         with self._lock:
             active, waiting = self.shared_admission_snapshot()
-            if any(job.spec.job_type != JobType.WORK_ANALYSIS for job in active):
+            if any(job.spec.job_type not in business_types for job in active):
                 raise RuntimeError("shared_busy")
             if is_work:
                 if active or waiting:
@@ -211,7 +212,8 @@ class JobManager:
     def defer_work_start(self, job_id: str) -> bool:
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None or job.status != JobStatus.QUEUED or job.spec.job_type != JobType.WORK_ANALYSIS:
+            if (job is None or job.status != JobStatus.QUEUED
+                    or job.spec.job_type not in {JobType.WORK_ANALYSIS, JobType.PREFERENCE_SUMMARIZE}):
                 return False
             job.shared_waiting = True
             job.shared_priority = 4
