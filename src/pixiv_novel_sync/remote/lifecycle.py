@@ -29,7 +29,8 @@ class Controller:
                 self.control.fail(error, self.clock(), self.jitter(), prepared["action_id"],
                                   from_mutation=True)
                 return
-            self.control.record_action(prepared["action_id"], response, self.clock(), from_mutation=True)
+            self.control.record_action(prepared["action_id"], response, self.clock(),
+                                       from_mutation=True, jitter=self.jitter())
 
     def _pending(self, action, now):
         if now - action["created_at"] >= 7 * 86400 and action["phase"] != "settled":
@@ -42,7 +43,7 @@ class Controller:
                 self.control.decide(now)
         elif action["operation_id"]:
             response = self.provider.operation(action["operation_id"])
-            self.control.record_action(action["action_id"], response, self.clock())
+            self.control.record_action(action["action_id"], response, self.clock(), jitter=self.jitter())
         elif action["phase"] in ("sent", "unknown"):
             machine = self.provider.machine()
             now = self.clock()

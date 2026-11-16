@@ -2,7 +2,7 @@
 
 本功能让 VPS 保留唯一书库、阅读入口和任务记录，由 InstaBox 按需执行诊断或单本 EPUB 导出。现有本地同步与 EPUB/ZIP 下载保持原契约。云实例暂停、冷却或无法连接时，阅读仍由 VPS 提供。
 
-本期仅接入 `diagnostic.v1` 和 `epub.single.v1` 手动任务。收藏同步、签到、生产 cron、阅读进度同步及全库搬迁均不在一期范围内。不要向协议添加任意 shell、Python、SQL、URL 或文件路径。
+远程执行目前仅接入 `diagnostic.v1` 和 `epub.single.v1` 手动任务。收藏同步、签到、生产 cron 及全库搬迁未迁至云端。[阅读进度同步](READING_PROGRESS_SYNC.md)已由 VPS 独立实现，不使用 worker。不要向任务协议添加任意 shell、Python、SQL、URL 或文件路径。
 
 ## 状态与验证边界
 
@@ -10,9 +10,9 @@
 
 代码默认关闭。仓库中的服务、环境文件和 Nginx 配置都是待安装示例，运行本地测试不会启动用户实例，也不会安装或启用服务。
 
-自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。实际验证结果以本次执行记录 `docs/superpowers/execution/2026-11-10-instabox-phase-one.md` 为准。InstaBox 真正的 202 操作、冷启动、暂停/恢复、平台提前中断、私有输入传输和生产备份恢复仍须在明确授权的窗口分别验证。
+自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。一期本地实现见[执行记录](superpowers/execution/2026-11-10-instabox-phase-one.md)，11-16 集成修复见[协同复核](archive/REMOTE_COLLABORATION_REVIEW_2026-11-16.md)。历史 202、暂停恢复和合成结果的真实证据保留于上述部署报告；完整 VM 冷启动、平台强制中断/冷却、私有输入与独立备份仍有待验收，不能由本地测试推断。
 
-Windows 本地未执行 Linux `systemd-analyze verify` 或 Nginx `nginx -t` 时，不能将其写作已通过；上线前必须在目标 Linux 环境执行。该说明不表示服务已部署。
+11-16 在 WSL/Linux 使用[部署验证脚本](../scripts/verify_remote_deployment.py)核对了 unit 语法、合成 TLS、worker 两条代理路径的可信客户端地址、限流与上传时并发心跳，见[JSON 证据](superpowers/execution/remote-deployment-2026-11-16.json)。本地未安装的 ExecStart 仅用临时验证 drop-in 替代，不证明目标主机路径、权限或冷启动。本轮集成候选未部署。
 
 ## 进程、目录与凭据
 
@@ -124,10 +124,11 @@ InstaBox 最大连续运行时间、冷却及账号级限流以实际响应为�
 | 领取或心跳响应丢失 | 沿用原请求键/seq 与首次发送时刻，不再领取另一任务 |
 | 发布响应丢失 | 查询原 run 的结果回执，不先重算；仅已确认成功才清理产物目录 |
 | lease 过期或冷启动 | 停止旧 child，重新握手；VPS 决定是否生成新 attempt |
-| provider 401/403 | 修复配置后由操作员恢复；控制器不会继续猜测权限或重放修改请求 |
+| provider 401/403 或异步 operation 认证失败 | 持久记为 `provider_authentication`，修复配置后由操作员恢复；重启不会重新提交 |
 | 长期未知 operation/过期 action | 保留操作记录，停止 mutation，人工核对真实平台状态；不把未知 suspend 当作成功 |
 | `activation_unconfirmed` / `suspend_uncertain` | 启停回执或运行归属不确定，且旧任务可能已经过期；核对平台状态后离线恢复，避免重新启动一个已经没有需求的实例或误停人工会话 |
-| `provider_rejected` | 平台拒绝运行，例如额度禁用或无法自动处理的冲突；核对限制与操作状态，控制器不持续重发 wake/start |
+| `provider_rejected` | 包括异步 operation 的额度/余额/配置拒绝；核对限制与操作状态后恢复，控制器不持续重发 wake/start。暂时的容量失败使用有上限退避 |
+| `upload_in_progress` / 上传响应丢失 | worker 在有效授权下最多三次重传同一 attempt、摘要和大小；其他冲突立即拒绝，持续忙交给 VPS 的有界重试 |
 | 磁盘满或配额不足 | 固定错误码，任务不成功；检查专用目录容量后使用安全 GC |
 
 VPS 文件配额 1 GiB，包含进行中的预留空间；worker 工作目录上限 128 MiB。worker 收到服务端失败/终态确认或另一 attempt 已发布的确认后会释放旧任务缓存；无法确认的发布保留回执并周期核对，超过完整任务的一小时时限后可清理本地可丢弃缓存，不据此宣布成功。VPS 终态输入和产物保留 24 小时，元数据保留 14 天，过期下载返回 410。普通 GC 不删除活动任务引用，也不删除当前 epoch 的退役 boot 记录。当前 epoch 达到 boot 容量上限时，需要离线维护，而不是删除 tombstone 使旧凭据复活。

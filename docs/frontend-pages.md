@@ -26,7 +26,7 @@
 
 ## 页面总览
 
-10-08 共享入口补齐：小说阅读页可确认后重置阅读进度、移除本地收藏记录，不取消 Pixiv 收藏；请求失败保持当前位置。阅读恢复在无本机记录时按服务端百分比滚动到对应位置，保留本机位置优先级；任何手动滚动或显式保存/重置使旧恢复失效。无生产调用、可能与后台备份竞争的批量用户删除 API 按 T3-01 允许方案移除，不新增其按钮。以上有 Node 运行期回归，不代替真机视觉验收。
+小说阅读页可确认后重置阅读进度、移除本地收藏记录，不取消 Pixiv 收藏；请求失败保持当前位置。阅读页每次打开都核对服务端版本，五秒节流保存；本机离线记录和旧缓存保留，冲突由用户明确选择。重置留下递增版本标记，任何手动滚动或显式保存/重置使旧恢复失效。无生产调用、可能与后台备份竞争的批量用户删除 API 按 T3-01 允许方案移除，不新增其按钮。Node 与离线 Chromium 证据见 [项目现状](STATUS.md)，不代替真机体验验收。
 
 | Route | Template | 页面用途 | Library OS 状态 |
 | --- | --- | --- | --- |
@@ -39,6 +39,7 @@
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 任务日志 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/remote` | `src/pixiv_novel_sync/templates/dashboard_remote.html` | 显式诊断/单本 EPUB、任务状态、结果下载与人工保留 | 复用 Library OS；默认关闭时显示说明 |
 | `/dashboard/settings/sync` | `src/pixiv_novel_sync/templates/dashboard_settings_sync.html` | 同步开关、限速分组、调度表与手动触发 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/models` | `src/pixiv_novel_sync/templates/dashboard_settings_models.html` | Provider、模型目录、模型池 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
@@ -156,7 +157,7 @@ APIs:
 
 Template: `dashboard_novel_detail.html`
 
-用途：小说详情、阅读、系列章节导航。
+用途：小说详情、阅读、系列章节导航。进度按服务端版本同步，支持离线重试、冲突选择和重置保护；界面行为与 HTTP 契约见[跨设备阅读进度](READING_PROGRESS_SYNC.md)。
 
 APIs:
 

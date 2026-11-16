@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-import json
 import os
 import threading
 import uuid
@@ -332,6 +331,44 @@ def test_server_storage_outage_is_reported_as_bounded_retryable_failure(tmp_path
     assert not worker.completed
     assert list(worker.work_dir.iterdir()) == [worker.work_dir / ".pixiv-remote-worker"]
     worker.stop()
+
+
+@pytest.mark.parametrize("last_error", [None, "upload_in_progress", "stale_grant"])
+def test_upload_retry_keeps_the_same_result_and_fences_revoked_grants(tmp_path, last_error):
+    worker, client, _, runner = make_worker(tmp_path)
+    original_stage = client.stage
+    uploads = []
+
+    def stage(grant, path, sha256, size):
+        uploads.append((grant, sha256, size))
+        original_stage(grant, path, sha256, size)
+        if len(uploads) == 1:
+            # The request reached the server but its response was lost. Its
+            # reservation can still be busy when the same upload is retried.
+            raise RemoteError("worker_transient", 503)
+        if len(uploads) == 2:
+            raise RemoteError("stale_grant" if last_error == "stale_grant" else "upload_in_progress", 409)
+        if last_error is not None:
+            raise RemoteError(last_error, 409)
+        return original_stage(grant, path, sha256, size)
+
+    client.stage = stage
+    try:
+        for _ in range(3):
+            worker.tick()
+        assert len(uploads) == (2 if last_error == "stale_grant" else 3)
+        assert all(upload == uploads[0] for upload in uploads)
+        assert runner.count == 1
+        if last_error is None:
+            assert list(worker.completed) == [client.grant.run_id]
+            assert client.failures == []
+        else:
+            assert client.published is None
+            assert not worker.completed
+            if last_error == "upload_in_progress":
+                assert client.failures == ["worker_transient"]
+    finally:
+        worker.stop()
 
 
 def test_new_worker_boot_never_continues_saved_authority(tmp_path):
@@ -724,6 +761,155 @@ def test_http_never_replays_response_cookies_into_worker_auth(monkeypatch):
         client.close()
 
 
+@pytest.mark.parametrize("outcome", ["succeeded", "invalid_input", "cancelled"])
+def test_completed_transfer_releases_its_connection_pool_only(tmp_path, monkeypatch, outcome):
+    real_session = requests.Session
+    sessions = []
+
+    def session_factory():
+        session = real_session()
+        original_close = session.close
+        session.close_count = 0
+
+        def close():
+            session.close_count += 1
+            original_close()
+
+        session.close = close
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(requests, "Session", session_factory)
+    clock = Clock()
+
+    class SessionClient(FakeClient):
+        def __init__(self):
+            super().__init__(clock)
+            self.http = WorkerHTTP("https://example.invalid", "b" * 64)
+
+        def enroll(self, *args):
+            self.http._get_transport()
+            return super().enroll(*args)
+
+        def fetch_input(self, *args):
+            self.http._get_transport()
+            return super().fetch_input(*args)
+
+        def close_thread(self):
+            self.http.close_thread()
+
+        def close(self):
+            self.http.close()
+
+    client = SessionClient()
+    runner = HangingRunner() if outcome == "cancelled" else InlineRunner()
+    if outcome == "invalid_input":
+        client.manifest += b" "
+    worker = Worker(client, tmp_path / "scratch", lambda: clock.wall, lambda: clock.mono,
+                    runner, threaded=True)
+    try:
+        worker.tick()
+        worker.tick()
+        attempt = worker._attempt
+        if outcome == "cancelled":
+            assert runner.started.wait(2)
+            clock.advance(121)
+            worker.tick()
+        assert attempt.done.wait(2)
+        worker.tick()
+        assert len(sessions) == 2
+        assert client.http._sessions == [sessions[0]]
+        assert sessions[0].close_count == 0
+        assert sessions[1].close_count == 1
+        assert bool(worker.completed) is (outcome == "succeeded")
+    finally:
+        worker.stop()
+    assert [session.close_count for session in sessions] == [1, 1]
+
+
+def test_closed_http_client_cannot_allocate_another_thread_pool():
+    client = WorkerHTTP("https://example.invalid", "b" * 64)
+    first = client._get_transport()
+    client.close()
+    results = []
+
+    def late_transfer():
+        try:
+            client._get_transport()
+        except RemoteError as exc:
+            results.append(exc.code)
+
+    thread = threading.Thread(target=late_transfer)
+    thread.start()
+    thread.join(timeout=2)
+    try:
+        assert not thread.is_alive()
+        assert results == ["invalid_session"]
+        assert client._sessions == []
+        with pytest.raises(RemoteError, match="invalid_session"):
+            client._get_transport()  # no reuse of this thread's closed session
+    finally:
+        client.close()
+        first.close()
+
+
+def test_transfer_closes_pool_reopened_by_inflight_request_after_shutdown(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    class DelayedSession:
+        def __init__(self):
+            self.cookies = requests.cookies.RequestsCookieJar()
+            self.close_count = 0
+            self.pool_open = False
+            self.reopened_after_close = False
+
+        def request(self, *args, **kwargs):
+            entered.set()
+            assert release.wait(2)
+            # requests.Session.close() clears existing pools but does not
+            # prevent an already-started request from opening a new one.
+            self.reopened_after_close = self.close_count > 0
+            self.pool_open = True
+            return Response({"server_now": 1000, "expires_at": 1900})
+
+        def close(self):
+            self.close_count += 1
+            self.pool_open = False
+
+    session = DelayedSession()
+    monkeypatch.setattr(requests, "Session", lambda: session)
+    client = WorkerHTTP("https://example.invalid", "b" * 64)
+    client._session_secret = "s" * 64
+    errors = []
+
+    def transfer():
+        try:
+            client.session_heartbeat()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            client.close_thread()
+
+    thread = threading.Thread(target=transfer)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        client.close()
+        assert session.close_count == 1
+        assert client._sessions == []
+        release.set()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert errors == []
+        assert session.reopened_after_close
+        assert not session.pool_open
+        assert session.close_count == 2
+    finally:
+        release.set()
+        thread.join(timeout=2)
+        client.close()
+
+
 @pytest.mark.parametrize("origin", ["http://example.invalid", "https://u:p@example.invalid",
                                     "https://example.invalid/path", "https://example.invalid/?token=x"])
 def test_http_origin_cannot_supply_a_path_or_credentials(origin):
@@ -760,6 +946,16 @@ def test_http_claim_preserves_terminal_ids_only_for_receipt_query():
         client.claim("same-claim")
     assert error.value.code == "claim_terminal"
     assert (error.value.run_id, error.value.attempt_id) == (run_id, attempt_id)
+
+
+def test_http_preserves_busy_upload_code_for_bounded_retries():
+    client, _ = enrolled_http(Response({"error": "upload_in_progress"}, 409))
+    try:
+        with pytest.raises(RemoteError, match="upload_in_progress") as error:
+            client._request("PUT", "/attempts/fixture/result", data=b"fixture")
+        assert error.value.status == 409
+    finally:
+        client.close()
 
 
 def test_http_claim_checks_session_and_closed_grant_fields():

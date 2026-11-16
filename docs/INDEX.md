@@ -1,6 +1,6 @@
 # 项目文档索引
 
-**最近更新：2026-11-12**
+**最近更新：2026-11-16**
 
 当前版本、测试基线、部署与待办统一看 [项目现状](STATUS.md)。
 
@@ -14,6 +14,7 @@ main 提供归档、同步、阅读、规则推荐与救援，以及 Provider、
 | [救援使用指南](RESCUE_USER_GUIDE.md) | 救援 Token、用户脚本安装与排查 |
 | [模型路由指南](MODEL_ROUTING_GUIDE.md) | Provider、模型目录、模型池、调用预算 |
 | [远程执行](REMOTE_EXECUTION.md) | VPS 与 InstaBox 试点、凭据隔离、运行和恢复 |
+| [跨设备阅读进度](READING_PROGRESS_SYNC.md) | 自动保存、离线重试、冲突和重置保护 |
 
 ## 开发参考
 
@@ -22,6 +23,8 @@ main 提供归档、同步、阅读、规则推荐与救援，以及 Provider、
 | [开发约定](../CLAUDE.md) | 架构、协议、易错点与代码约定 |
 | [统一需求与 OUT 决策](UNIFIED_PROJECT_REQUIREMENTS.md) | 需求基线；§1.3 列出明确不做的项 |
 | [任务系统](JOB_SYSTEM.md) | 任务流水线、调度、抢占与恢复；新增任务类型的清单 |
+| [Pixiv 单本抓取边界](PIXIV_FETCH_BOUNDARY.md) | 本地同步已使用的抓取结果协议；云端接线尚未完成 |
+| [签到状态适配](CHECKIN_STATUS_ADAPTER.md) | 单站只读网关、身份与日期约束；未接入云端执行 |
 | [前端 API 契约](frontend-api-contract.md) | 接口、参数与错误体 |
 | [页面清单](frontend-pages.md) | 路由与页面交互 |
 | [界面规范](library-os-style-guide.md) | Library OS 视觉规范 |

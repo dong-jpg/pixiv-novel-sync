@@ -233,15 +233,22 @@ class InstaBoxClient:
             read1 = getattr(raw, "read1", None)
             chunks = None if callable(read1) else response.iter_content(chunk_size=1 if raw is not None else 64 * 1024)
             while True:
-                if time.monotonic() >= deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise ProviderError("provider_unreachable")
+                sock = getattr(getattr(raw, "connection", None), "sock", None)
+                if sock is None:
+                    # Connection: close / HTTP/1.0 can detach the socket from
+                    # urllib3 while http.client still owns its unread body.
+                    stream = getattr(getattr(raw, "_fp", None), "fp", None)
+                    sock = getattr(getattr(stream, "raw", None), "_sock", None)
+                if sock is not None:
+                    # The old urllib3 iter_content fallback must obey the same
+                    # shrinking budget as read1, including the final read.
+                    sock.settimeout(min(10.0, remaining))
                 if callable(read1):
                     # read1 returns after one underlying read. iter_content(64k)
                     # can otherwise buffer a whole chunk during an endless drip.
-                    connection = getattr(raw, "connection", None)
-                    sock = getattr(connection, "sock", None)
-                    if sock is not None:
-                        sock.settimeout(max(0.001, min(10, deadline - time.monotonic())))
                     chunk = read1(64 * 1024, decode_content=False)
                 else:
                     chunk = next(chunks, b"")

@@ -399,6 +399,52 @@ def test_authentication_failure_stops_mutations(f):
     assert f.control.snapshot(f.clock.now)["last_error"] == "provider_authentication"
 
 
+@pytest.mark.parametrize("code,expected", [
+    ("permission_denied", "provider_authentication"),
+    ("invalid_key", "provider_authentication"),
+    ("max_run_disabled", "provider_rejected"),
+    ("credit_exhausted", "provider_rejected"),
+])
+def test_permanent_async_activation_failure_does_not_retry_after_restart(f, code, expected):
+    run = f.enqueue()
+    f.until(lambda: bool(f.provider.mutations))
+    operation = f.provider.operations[f.provider.view.operation_id]
+    f.provider.operations[operation.id] = replace(operation, state="failed", error_code=code)
+    f.provider.view = replace(f.provider.view, state="suspended", operation_id=None)
+    f.step()
+    snapshot = f.control.snapshot(f.clock.now)
+    assert snapshot["last_error"] == expected
+    assert snapshot["gate_ready_until"] is None
+    assert f.store.get_run(run["run_id"])["state"] == "queued"
+
+    f.controller = Controller(f.store, ControlStore(f.store), f.provider, f.clock, lambda: 0)
+    f.step(seconds=61)
+    for _ in range(10):
+        f.step()
+    assert len(f.provider.mutations) == 1
+    assert f.control.snapshot(f.clock.now)["last_error"] == expected
+
+
+def test_transient_async_activation_failures_back_off_before_retry(f):
+    f.enqueue()
+    f.until(lambda: bool(f.provider.mutations))
+    for delay in (30, 60, 120, 240, 300):
+        operation = f.provider.operations[f.provider.view.operation_id]
+        f.provider.operations[operation.id] = replace(operation, state="failed", error_code="no_capacity")
+        f.provider.view = replace(f.provider.view, state="suspended", operation_id=None)
+        f.step()
+        snapshot = f.control.snapshot(f.clock.now)
+        assert snapshot["last_error"] == "no_capacity"
+        assert snapshot["gate_ready_until"] is None
+        assert snapshot["next_poll_at"] == f.clock.now + delay
+        calls = len(f.provider.calls)
+        mutations = len(f.provider.mutations)
+        for _ in range(delay // 15 - 1):
+            f.step()
+            assert len(f.provider.calls) == calls
+        f.until(lambda: len(f.provider.mutations) > mutations)
+
+
 def test_external_operation_blocks_claim_even_when_runtime_ready(f):
     f.enqueue()
     f.provider.view = replace(f.provider.view, state="running", runtime_ready=True,

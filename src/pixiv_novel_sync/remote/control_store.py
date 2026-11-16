@@ -18,6 +18,33 @@ STICKY_ERRORS = frozenset({
     "operation_unknown", "invalid_control_action", "suspend_uncertain",
     "activation_unconfirmed",
 })
+AUTHENTICATION_ERRORS = frozenset({
+    "missing_key", "malformed_key", "invalid_key", "expired_key", "revoked_key",
+    "session_expired", "missing_scope", "permission_denied", "unauthenticated",
+    "api_key_expired", "api_key_revoked", "insufficient_scope",
+})
+REJECTED_ERRORS = frozenset({
+    "max_run_disabled", "bad_request", "unknown_field", "not_found", "idempotency_conflict",
+    "quota_exceeded", "credit_exhausted", "spend_limit_reached", "subscription_required",
+    "payment_method_required", "early_allowance_ended",
+})
+
+
+def _backoff(previous_count, jitter):
+    count = min(previous_count + 1, 20)
+    delay = min(300, 30 * 2 ** (count - 1)) + max(0, min(5, float(jitter)))
+    return count, delay
+
+
+def _operation_failure(code):
+    # An accepted HTTP request may later fail for the same permanent reasons
+    # as an immediate 4xx. Do not turn acceptance into permission to keep
+    # submitting new activation operations after a configuration/credit error.
+    if code in AUTHENTICATION_ERRORS:
+        return "provider_authentication"
+    if code in REJECTED_ERRORS:
+        return "provider_rejected"
+    return code or "provider_error"
 
 
 def _action(raw):
@@ -295,7 +322,7 @@ class ControlStore:
                          next_poll_at=now + 15, gate_ready_until=None)
             return action
 
-    def record_action(self, action_id, response: OperationView, now, *, from_mutation=False):
+    def record_action(self, action_id, response: OperationView, now, *, from_mutation=False, jitter=0.0):
         if response.machine_id != self.store.machine_id:
             raise RemoteError("machine_mismatch", 503)
         with self.store.transaction() as conn:
@@ -317,9 +344,10 @@ class ControlStore:
                 # between our observation and request. Borrow it without pause rights.
                 values.update(activation_id=None, owned_run_started_at=None)
             if response.state == "failed":
+                count, delay = _backoff(row["backoff_count"], jitter)
                 values.update(action_json=None, mode="error", activation_id=None, owned_run_started_at=None,
-                              last_error=response.error_code or "provider_error", next_poll_at=now + 30,
-                              backoff_count=row["backoff_count"] + 1)
+                              last_error=_operation_failure(response.error_code),
+                              next_poll_at=max(now + delay, row["cooldown_until"] or 0), backoff_count=count)
             else:
                 action.update(operation_id=response.id,
                               phase="settled" if response.state == "succeeded" else "accepted", retry_at=now + 15)
@@ -400,8 +428,7 @@ class ControlStore:
             action = _action(row["action_json"])
             if action_id is not None and (not action or action["action_id"] != action_id):
                 return
-            count = min(row["backoff_count"] + 1, 20)
-            delay = min(300, 30 * 2 ** (count - 1)) + max(0, min(5, float(jitter)))
+            count, delay = _backoff(row["backoff_count"], jitter)
             retry_at = max(now + delay, now + (error.retry_after or 0), row["cooldown_until"] or 0)
             values = dict(mode="error", gate_ready_until=None, last_error=error.code,
                           next_poll_at=retry_at, backoff_count=count)

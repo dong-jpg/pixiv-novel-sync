@@ -1,16 +1,25 @@
 # 项目现状
 
-**最近更新：2026-11-12**
+**最近更新：2026-11-16**
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
 
-## VPS 与 InstaBox 协同（一期已部署）
+## VPS 与 InstaBox 协同（一期已部署，集成加固待发布）
 
-- VPS 已启用[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)、独立控制库与 controller；`leshao1` 已安装专用非 root worker。生产应用为 `2214b22`，从线上 `e8801b0` 单独接入 remote，未携入作品分析第二阶段。GitHub main 尚未合入此功能。
+- VPS 已启用[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)、独立控制库与 controller；`leshao1` 已安装专用非 root worker。最新留存的生产发布记录为 11-13 的 `4b8133e`，从线上 `e8801b0` 单独接入 remote 和阅读进度，未携入作品分析第二阶段。GitHub main 尚未合入 remote；11-16 未通过 SSH 重新核对生产 HEAD。
 - 诊断与合成单本 EPUB 已完成真实 HTTPS 领取、回传、摘要校验和授权下载，各一次执行、一次发布。正文及封面 XHTML 与 VPS 本地渲染一致；worker 的 EbookLib/lxml 与 VPS 对齐为 0.20/6.1.1。人工运行保护、worker 进程重启及暂停恢复已实测；完整记录见[本次部署验收](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
 - 真实联调修复了短任务跨过两次 controller tick 时未重置空闲计时的问题；入队、执行、首次终态及上传活动均在事务内记录，幂等重放不延长保活。最后代码通过远程组 **289 passed / 1 skipped**、VPS 增量 **79 passed**；初始发布候选全量为 **2697 passed / 53 skipped**，不将其称为最终补丁全量。
 - 在线一致 SQLite 备份的 quick/FK 检查通过；停服新鲜副本与归档本地硬链接回退副本已保留。新鲜副本完整外键和全文件摘要检查通过，全库 quick_check 的三次有界检查未完成；范围详见验收记录，不宣称已完成异地备份。
-- 签到、Pixiv 抓取迁移、生产业务 cron 及跨设备阅读进度尚未接入。已核对独立签到项目并整理[后续实施边界](superpowers/specs/2026-11-12-remote-next-phase-notes.md)；当前远程协议仍只有诊断和单本 EPUB。
+- 11-16 在隔离分支 `codex/remote-collaboration-audit` 接续归档快照 `31cafb5`，汇合一期恢复加固、线上空闲宽限修复、阅读进度和业务适配底座，并保留 main 的作品分析代码。本轮修复异步永久拒绝的重复启动、provider 总读取时限、worker 连接池释放与上传重传分类、非有限租约时钟，以及跨平台脚本摘要和集成样式遗漏。该候选未合入 main、未推送或部署，证据见[协同集成复核](archive/REMOTE_COLLABORATION_REVIEW_2026-11-16.md)。
+- 11-16 只读核对：目标实例为 suspended、runtime.ready=false、无 cooldown / operation；VPS 公网健康为 200，远程页匿名访问跳转登录、任务 API 和阅读进度 API 为 401。这不替代当前服务版本、来宾进程、认证业务或备份核验。
+- 当前远程协议仍只有诊断和单本 EPUB。Pixiv 抓取与签到仅完成下述适配底座，生产业务 cron、云端抓取和签到执行尚未接入；不能将一期试点通过记作整体迁移完成。
+
+## 阅读进度与业务适配底座
+
+- [跨设备阅读进度](READING_PROGRESS_SYNC.md)已实现服务端版本比较、五秒自动保存、固定 mutation 幂等键、离线记录和明确冲突选择；重置保留递增版本标记，旧缓存不自动覆盖新位置。它由 VPS 提供，不依赖云实例在线。
+- 11-13 10:26（Asia/Shanghai）曾将 `4b8133e` 部署到 VPS，维护窗口 5.571 秒；认证、CSRF、过期版本拒绝和静态脚本摘要等证据见[阅读进度部署验收](archive/READING_PROGRESS_ADAPTERS_ACCEPTANCE_2026-11-12.md)。本轮恢复该历史证据到集成分支，没有重复操作生产数据。
+- [Pixiv 单本抓取边界](PIXIV_FETCH_BOUNDARY.md)已用于现有本地同步，VPS 仍决定归档、数据库、来源与水位；[签到状态适配](CHECKIN_STATUS_ADAPTER.md)提供限定单站的只读网关。两者均未注册云任务，也未向云端分发业务凭据或浏览器 profile。
+- 11-16 在合成数据与真实 Flask/CAS 接口上复跑离线 Chromium：两设备恢复、冲突选择、离线重试与重置冲突、明确重置、旧缓存迁移五个流程通过，390/1280px 无横向溢出或浏览器错误；真实手机体验仍待外部验收。
 
 ## 作品分析第二阶段（Task 9 本地验收完成，已合并 main，未部署）
 
@@ -37,7 +46,8 @@
 
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
-| 生产应用（VPS） | `2214b22`（2026-11-12） | 保留线上 AI 第一阶段，在 `e8801b0` 上独立接入远程执行；作品分析第二阶段未部署 |
+| 生产应用（VPS，最新留存记录） | `4b8133e`（2026-11-13） | 远程一期与阅读进度已发布；11-16 仅核对公网可达性，未重新核对 HEAD；作品分析第二阶段未部署 |
+| 协同集成候选（本地） | `codex/remote-collaboration-audit`，基于归档快照 `31cafb5` | 保留 main 的作品分析，接续 remote / 阅读进度 / 适配底座并修复恢复边界；未合入、推送或部署 |
 | 作品分析（GitHub main） | 合并 `e87f65d`（2026-11-11）；已验证应用/测试 `d5cfb762` | Tasks 1–9 已合入 main 并推送，整阶段复审/验收通过；未部署 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
@@ -45,7 +55,7 @@
 
 ## 部署
 
-最新生产部署为 2026-11-12 的远程执行一期，见[部署验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。以下保留 11-04 的 AI 第一阶段历史事实。
+最新留存生产部署为 2026-11-13 的阅读进度与适配底座，见[部署验收](archive/READING_PROGRESS_ADAPTERS_ACCEPTANCE_2026-11-12.md)；一期远程执行于 11-12 部署，见[一期记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。11-16 的集成修复仍在本地，以下保留 11-04 的 AI 第一阶段历史事实。
 
 2026-11-04 **15:57（Asia/Shanghai）** 完成 `16b5b4a` → `793d340d` 的受保护部署，应用源码基线为 `3c51a6c6`，详情见 [部署记录](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md)。代码仅 fast-forward，没有运行带强制重置的旧部署脚本。普通服务 active/running、自动重启计数 0、正常调度运行；临时禁调度覆盖和维护围栏均已移除。
 
@@ -107,7 +117,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 
 1. **手机确认与旧 Cookie**：代码与后端已发布；手机管理器检查更新到 0.12.2，确认收藏 / 追更 / 正文 / 系列页及地区语言路径。已有浏览器 Cookie 不会因服务器改配置自动改变本机属性，建议重新登录；本轮已验证新登录签发 Secure Cookie，旧版真机记录不代替本版验收。
 2. **外部服务验收**：真实 Pixiv / Provider 的认证、限流、取消与预算，以及 Cloudflare 账户侧 Full (strict) 仍需各自验证；公网 HTTPS 200 不足以确认账户侧 TLS 模式。
-3. **W / F 剩余项**：W2（YAML 读改写锁）、W3（设置缓存代际）、W5（封面缓存死设置）、W7–W10（输入校验、任务初始化异常、屏蔽管理入口、错误分类 / 脱敏）及 F3–F8 仍保留审查待办，不因本批提交而视为全部修复；F8 的跨设备阅读进度策略仍需另行确定。
+3. **W / F 剩余项**：W2（YAML 读改写锁）、W3（设置缓存代际）、W5（封面缓存死设置）、W7–W10（输入校验、任务初始化异常、屏蔽管理入口、错误分类 / 脱敏）及 F3–F7 仍保留审查待办；F8 的跨设备阅读进度已按上节实现，真机体验另行验收。
 4. **性能与部署脚本**：书库封面懒加载、静态 CSS 首屏真机测量、P20 后半段（连续完整页提前停止 / 每日回扫）和审查中其余部署脚本硬化建议尚未完成；本批的新部署环境默认值修复不等于部署脚本全面加固。
 
 其余未覆盖的 P3、性能、死代码清理与部署建议仍见审查报告；归档中的修复前发现不是全已完成清单。cron 最近槽补偿、按作者 7 天全刷与本地跳过已按用户确认实现；§9.3 也已按确认范围校准：可读正文 / 系列页不请求备份或替换原内容，失效 / 歧义页可查询、显式救援链接可打开，列表允许一次 Token 探测且只重建失效卡片，手机「拯救系列」tab 专门展示救援系列。
@@ -129,8 +139,9 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 | 类型 | 最新一份 |
 |---|---|
 | AI 第一阶段验收 | [2026-11-03](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md) |
-| 代码审查 | [2026-10-28](archive/AUDIT_REPORT_2026-10-28.md) |
-| 生产部署 | [2026-11-12](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md) |
+| 协同专项审查 | [2026-11-16](archive/REMOTE_COLLABORATION_REVIEW_2026-11-16.md) |
+| 全项目历史审查 | [2026-10-28](archive/AUDIT_REPORT_2026-10-28.md) |
+| 生产部署 | [2026-11-13 阅读进度发布](archive/READING_PROGRESS_ADAPTERS_ACCEPTANCE_2026-11-12.md) |
 | 整改台账 | [2026-10-08 ～ 10-20](archive/REMEDIATION_STATUS_2026-09-30.md) |
 | 计划时间线 | [2026-10-14](archive/PLAN_AUDIT_2026-10-14.md) |
 

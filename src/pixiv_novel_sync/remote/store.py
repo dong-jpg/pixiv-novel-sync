@@ -143,6 +143,9 @@ class RemoteStore:
             return dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
 
     def _session(self, conn, session_id: str, now: float):
+        # Comparisons with NaN are always false; validate the authority clock
+        # before checking expiry or allowing callers to persist new deadlines.
+        require_time(now)
         row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
         epoch = conn.execute("SELECT epoch FROM meta WHERE id=1").fetchone()[0]
         if (not row or row["state"] != "active" or row["expires_at"] <= now
@@ -155,6 +158,7 @@ class RemoteStore:
         return {key: row[key] for key in ("session_id", "epoch", "expires_at")}
 
     def enroll(self, boot_id: str, token_hash: str, protocol: int, renderer: str, now: float):
+        require_time(now)
         require_uuid(boot_id)
         require_digest(token_hash)
         if type(protocol) is not int or protocol != PROTOCOL or renderer != RENDERER:
@@ -383,6 +387,7 @@ class RemoteStore:
             return dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (grant.run_id,)).fetchone())
 
     def cancel(self, run_id: str, now: float):
+        require_time(now)
         require_uuid(run_id)
         with self.transaction() as conn:
             row = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
@@ -395,6 +400,7 @@ class RemoteStore:
             return dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
 
     def _sweep(self, conn, now):
+        require_time(now)
         changes = 0
         for row in conn.execute("""SELECT a.*,r.kind,r.deadline,s.state AS session_state,s.expires_at
                 FROM attempts a JOIN runs r USING(run_id) JOIN sessions s USING(session_id)
@@ -435,6 +441,7 @@ class RemoteStore:
                 FROM runs r ORDER BY created_at DESC,run_id LIMIT ?""", (limit,))]
 
     def rotate_epoch(self, now: float):
+        require_time(now)
         with self.transaction() as conn:
             control = conn.execute("SELECT * FROM machine_control WHERE id=1").fetchone()
             if control["leader_until"] and control["leader_until"] > now:
@@ -450,6 +457,7 @@ class RemoteStore:
             return epoch
 
     def reserve_blob(self, purpose: str, owner_key: str, size_bytes: int, now: float):
+        require_time(now)
         if purpose not in {"input", "result"}:
             raise RemoteError("invalid_reservation", 400)
         require_int(size_bytes, 0, RESULT_LIMIT if purpose == "result" else TEXT_LIMIT + COVER_LIMIT + MANIFEST_LIMIT)
@@ -500,8 +508,9 @@ class RemoteStore:
         return extra
 
     def release_reservation(self, reservation_id: str, now: float | None = None):
+        now = require_time(time.time() if now is None else now)
         with self.transaction() as conn:
-            self._account_files(conn, time.time() if now is None else now)
+            self._account_files(conn, now)
             conn.execute("DELETE FROM blob_reservations WHERE reservation_id=?", (reservation_id,))
 
     @staticmethod
@@ -535,6 +544,7 @@ class RemoteStore:
             conn.execute("INSERT INTO blob_objects VALUES(?,?,?,?,'ready')", (sha, size, now, kind))
 
     def register_input(self, input_sha256: str, parts: dict, reservation_id: str, now: float):
+        require_time(now)
         require_digest(input_sha256)
         if not isinstance(parts, dict) or "manifest" not in parts or parts.keys() - {"manifest", "text", "cover"}:
             raise RemoteError("invalid_input_parts", 400)

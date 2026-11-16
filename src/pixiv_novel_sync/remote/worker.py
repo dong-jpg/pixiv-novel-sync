@@ -396,7 +396,19 @@ class Worker:
             self._write_receipt(root, identity)
             self._ensure_work(attempt)
             self.state = "staging"
-            self.client.stage(grant, output, attempt.sha256, size)
+            for retry in range(3):
+                self._ensure_work(attempt)
+                try:
+                    self.client.stage(grant, output, attempt.sha256, size)
+                    break
+                except RemoteError as exc:
+                    # A lost upload response may leave the original request
+                    # holding its reservation. Retry only the same immutable
+                    # result; revoked grants and conflicts still fail closed.
+                    if (exc.code != "upload_in_progress"
+                            and exc.status not in {429, 500, 502, 503, 504}) or retry == 2:
+                        raise
+                    attempt.cancel.wait(1)
             self._ensure_work(attempt)
             self.state = "publishing"
             for retry in range(3):
@@ -422,7 +434,7 @@ class Worker:
         except RemoteError as exc:
             if exc.code in WORKER_ERRORS | {"lease_lost"}:
                 attempt.error = exc.code
-            elif exc.code == "storage_quota" or exc.status == 429 or 500 <= exc.status <= 599:
+            elif exc.code in {"storage_quota", "upload_in_progress"} or exc.status == 429 or 500 <= exc.status <= 599:
                 attempt.error = "worker_transient"
             else:
                 attempt.error = "input_mismatch"
@@ -431,9 +443,17 @@ class Worker:
         except Exception:
             attempt.error = "render_failed"
         finally:
-            if attempt.child is not None and attempt.child.poll() is None:
-                attempt.child.stop()
-            attempt.done.set()
+            try:
+                if attempt.child is not None and attempt.child.poll() is None:
+                    attempt.child.stop()
+            finally:
+                try:
+                    # Every attempt has a new transfer thread. Release its
+                    # HTTP pool now instead of retaining sockets until reboot.
+                    if hasattr(self.client, "close_thread"):
+                        self.client.close_thread()
+                finally:
+                    attempt.done.set()
 
     def _finish(self, attempt: _Attempt) -> None:
         if attempt.confirmed:

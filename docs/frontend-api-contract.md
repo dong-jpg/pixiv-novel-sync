@@ -287,29 +287,35 @@ Expected detail fields include:
 
 ### GET /api/dashboard/novels/{novel_id}/progress
 
-Used by: 小说阅读页阅读进度恢复。本机无记录时按服务端百分比恢复实际滚动位置；已有本机位置优先。异步读取期间用户主动滚动时不强行跳回旧位置。
+Used by: 小说阅读页阅读进度恢复。每次打开都核对服务端版本；本机离线修改和无版本旧缓存保留为候选，冲突须明确选择，不自动覆盖服务器。异步读取期间用户主动滚动时不强行跳回旧位置。
 
 无进度记录时返回默认值：
 
 ```json
-{ "novel_id": 123, "progress": 0, "status": "unread" }
+{ "novel_id": 123, "progress": 0, "status": "unread", "version": 0, "is_reset": false, "last_read_at": null, "created_at": null, "updated_at": null }
 ```
 
-有记录时返回存储的进度对象（含 `progress`、`status` 等字段）。
+有记录时返回上述版本化进度对象，时间戳为 UTC；小说不存在为 404。响应 `private, no-store`。
 
 ### POST /api/dashboard/novels/{novel_id}/progress
 
 保存阅读进度。Body：
 
 ```json
-{ "progress": 42, "status": "unread|reading|completed" }
+{ "progress": 42, "status": "reading", "base_version": 3, "mutation_id": "81d0ec46-950e-4333-b187-0416a71ff4d1" }
 ```
 
-`progress` 会被裁剪到 0–100；`status` 非法时返回 `400 { "error": "invalid status" }`。成功返回 `{ "success": true }`。
+`progress` 严格限定 0–100 整数，`status` 仅 `unread/reading/completed`，不裁剪非法输入。成功返回 `{success:true,ok:true,record,applied_version,replayed}`；每次新修改版本加一，相同 mutation 重试不重复保存。版本冲突为 409 `progress_conflict` 并返回当前 record；缺少前置版本/标识为 428；同 mutation 改内容为 409 `progress_idempotency_conflict`。请求上限 4096 字节；额外字段、重复键或无效类型拒绝。
 
 ### DELETE /api/dashboard/novels/{novel_id}/progress
 
-删除阅读进度记录。成功返回 `{ "success": true }`。阅读页“重置阅读进度”在确认后调用；仅成功时清除本机记录并回到页首，失败保留当前位置。
+重置请求必须携带 `base_version` 和 `mutation_id`，在同一事务写入版本递增的 `progress=0/status=unread/is_reset=true` 标记，防止旧设备恢复旧位置。成功及冲突响应与 POST 相同。失败保留当前位置及离线修改。完整重试、冲突和回退语义见[阅读进度契约](READING_PROGRESS_SYNC.md)。
+
+### 远程执行试点 API
+
+用户入口为 `POST/GET /api/dashboard/remote/runs`、`GET /api/dashboard/remote/runs/<run_id>`、`POST .../<run_id>/cancel`、`GET .../<run_id>/download`、`GET /api/dashboard/remote/machine` 与 `POST .../machine/hold`。全部沿用 Dashboard 登录；写操作校验 CSRF。提交要求 `Idempotency-Key`，只允许 `diagnostic.v1` 或带 novel_id 的 `epub.single.v1`。状态与下载不隐式唤醒实例；原同步 EPUB 接口保持原响应。
+
+`/api/remote-worker/v1/*` 使用独立 Bearer 凭据，拒绝 Dashboard Cookie、Origin 和 query token；worker 凭据不能访问用户 API。bootstrap 仅注册会话，领取、输入、心跳、上传和发布按持久 attempt、epoch、fence 与输入摘要核验。用户与 worker 响应均禁止缓存，详情见[远程执行手册](REMOTE_EXECUTION.md)及[协议计划](superpowers/plans/2026-11-10-instabox-phase-one.md#worker-api)。
 
 ### POST /api/dashboard/novels/export-epub
 

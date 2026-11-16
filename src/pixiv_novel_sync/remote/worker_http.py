@@ -30,6 +30,7 @@ _ERROR_CODES = frozenset({
     "result_conflict", "artifact_conflict", "receipt_not_found", "not_found",
     "rate_limited", "queue_full", "storage_unavailable", "storage_full",
     "disk_full", "quota_exceeded", "storage_quota", "reservation_conflict", "reservation_expired",
+    "upload_in_progress",
     "worker_transient", "disabled", "invalid_sequence", "heartbeat_replayed",
     "stale_heartbeat", "claim_conflict", "expired", "cancelled", "forbidden",
 })
@@ -86,6 +87,7 @@ class WorkerHTTP:
         self._local = threading.local()
         self._sessions: list[requests.Session] = []
         self._lock = threading.RLock()
+        self._closed = False
         self.session_id: str | None = None
         self.epoch: str | None = None
         self._session_secret: str | None = None
@@ -94,24 +96,40 @@ class WorkerHTTP:
         return "WorkerHTTP(<configured origin>)"
 
     def _get_transport(self):
-        if self._transport is not None:
-            return self._transport
-        if not hasattr(self._local, "transport"):
-            session = requests.Session()
-            # Do not inherit .netrc credentials or send the worker key via an
-            # unexpected environment-configured proxy.
-            session.trust_env = False
-            # A proxy may add Set-Cookie even though this is a bearer-only
-            # protocol. Persisting it would make all later RPCs fail the
-            # server's strict no-Cookie authentication boundary.
-            session.cookies.set_policy(_NoCookies())
-            self._local.transport = session
-            with self._lock:
+        with self._lock:
+            if self._closed:
+                raise RemoteError("invalid_session", 401)
+            if self._transport is not None:
+                return self._transport
+            if not hasattr(self._local, "transport"):
+                session = requests.Session()
+                # Do not inherit .netrc credentials or send the worker key via
+                # an unexpected environment-configured proxy.
+                session.trust_env = False
+                # A proxy may add Set-Cookie even though this is a bearer-only
+                # protocol. Never replay it across this strict auth boundary.
+                session.cookies.set_policy(_NoCookies())
+                self._local.transport = session
                 self._sessions.append(session)
-        return self._local.transport
+            return self._local.transport
+
+    def close_thread(self) -> None:
+        """Release a finished transfer's pool without closing the supervisor's."""
+        session = getattr(self._local, "transport", None)
+        if session is None:
+            return
+        del self._local.transport
+        with self._lock:
+            if session in self._sessions:
+                self._sessions.remove(session)
+        # Global close can run while this thread is inside request(). A
+        # requests.Session may then reopen a pool, so always close it once
+        # more after this thread's final request has actually returned.
+        session.close()
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
             sessions, self._sessions = self._sessions, []
         for session in sessions:
             session.close()
