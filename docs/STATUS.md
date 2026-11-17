@@ -42,6 +42,8 @@
 
 原生 Linux / canonical LF、浏览器与真实部署的历史结果仍可在下表追溯。历史版本通过不代表本次合并版本已经在同环境通过；skip 不计为通过，合成内容不代表真实私人小说或模型质量验收。
 
+本轮 main 代码 `c3a4385`：Windows / Python 3.11.3 全量 **3556 passed, 17 skipped**，含已启用的离线 Vue / Chromium 与油猴浏览器用例。17 个跳过是环境权限或不适用参数条件；本轮未做新的 Linux 或生产验证。写作分支的最终验证单独记录。
+
 ## 尚未完成
 
 1. **完整远程执行**：接入固定 Pixiv 抓取任务、账户 / 范围互斥、共享限流、最小凭据和 VPS 结果收口；之后才可迁移收藏、关注、追更等业务。签到副作用台账与业务 cron 也未迁移。见 [远程执行](REMOTE_EXECUTION.md) 与 [后续阶段边界](superpowers/specs/2026-11-12-remote-next-phase-notes.md)。

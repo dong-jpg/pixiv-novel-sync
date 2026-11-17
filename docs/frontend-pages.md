@@ -17,7 +17,7 @@
 
 真实离线 Vue/浏览器375/768/1440验证与真机软键盘、真实 Provider1M准入验收分别记录在 [项目现状](STATUS.md)，本页不把 Node VM 当作浏览器测量。
 
-移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文记录 `main` 功能范围及明确标注的审计分支后续修复，不等同于已合并或生产站点已经更新，当前版本以 [项目现状](STATUS.md) 为准。
+移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文记录两分支共享书库能力及本 ai-writing 的写作扩展，不等同于生产站点已经更新，当前版本以 [项目现状](STATUS.md) 为准。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。
@@ -87,7 +87,7 @@
 - `app-badge`
 - `app-modal`
 
-手机底栏固定为首页、书库、作者与系列、任务、更多，不继续增加底栏项目。更多收纳偏好、待确认删除、四个设置页和退出；桌面保留侧栏。退出须检查 HTTP 与 `{ok:true}`，错误保留并允许重试。
+手机底栏固定为首页、书库、作者与系列、任务、更多，不继续增加底栏项目。更多收纳偏好、待确认删除、五个设置页、写作入口和退出；桌面保留侧栏。退出须检查 HTTP 与 `{ok:true}`，错误保留并允许重试。
 
 `app-modal` 保留 `title` / `isOpen` / `close` / 默认与 footer 插槽，新增默认 `true` 的 `closeOnBackdrop`。弹窗 Teleport 到 body，支持焦点保持/返回、Escape、背景滚动锁、多个弹窗的锁持有与卸载清理；窄屏可滚动、footer 可换行。一次性 Token 弹窗必须传 `:close-on-backdrop="false"`，显式关闭仍由页面清空明文。
 
@@ -247,7 +247,7 @@ APIs:
 
 Template: `dashboard_logs.html`
 
-用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示服务器安全 v1/v2 计划、Provider/模型、路由组、attempt 错误/耗时、业务校验和用量摘要；`partial` 单独标记为“部分完成”。不显示快照 hash 或输入指纹；main continue 不可用，不提供可执行继续按钮。
+用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示服务器安全 v1/v2 计划、Provider/模型、路由组、attempt 错误/耗时、业务校验和用量摘要；`partial` 单独标记为“部分完成”。不显示快照 hash 或输入指纹；main continue 不可用。本分支只对服务端 can_continue=true 的旧写作任务提供候选继续，作品报告和画像使用独立业务检查点。
 
 同步任务的黄色“部分完成”只留给**真出了问题**的轮次：`aborted_reason`（熔断中止）或 `truncated`（分页触顶）。关注作者按 `user_last_synced` 轮转，每轮只覆盖 `users_limit` 个作者、必然带 `incomplete`，这种轮次由 `rotation_pending` 标记为绿色“成功”——否则耗时最大的任务永远是黄色，真正的中止就被淹没了。判定在 `webapp.py:_task_log_status_for_stats`，只置 `incomplete` 而不说明原因的站点仍然算 partial。
 
@@ -268,7 +268,7 @@ APIs:
 
 Agent批量改绑的确认快照固定所选ID和绑定；失败在活动确认弹窗内持续显示alert并允许明确重试。待处理请求防重复，关闭保留当前选择，晚响应不能把旧错误或旧选择覆盖回新状态；已确认写入但回读失败要说明“写入成功、刷新失败”，不能引导重复PUT。
 
-`/dashboard/settings` 只做 302，一律落到 `/dashboard/settings/sync`。旧的单页 + URL hash 分区导航已经废弃，改为四个独立路由，各自一个模板、一个 Vue 应用，共享 Jinja 导航条 `dashboard_settings_nav.html`（纯静态链接，高亮取 `request.path`）。侧栏「设置」在 Operations 分组下展开为同名的四个二级项。成人润色设置页随 AI 写作模块移到 `ai-writing` 分支。
+`/dashboard/settings` 只做 302，一律落到 `/dashboard/settings/sync`。旧的单页 + URL hash 分区导航已经废弃，改为五个独立路由（本分支增加 adult），各自一个模板、一个 Vue 应用，共享 Jinja 导航条 `dashboard_settings_nav.html`（纯静态链接，高亮取 `request.path`）。侧栏「设置」在 Operations 分组下展开为同名的五个二级项。成人润色设置页为本分支的扩展。
 
 | Route | Template | 内容 |
 |---|---|---|

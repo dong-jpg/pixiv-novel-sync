@@ -98,14 +98,14 @@ def test_readme_distinguishes_library_and_writing_branches() -> None:
     assert re.search(r"main[^。\n]*(?:不包含|不提供)[^。\n]*写作", branches)
 
 
-def test_readme_installation_explicitly_selects_main_and_supported_runtime() -> None:
+def test_readme_installation_explicitly_selects_writing_and_supported_runtime() -> None:
     quick_start = section("快速开始")
     assert re.search(r"Python\s*(?:>=|≥)\s*3\.10", README)
     assert "Flask" in README and "SQLite" in README
     assert "无需前端构建" in README
     clone_lines = re.findall(r"^git clone [^\n]+", quick_start, re.MULTILINE)
     assert clone_lines, "Installation must explicitly clone main"
-    assert all(re.search(r"(?:--branch|-b)\s+main\b", line) for line in clone_lines)
+    assert all(re.search(r"(?:--branch|-b)\s+ai-writing\b", line) for line in clone_lines)
     assert "https://github.com/dong-jpg/pixiv-novel-sync.git" in quick_start
     assert "cd pixiv-novel-sync" in quick_start
     assert "python -m venv .venv" in quick_start

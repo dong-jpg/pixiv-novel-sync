@@ -1063,9 +1063,9 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 ### GET /api/dashboard/ai/jobs/<job_id>
 
-返回 AI 任务详情与原有身份/时间/attempt/route_summary 字段，增加 `validation_status`（历史为 unknown）、`can_continue:false`、`continue_unavailable_reason`、`usage_summary`。usage 包含可空 `known_input_tokens/known_output_tokens/known_total_tokens`、`reported_requests/unreported_requests`、`complete`；服务器汇总是事实，前端不累加 attempt。零报告 token 与未知不同；零请求数显示未发出请求。
+返回 AI 任务详情与原有身份/时间/attempt/route_summary 字段，增加 `validation_status`（历史为 unknown）、`can_continue`（由任务类型、快照版本和剩余候选决定）、`continue_unavailable_reason`、`usage_summary`。usage 包含可空 `known_input_tokens/known_output_tokens/known_total_tokens`、`reported_requests/unreported_requests`、`complete`；服务器汇总是事实，前端不累加 attempt。零报告 token 与未知不同；零请求数显示未发出请求。
 
-`snapshot_version` 为 1/2 或 null；v1 沿用 `prompt_budget`，v2 用服务端安全解码的 `invocation_plan`（与预检同一逐候选投影），不可用时提供 `plan_unavailable_reason`。UI 不解码私有 candidate_snapshot、不显示 hash/指纹或 metadata_only 审计输入。仅旧关键词清洗保留有限输入/输出视图。任务不存在为 404。
+`snapshot_version` 为 1/2 或 null；v1 沿用 `prompt_budget`，v2 用服务端安全解码的 `invocation_plan`（与预检同一逐候选投影），不可用时提供 `plan_unavailable_reason`。UI 仅用服务器投影展示预算，不把私有快照作为 v2 预算事实源，也不展示 metadata_only 审计输入。关键词清洗保留有限输入/输出；旧写作保留其业务重放输入，候选继续使用已保存的 v1 快照。任务不存在为 404。
 
 ### POST /api/dashboard/ai/jobs/<job_id>/cancel
 
@@ -1073,7 +1073,7 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 ### POST /api/dashboard/ai/jobs/<job_id>/continue
 
-main 第一阶段没有支持的业务重放处理器；此端点保留历史请求校验，但当前任务类型返回 409“任务类型暂不支持”，不创建 child job、不调用 Provider。详情 `can_continue=false`，UI 允许列表为空，按钮与动作入口均禁止继续。新 [作品级恢复](#work-analysis-apis) 使用独立 `/work-analyses/<run_id>/resume`，不改变本端点。以下是兼容请求形状，不表示已提供业务续写：
+本 ai-writing 分支仅对已注册旧写作任务、终态父 job、有效 v1 候选快照和首个未尝试候选提供继续。服务端详情 `can_continue=true` 后才显示入口；同一幂等键返回同一 child，配置版本或候选索引变化返回 409。关键词清洗和 v2 作品 / 偏好调用返回 409“任务类型暂不支持”，不创建 child 或调用 Provider。[作品级恢复](#work-analysis-apis) 仍使用 `/work-analyses/<run_id>/resume`。请求形状：
 
 ```json
 {
@@ -1088,7 +1088,7 @@ main 第一阶段没有支持的业务重放处理器；此端点保留历史请
 
 ## AI SSE stream contract
 
-以下为共享生成层保留的 SSE 事件契约，不表示 main 的 continue API 可执行：main continue 当前返回上述 409。模型目录同步另有既存 operation events SSE。写作类 stream 端点随 AI 写作模块移到 `ai-writing` 分支。
+以下为共享生成层的 SSE 事件契约。写作 stream 路由见下文“写作 SSE 端点”；模型目录同步使用独立的 operation events SSE。
 
 Required event names:
 
@@ -1211,30 +1211,8 @@ SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-a
 
 Used by: 创作向导 / 蒸馏档案页（`/dashboard/wizard`）。
 
-### GET /api/dashboard/ai/jobs/<job_id>
 
-返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message`、`candidate_snapshot_hash`、`candidate_snapshot`、`prompt_budget`、`attempts`、`route_summary` 和时间字段。attempt 包含实际 Provider/模型、池快照、stage、状态、错误分类及耗时；快照和 attempt 不含 API Key、Prompt、正文或完整请求/响应。任务不存在时返回 404。
-
-### POST /api/dashboard/ai/jobs/<job_id>/cancel
-
-把仍在 `running` 的任务标成 `cancel_requested`。路由心跳读到后停止，任务终态变为 `cancelled`。任务不存在返回 404，已经结束返回 409。重复请求同一次取消仍返回成功。
-
-### POST /api/dashboard/ai/jobs/<job_id>/continue
-
-从终态父 job 的不可变候选快照创建 child job，并从第一个未尝试候选继续。接口返回常规 AI SSE；重复 `idempotency_key` 复用同一 child job，不重复调用 Provider。
-
-```json
-{
-  "parent_job_id": "与路径 job_id 完全一致",
-  "idempotency_key": "16-128 位可打印 ASCII",
-  "candidate_snapshot_hash": "64 位小写十六进制摘要",
-  "resume_candidate_index": 2
-}
-```
-
-索引不是首个未尝试候选，或 Agent/池版本、剩余 Provider 配置已变化时返回 `409`。`partial` 表示正文已保留但任务不完整；不会自动切换模型，必须由用户显式执行“下一个模型继续”。
-
-## AI SSE stream contract
+## 写作 SSE 端点
 
 The following endpoints return `text/event-stream`:
 

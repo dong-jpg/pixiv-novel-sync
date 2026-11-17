@@ -17,7 +17,7 @@
 
 ## 当前 ai-writing 分支
 
-此分支继承 main 的完整私人书库，并提供 AI 创作项目、章节、创作向导、风格蒸馏、检索及成人局部润色。写作入口为 `/dashboard/ai`，额外配置位于 `/dashboard/settings/adult`。写作相关操作与限制见 [写作工作台计划](docs/AI_WRITING_STUDIO_PLAN.md)、[润色指南](docs/ADULT_POLISH_USER_GUIDE.md)和 [检索配置](docs/QWEN_EMBEDDING_INTEGRATION.md)。下方快速开始以 main 为默认；需要此分支时将 clone 参数改为 `--branch ai-writing`。
+此分支继承 main 的完整私人书库，并提供 AI 创作项目、章节、创作向导、风格蒸馏、检索及成人局部润色。写作入口为 `/dashboard/ai`，额外配置位于 `/dashboard/settings/adult`。写作相关操作与限制见 [写作工作台计划](docs/AI_WRITING_STUDIO_PLAN.md)、[润色指南](docs/ADULT_POLISH_USER_GUIDE.md)和 [检索配置](docs/QWEN_EMBEDDING_INTEGRATION.md)。下方快速开始安装当前 ai-writing 分支；只需要书库时使用 main。
 
 ## 书库体验
 
@@ -45,10 +45,10 @@
 
 需要 Git 和 Python ≥ 3.10。项目使用 Flask + SQLite，无需前端构建。
 
-### 1. 选择 main 并创建环境
+### 1. 选择 ai-writing 并创建环境
 
 ~~~bash
-git clone --branch main --single-branch https://github.com/dong-jpg/pixiv-novel-sync.git
+git clone --branch ai-writing --single-branch https://github.com/dong-jpg/pixiv-novel-sync.git
 cd pixiv-novel-sync
 python -m venv .venv
 ~~~
