@@ -1,6 +1,6 @@
 # Pixiv Novel Sync Logo 设计说明
 
-> 本文描述 `assets/logo.svg` 与 `assets/logo-mark.svg`（Writer's Desk，含 AI 创作寓意），它们是 ai-writing 分支的品牌。main 的 README 使用 `assets/main-logo.svg`（书页与同步环），设计依据见 [main 品牌与自述设计](../docs/superpowers/specs/2026-10-09-main-readme-branding-design.md)；按该设计，这两个旧文件保留不替换。
+当前 README 使用 `assets/main-logo.svg`（书页与同步环），112×112 展示，文字标题与图标分离。`assets/logo.svg` 与 `assets/logo-mark.svg` 是保留的 Writer's Desk 品牌素材，含写作寓意；不据旧提案替换当前 README。
 
 ## 设计方向
 
@@ -25,14 +25,15 @@
 
 ## 文件
 
-- assets/logo.svg：README 主图，包含 mark、项目名、中文定位语和英文短标语。
+- assets/main-logo.svg：当前 README 图标，表达私人书库和同步。
+- assets/logo.svg：保留的完整 Writer's Desk 图，包含 mark、项目名、中文定位语和英文短标语。
 - assets/logo-mark.svg：仅包含折角文稿和编辑标记，适合 GitHub avatar、favicon 或小尺寸引用。
 
-两个 SVG 都是静态文件，不依赖外部字体、脚本、图片或动画。标准 SVG namespace 仅用于稳定渲染，不代表远程资源引用。
+这些 SVG 都是静态文件，不依赖外部字体、脚本、图片或动画。标准 SVG namespace 仅用于稳定渲染，不代表远程资源引用。
 
 ## 使用建议
 
-- README 首屏建议使用 assets/logo.svg，宽度 360-420px。
+- README 首屏保持现有 main-logo.svg 的 112px 图标与可访问文字标题。
 - 小尺寸头像、图标按钮或 favicon 候选建议使用 assets/logo-mark.svg。
 - 深色背景上使用时，应优先放在浅色容器内，不要直接反白主图。
 - 不要重新加入动态效果、霓虹渐变、emoji 元素或 AI 生成图噪点。

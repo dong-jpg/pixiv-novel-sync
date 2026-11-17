@@ -123,7 +123,7 @@
         <p v-if="wa.readErrors.units" role="alert">{{ wa.readErrors.units }}</p>
         <ul class="space-y-2"><li v-for="unit in wa.units" :key="unit.unit_id" class="break-words">{{ unit.kind }} · {{ unit.status }} · 尝试 {{ unit.try_no }} · {{ unit.last_error || '无错误' }} · {{ unit.actual_target?.model_key || '尚未调用模型' }} · {{ usageText(unit.usage_summary) }}</li></ul>
         <div v-if="wa.unitTotal > 20" class="flex gap-3"><button class="library-btn" :disabled="wa.unitOffset === 0 || wa.busy.units" @click="loadUnits(Math.max(0, wa.unitOffset - 20))">上一页单元</button><button class="library-btn" :disabled="wa.unitOffset + 20 >= wa.unitTotal || wa.busy.units" @click="loadUnits(wa.unitOffset + 20)">下一页单元</button></div>
-        <button class="library-btn library-btn-primary" @click="loadReport" :disabled="!wa.run.has_report || wa.busy.report">读取已验证报告</button>
+        <button class="library-btn library-btn-primary" @click="loadReport" :disabled="!wa.run.has_report || wa.busy.report || !!wa.pending">读取已验证报告</button>
         <p v-if="wa.readErrors.report" role="alert">{{ wa.readErrors.report }}</p>
         <details class="space-y-3"><summary class="font-bold">删除本分析</summary>
           <p class="text-sm">先撤销运行权，再清理结论、引文和恢复引用。应用层删除不保证备份、WAL 或存储介质立即安全擦除。</p>
@@ -142,10 +142,15 @@
     <p>原作完整性 {{ wa.report.coverage.source_completeness.status }}；出版状态 {{ wa.report.coverage.source_completeness.publication_state }}；声明来源 {{ wa.report.coverage.source_completeness.publication_source }}；汇总 {{ wa.report.synthesis_complete ? '已完成' : '未完成' }}。</p>
     <p class="whitespace-pre-wrap break-words">{{ wa.report.artifact.summary }}</p>
     <p v-if="wa.report.artifact.no_findings_reason" class="whitespace-pre-wrap">未找到足够依据：{{ wa.report.artifact.no_findings_reason }}</p>
-    <article v-for="claim in wa.report.artifact.claims" :key="claim.claim_id" class="border rounded-lg p-3 space-y-2">
+    <p class="text-sm library-muted">逐条标记只影响结论能否用于偏好学习，保留模型原文。标记或恢复后，相关画像需要重新预览和总结；恢复使用不代表结论已被证实。</p>
+    <article v-for="claim in wa.report.artifact.claims" :key="claim.claim_id" :data-claim-id="claim.claim_id" class="border rounded-lg p-3 space-y-2">
       <h3 class="font-bold break-words">{{ claim.label }} · {{ claim.dimension }}</h3>
       <p>{{ {direct: '直接文本依据', interpretation: '解释性判断', insufficient: '证据不足'}[claim.certainty] }}（不是统计概率）</p>
       <p class="whitespace-pre-wrap break-words">{{ claim.statement }}</p>
+      <template v-if="wa.report.claim_feedback && wa.report.claim_feedback[claim.claim_id]">
+        <p role="status">{{ wa.report.claim_feedback[claim.claim_id].unreliable ? '已标记不可靠 · 已从偏好来源排除' : '可用于偏好学习 · 尚未标记不可靠' }}</p>
+        <button class="library-btn" :disabled="!claimFeedbackAllowed(claim.claim_id)" @click="setClaimFeedback(claim.claim_id, !wa.report.claim_feedback[claim.claim_id].unreliable)">{{ wa.report.claim_feedback[claim.claim_id].unreliable ? '恢复使用此结论' : '标记此结论不可靠' }}</button>
+      </template>
       <p class="text-xs">支撑章节：{{ Array.from(new Set(claim.evidence_ids.map(id => wa.report.artifact.evidence[id].novel_id))).join('、') }}</p>
       <details v-for="id in claim.evidence_ids" :key="id" :data-evidence-id="id" class="border rounded-lg p-3 space-y-2">
         <summary>展开短证据 · 章节 {{ wa.report.artifact.evidence[id].novel_id }}</summary>

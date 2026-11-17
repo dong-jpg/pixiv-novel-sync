@@ -109,7 +109,9 @@ class WorkAnalysisUnitsMixin:
             configuration, prompt, preflight = snapshot_work_configuration(
                 conn, c.load(row["configuration_json"])["agent_id"], c.load(row["configuration_json"])["output_tokens"],
             )
-            texts = read_source_texts(conn, manifest)
+            # 汇总只依赖已经验证的子结果；所有源章节仍由 require_owner 和变更触发器守护。
+            novel_ids = {part["novel_id"] for part in unit["primary_ranges"] + unit["context_ranges"]}
+            texts = read_source_texts(conn, manifest, novel_ids=novel_ids) if unit["kind"] != "reduce" else {}
             expected_entry = (entry["try_no"], entry["child_job_id"], entry["input_fingerprint"], entry["unit_json"])
         blocks = {}
         try:

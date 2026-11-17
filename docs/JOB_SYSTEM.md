@@ -1,6 +1,6 @@
 # Job System 开发者文档
 
-> **行为更新（2026-10-08，main）**：定时用户备份传播 `truncated/incomplete/aborted_reason`，用户失败显示部分完成，取消不计失败用户。归档暂存在搬移前登记；恢复目标冲突或回滚失败时保留已有副本，带 `.recovery-required` 标记的目录不会被启动清扫删除。人工恢复应根据错误日志核对原路径与暂存路径，不要直接清空 `.trash`。这是现有事务/回滚的缺陷修复，不是完整 manifest 或启动自动重放系统。最新验证见 [项目现状](STATUS.md)。
+定时用户备份传播 `truncated/incomplete/aborted_reason`，单本获取失败也显示部分完成，正常轮转标记不能掩盖失败；取消不计失败用户。归档暂存在搬移前登记；恢复冲突或回滚失败保留已有副本，带 `.recovery-required` 标记的目录不被启动清扫删除。人工恢复应核对原路径与暂存路径，不要直接清空 `.trash`。最新验证见 [项目现状](STATUS.md)。
 
 > 本文描述同步/后台任务(非 AI 生成)的统一 Job 管线。以源码为准:
 > `src/pixiv_novel_sync/jobs/{models,manager,runner,tasks}.py`、
@@ -240,35 +240,35 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 同理,`web/utils.py:_job_spec` 里若没有对应 task_type 的分支,JobSpec 会静默落到 `JobType.SYNC`,任务统计归错类。这一条以及"四处注册表是否齐全"由 `tests/test_scheduler_priority.py::test_every_scheduler_task_is_registered_in_all_three_tables` / `::test_scheduler_tasks_map_to_their_own_job_type` 锁住:新增定时任务时那里的 `EXPECTED_SCHEDULER_TASKS` 会先红,提示按本文 §4 把四处补齐。
 
-### 5.2 推荐 cron 排布与实测预算基线(2026-08-28)
+### 5.2 示例 cron 与调度核对
 
-上面那张表是**代码默认值**(大多为空 cron + 6 小时 interval),不是推荐排布。生产与 `config/config.yaml.example` 用下面这套按实测预算排的 cron,时区 `Asia/Seoul`:
+代码默认值与配置示例不同。下面是 `config/config.yaml.example` 的排布，时区 `Asia/Seoul`；实际机器使用的时区、开关和预算必须读取自己的配置，不能由示例推断生产状态。
 
-| 任务 | P | cron | 频率 | 单轮实测耗时 |
-|---|---|---|---|---|
-| bookmarks | 1 | `"20 0,4,8,12,16,20 * * *"` | 6 次/天 | ~3 min |
-| subscribed_series | 2 | `"40 1,13 * * *"` | 2 次/天 | ~13 min |
-| following_list | 3 | `"30 10 * * *"` | 1 次/天 | ~5 min |
-| following_novels | 3 | `"0 3,9,15,21 * * *"` | 4 次/天 | ~24 min(阶段一前 42 min) |
-| user_status | 3 | `"30 6 */2 * *"` | 隔日 | 全库一轮跑完 |
-| novel_status | 3 | `"0 5,17 * * *"` | 2 次/天 | 每轮一批 800 条 |
-| series_status | 3 | `"30 18 */2 * *"` | 隔日 | 全库一轮跑完 |
-| user_backup | 3 | `"30 2 */3 * *"` | 隔三日(默认关闭) | 最长 2.3 h |
-| pending_deletion_detection | 3 | `"30 12 * * *"` | 1 次/天 | ~34 s |
-| preference_analyze | 3 | `"15 7,19 * * *"` | 2 次/天(默认关闭) | 每轮 1 批 |
-| recommendation_run | 3 | `"50 8 * * *"` | 1 次/天(默认关闭) | ≤20 条检索 |
+| 任务 | P | cron | 频率 |
+|---|---|---|---|
+| bookmarks | 1 | `"20 0,4,8,12,16,20 * * *"` | 6 次/天 |
+| subscribed_series | 2 | `"40 1,13 * * *"` | 2 次/天 |
+| following_list | 3 | `"30 10 * * *"` | 1 次/天 |
+| following_novels | 3 | `"0 3,9,15,21 * * *"` | 4 次/天 |
+| user_status | 3 | `"30 6 */2 * *"` | 按日字段步进 |
+| novel_status | 3 | `"0 5,17 * * *"` | 2 次/天 |
+| series_status | 3 | `"30 18 */2 * *"` | 按日字段步进 |
+| user_backup | 3 | `"30 2 */3 * *"` | 按日字段步进，默认关闭 |
+| pending_deletion_detection | 3 | `"30 12 * * *"` | 1 次/天 |
+| preference_analyze | 3 | `"15 7,19 * * *"` | 2 次/天，默认关闭 |
+| recommendation_run | 3 | `"50 8 * * *"` | 1 次/天，默认关闭 |
 
-生产实测 3 天 52 轮,单任务槽串行,总占用 4.9 小时/天(占空比 20.5%)。阶段一吞吐修复 + 阶段二 cron 重排后目标 3.8 小时/天(15.7%)。
+`*/2`、`*/3` 是每月日字段步进，不保证跨月保持精确 48/72 小时。单轮耗时取决于书库规模、变化量、请求预算和上游响应，不沿用历史测量数字作保证。
 
 排布约束:
 
 1. P1 收藏每天 6 次均匀分布,任何时刻最多等 4 小时。
 2. 长任务(`following_novels`、`novel_status`)避开收藏时刻 ±30 分钟,减少无谓让位。
-3. 时效性弱的任务拉到隔日或隔三日。`novel_status` 从 4 次/天降到 2 次(全库轮转周期 2.4 → 4.8 天)是安全的:用户主动取消收藏/追更由 `pending_deletion_detection` 每天检测,不走状态巡检。
-4. `following_novels` 频率不降:阶段一给单作者加了配额后单轮从 42 分钟降到约 24 分钟,同频率下覆盖率提升约 5 倍,降频反而白丢吞吐。
-5. `subscribed_series` 每轮从 watchlist 头部重走(不可让位、不是水位续跑),所以只能靠降频省预算,实测连续 12 轮零新增,4 次/天 → 2 次/天。
+3. 状态检查轮转覆盖与用户取消收藏/追更检测是不同任务，调整频率时分别核对覆盖周期。
+4. `following_novels` 有单作者配额与轮转水位，应看最久未覆盖作者而不是单轮剩余数判断进度。
+5. `subscribed_series` 每轮从 watchlist 头部重走，不是水位续跑，不应为提高抢占频率把它设为可让位。
 
-cron 解析失败是**静默**回落到 interval,所以改完必须逐条验算下次运行时刻(不是只确认"不抛异常"):
+设置 API 拒绝非法时区和非空非法 cron；直接编辑 YAML 绕过该校验时，调度计算失败会回落到 interval。改完必须逐条验算下次时刻：
 
 ```bash
 python -c "
@@ -285,4 +285,4 @@ for attr in sorted(dir(s.sync)):
 
 `tests/test_cron_validation.py` 把这 11 条表达式在 `Asia/Seoul` 下的下次运行时刻与每天触发次数都钉死了,改排布时那里要同步更新。
 
-**注意:截至 2026-08-28 生产 journald 里 `selected by priority` / `submit failed` / `yielded` 均为 0 次**——旧 cron 排得过散,两个任务几乎从不同时到点,3.6 那套让位逻辑从未被触发过。改动这些 cron 后如果看到让位日志,那是机制首次生效,不是故障。
+`selected by priority`、`submit failed`、`yielded` 需结合当前队列和失败原因判断。出现让位日志本身不代表故障，不能用旧部署日志推断现行优先级从未触发。

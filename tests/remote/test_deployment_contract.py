@@ -34,6 +34,29 @@ def test_configuration_examples_have_blank_secrets_and_disabled_vps_roles():
         assert not ({"PIXIV_REFRESH_TOKEN", "PIXIV_FLASK_SECRET"} & entries.keys())
 
 
+def test_gc_timer_is_an_offline_bounded_service_with_no_cloud_credentials():
+    service = (ROOT / "deploy/systemd/pixiv-remote-gc.service").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy/systemd/pixiv-remote-gc.timer").read_text(encoding="utf-8")
+    example = (ROOT / "config/remote-maintenance.env.example").read_text(encoding="utf-8")
+    entries = dict(line.split("=", 1) for line in example.splitlines() if line and not line.startswith("#"))
+    assert set(entries) == {"PIXIV_REMOTE_STATE_DIR", "PIXIV_REMOTE_MACHINE_ID"}
+    assert entries["PIXIV_REMOTE_MACHINE_ID"] == ""
+    for directive in (
+        "Type=oneshot", "User=pixivsync", "PrivateNetwork=true",
+        "EnvironmentFile=/etc/pixiv-remote/maintenance.env", "TimeoutStartSec=300",
+        "ProtectSystem=strict", "ReadWritePaths=/var/lib/pixiv-remote", "UMask=0077",
+        "/pixiv-remote gc --state-dir ${PIXIV_REMOTE_STATE_DIR} --confirm-state-dir ${PIXIV_REMOTE_STATE_DIR}",
+    ):
+        assert directive in service
+    assert "[Install]" not in service
+    assert "OnCalendar=hourly" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=pixiv-remote-gc.service" in timer
+    assert "WantedBy=timers.target" in timer
+    for path in (ROOT / "deploy.sh", ROOT / "update.sh", ROOT / "scripts/install_server.sh"):
+        assert "enable --now pixiv-remote-gc.timer" not in path.read_text(encoding="utf-8")
+
+
 def test_nginx_example_separates_bootstrap_rate_limit_and_large_upload():
     source = (ROOT / "config/nginx/remote-worker-location.conf").read_text(encoding="utf-8")
     assert "http {}" in source

@@ -135,7 +135,8 @@ Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 system
 
 ## 文档与开发
 
-- [文档索引](docs/INDEX.md)：使用说明、版本状态、历史报告和开发计划。
+- [文档索引](docs/INDEX.md)：使用指南、设计约束与当前状态。
+- [修复与优化实施计划](docs/IMPLEMENTATION_PLAN.md)：分阶段任务、依赖和验收标准。
 - [前端 API 契约](docs/frontend-api-contract.md) 与 [页面清单](docs/frontend-pages.md)：接口、路由和前端入口。
 - [开发约定](CLAUDE.md)：目录结构、命令与代码约定。
 

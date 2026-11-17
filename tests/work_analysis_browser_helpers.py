@@ -20,6 +20,7 @@ RUN = "a" * 32
 UNIT = "b" * 64
 EVIDENCE = "c" * 64
 CLAIM = "d" * 64
+REPORT_CLAIM = "f" * 64
 BLOCK = "e" * 64
 LABEL = '<img src="/fixture-injected" onerror="window.fixtureInjected=true">'
 QUOTE = "\u552f\u4e00\u5f15\u6587\U0001f680 " + LABEL
@@ -123,7 +124,10 @@ def report_document(run):
                 "evidence": {EVIDENCE: evidence_document()["evidence"]},
                 "counterexamples": [{"statement": "A bounded counterexample", "evidence_ids": [EVIDENCE]}],
                 "uncertainties": ["Source completeness remains unverified."]}
-    return {"schema_version": 1, "run_id": RUN, "manifest": deepcopy(run["manifest"]),
+    return {"schema_version": 1, "run_id": RUN, "version": run["version"],
+            "claim_feedback_revision": 0, "can_edit_claim_feedback": True,
+            "claim_feedback": {CLAIM: {"report_claim_id": REPORT_CLAIM, "unreliable": False}},
+            "manifest": deepcopy(run["manifest"]),
             "coverage": coverage(run["manifest"], True), "artifact": artifact,
             "units": [{"unit_id": UNIT, "kind": "whole", "actual_target": {"provider_id": 3, "model_key": "org/model "},
                        "usage_summary": usage()}], "usage_summary": usage(),
@@ -335,6 +339,22 @@ class OfflineWorkUI(OfflineUI):
         run_path = BASE + "/" + RUN
         if path == run_path and method == "GET":
             return self._json(route, deepcopy(self.work_run)) if self.work_run else self._error(route, "not_found", 404)
+        if method == "POST" and path == run_path + "/claims/" + REPORT_CLAIM:
+            if self.work_run["deleted"]:
+                return self._error(route, "work_deleted", 410)
+            assert set(body) == {"expected_version", "unreliable"} and type(body["unreliable"]) is bool
+            if body["expected_version"] != self.work_run["version"]:
+                return self._error(route, "version_conflict", 409)
+            assert self.work_report
+            if self.work_report["claim_feedback"][CLAIM]["unreliable"] != body["unreliable"]:
+                self.work_run["version"] += 1
+                self.work_report["version"] = self.work_run["version"]
+                self.work_report["claim_feedback_revision"] += 1
+                self.work_report["claim_feedback"][CLAIM]["unreliable"] = body["unreliable"]
+            if (method, path) in self.lose_next:
+                self.lose_next.remove((method, path))
+                return route.abort("failed")
+            return self._json(route, deepcopy(self.work_report))
         if path in {run_path + suffix for suffix in ("/units", "/report", "/evidence/" + EVIDENCE)} and method == "GET":
             if not self.work_run or self.work_run["deleted"]:
                 return self._error(route, "work_deleted", 410)

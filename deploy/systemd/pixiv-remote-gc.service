@@ -1,0 +1,19 @@
+[Unit]
+Description=Pixiv remote retained data cleanup
+
+[Service]
+Type=oneshot
+User=pixivsync
+WorkingDirectory=/opt/pixiv-novel-sync/app
+EnvironmentFile=/etc/pixiv-remote/maintenance.env
+ExecStart=/opt/pixiv-novel-sync/app/.venv/bin/pixiv-remote gc --state-dir ${PIXIV_REMOTE_STATE_DIR} --confirm-state-dir ${PIXIV_REMOTE_STATE_DIR}
+TimeoutStartSec=300
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pixiv-remote

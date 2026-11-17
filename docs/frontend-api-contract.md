@@ -1,10 +1,6 @@
 # Frontend API Contract
 
-> **契约更新（2026-10-08，main）**：本页只更新共享 API。增量分析保留未提供的画像字段，推荐区分查询/候选错误；已删除的旧路由不再列为可调用端点。最新验证及环境边界见 [项目现状](STATUS.md)。
-
-> **移动优先补充（2026-10-09，main）**：登录新增可撤销的可选30天会话，首页/偏好统一使用已有分页接口。字段与失败响应见下文；合并代码不代表现网已经更新，见 [移动报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。
-
-> **审计分支补充（2026-10-30）**：只读救援 API 的三桶限流按本分支代码校准；待合并 / 部署，不代表当前线上配置已验证。版本与验收边界见 [项目现状](STATUS.md)。
+更新：2026-11-17。本页维护当前分支的接口契约；代码验证与生产启用边界见 [项目现状](STATUS.md)。
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
@@ -315,7 +311,7 @@ Used by: 小说阅读页阅读进度恢复。每次打开都核对服务端版�
 
 用户入口为 `POST/GET /api/dashboard/remote/runs`、`GET /api/dashboard/remote/runs/<run_id>`、`POST .../<run_id>/cancel`、`GET .../<run_id>/download`、`GET /api/dashboard/remote/machine` 与 `POST .../machine/hold`。全部沿用 Dashboard 登录；写操作校验 CSRF。提交要求 `Idempotency-Key`，只允许 `diagnostic.v1` 或带 novel_id 的 `epub.single.v1`。状态与下载不隐式唤醒实例；原同步 EPUB 接口保持原响应。
 
-`/api/remote-worker/v1/*` 使用独立 Bearer 凭据，拒绝 Dashboard Cookie、Origin 和 query token；worker 凭据不能访问用户 API。bootstrap 仅注册会话，领取、输入、心跳、上传和发布按持久 attempt、epoch、fence 与输入摘要核验。用户与 worker 响应均禁止缓存，详情见[远程执行手册](REMOTE_EXECUTION.md)及[协议计划](superpowers/plans/2026-11-10-instabox-phase-one.md#worker-api)。
+`/api/remote-worker/v1/*` 使用独立 Bearer 凭据，拒绝 Dashboard Cookie、Origin 和 query token；worker 凭据不能访问用户 API。bootstrap 仅注册会话，领取、输入、心跳、上传和发布按持久 attempt、epoch、fence 与输入摘要核验。用户与 worker 响应均禁止缓存，详情见 [远程执行手册](REMOTE_EXECUTION.md)及 [协议设计](REMOTE_EXECUTION_DESIGN.md)。
 
 ### POST /api/dashboard/novels/export-epub
 
@@ -454,7 +450,7 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`。限流�
 
 ### GET /api/rescue/v1/series
 
-救援目录里的系列分页列表，供油猴脚本 0.12.0 的「拯救系列」tab（接管 Pixiv 手机站新作页的「好P友新作」）使用。查询参数：`page`、`page_size`（默认 24，上限 100；脚本每页取 10）、`state`、`search`、`sort`，取值与 `GET /api/dashboard/rescues` 相同。返回 `{items, page, total, total_pages}`。读的是救援目录快照：目录首建完成前回 `503`「救援目录尚未生成」，`pending` 待确认删除的系列不出现。
+救援目录里的系列分页列表，供油猴脚本的「拯救系列」tab（接管 Pixiv 手机站新作页的「好P友新作」）使用。查询参数：`page`、`page_size`（默认 24，上限 100；脚本每页取 10）、`state`、`search`、`sort`，取值与 `GET /api/dashboard/rescues` 相同。返回 `{items, page, total, total_pages}`。读的是救援目录快照：目录首建完成前回 `503`「救援目录尚未生成」，`pending` 待确认删除的系列不出现。
 
 每项包含 `series_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`expected_count`、`local_count`、`complete_count`、`personal_hold`、`last_checked_at`，以及下面的系列卡片字段。
 
@@ -765,6 +761,7 @@ Body:
 | `DELETE /api/dashboard/work-analyses/<run_id>` | `expected_version` | 删除墓碑详情 |
 | `GET /api/dashboard/work-analyses/<run_id>/units` | 可选 `offset/limit` | `items,total,offset,limit` |
 | `GET /api/dashboard/work-analyses/<run_id>/report` | 无 query | 报告 envelope |
+| `POST /api/dashboard/work-analyses/<run_id>/claims/<report_claim_id>` | `expected_version,unreliable` | 更新后的报告 envelope |
 | `GET /api/dashboard/work-analyses/<run_id>/evidence/<evidence_id>` | 无 query | `evidence,jump` |
 
 集合路径另接受末尾 `/`。成功一律 HTTP 200（含创建、删除），返回 `{ok:true,data:...}`；端点失败返回 `{ok:false,error:<安全错误码>,code:<安全错误码>}`。认证/CSRF 中间件沿用共享错误形状，不保证有 `code`。
@@ -784,7 +781,7 @@ Body:
 - `selection` 只接受必填 `source_kind=novel|series`、正整数 `source_id`，可选 `publication_state=unknown|ongoing|completed`（默认 unknown）和 `ordered_novel_ids`（1–2048 个不重复正整数）。单篇的显式列表必须只含自己的 ID。系列顺序须覆盖当前归档章清单，不能通过删 ID 隐藏缺章；chapter `position` 从 0 开始。
 - `agent_id` 为正整数；`output_tokens` 为 1–1000000。预算必须完整给出 `request_limit` 1–512、`token_limit` 1–100000000、`active_seconds_limit` 30–14400，均不接受 bool/字符串/浮点数。
 - 四个 confirmations 为严格 bool；预览返回 `confirmation_requirements`，创建须满足全部必需确认。当前归档不能证明远端清单完整，须确认 archived-only；系列/显式章序还需顺序确认。`can_create` 仅检查已知下限，不保证预算足以完成所有调用。
-- `run_id/idempotency_key` 是小写 hex32；`preview_fingerprint/unit_id/evidence_id` 是小写 hex64。`expected_version` 是 1–2^63-1 的整数，公开控制严格 CAS，不自动改成新版本重发。
+- `run_id/idempotency_key` 是小写 hex32；`preview_fingerprint/unit_id/evidence_id/report_claim_id` 是小写 hex64。`expected_version` 是 1–2^63-1 的整数，公开控制严格 CAS，不自动改成新版本重发。
 - 写请求 JSON 对象上限 256 KiB；拒绝重复键、非有限数、数组/null、未知/缺失字段和非 JSON Content-Type。写请求、详情、报告、证据不接受 query；仅列表/单元接受 `offset`（默认 0，0–1000000）、`limit`（默认 20，1–100），重复参数、前导零和额外参数拒绝。
 
 ### 预览、幂等与恢复
@@ -801,11 +798,21 @@ Body:
 
 任务详情包含身份/时间、`version,status,reason,deleted`、源信息/标题/`manifest`、`manifest_fingerprint`、`report_stale/archive_outdated`、`budget`、`request_count/planned_tokens/active_seconds_debited`、`usage_summary,coverage,unit_counts,can_resume,has_report`；集合 items 省略 manifest。单元页返回类型/状态、范围和子单元数量、实际安全目标、用量等元数据，不返回 artifact 或原始 prompt。共享 job 参数仅 `run_id`，进度/日志仅安全 ID、计数与状态，不复制正文、引文、结论或报告；通用 AI 调用保持 `metadata_only`，不得用关键词清洗的 `keyword_compat` 保存本业务。
 
-报告 `schema_version=1` 包含 `run_id,manifest,coverage,artifact,units,usage_summary,created_at,published_at,report_stale,archive_outdated,synthesis_complete`；每个持久化单元 artifact 最多 128 KiB，完整报告 envelope 最多 1 MiB，超限拒绝而非截断。单条引文最多 240 Unicode code point、每结论最多 4 条、最终最多 128 个结论；不保存完整输入重放副本，有界短证据可能与极短章节重合。输入覆盖不等于原作完整或模型解释正确；未知用量不补零。
+报告 `schema_version=1` 包含 `run_id,manifest,coverage,artifact,units,usage_summary,created_at,published_at,report_stale,archive_outdated,synthesis_complete`；每个持久化单元 artifact 最多 128 KiB，持久报告最多 1 MiB，超限拒绝而非截断。GET/反馈响应增加纠错与用量元数据后上限为 1 MiB + 64 KiB，不因此修改原持久报告。单条引文最多 240 Unicode code point、每结论最多 4 条、最终最多 128 个结论；不保存完整输入重放副本，有界短证据可能与极短章节重合。输入覆盖不等于原作完整或模型解释正确；未知用量不补零。
 
 证据返回存储的 `evidence` 和 `jump:{novel_id,text_hash,start,end,context_start,context_text}`。服务器以正文 hash 和精确唯一子串核对；`start/end` 为 Unicode code point 左闭右开偏移，context 最多前后各 128 code point，不由浏览器 UTF-16 下标推算。已发布报告可带 `report_stale` 返回；源改变/删除后证据定位拒绝 410，不能拿旧偏移高亮新正文。同 hash 元数据刷新不旧版化报告，新增系列章只标 `archive_outdated`，不混入冻结清单。
 
 报告和证据默认折叠、文本节点渲染，不进 URL、localStorage、公开救援/FTS 或普通调用历史。删除撤权后旧 worker 不得复活业务产物；应用删除不承诺备份/WAL 物理清除。所有路径复用 Dashboard 认证；包括预览在内的写请求须 `X-CSRF-Token`。成功和拒绝均带 `Cache-Control: private, no-store, no-cache, max-age=0, must-revalidate`、`Pragma: no-cache`、`Expires: 0`。
+
+### 逐条结论反馈
+
+报告增加 `version,claim_feedback_revision,can_edit_claim_feedback,claim_feedback`；详情也返回 `claim_feedback_revision`。`claim_feedback` 按原 artifact 的 `claim_id` 索引，每项含 `report_claim_id,unreliable`，模型 artifact 保持原文。`report_claim_id` 绑定 run、不可变报告摘要和原结论身份，不能把另一份报告的标识拿来修改当前报告。
+
+提交严格对象 `{"expected_version":3,"unreliable":true}` 标记不可靠，false 恢复使用；布尔值不能用字符串/数字代替。只有已成功发布、未过期/删除且非 archive_outdated 的报告可编辑。版本冲突 409 `version_conflict`，报告未就绪 409 `report_not_ready`，来源过期 409 `source_changed`，结论不属于报告 404 `not_found`，报告墓碑 410 `work_deleted`。同版本同值操作不增版本；旧版本重试不自动取得新写权限。
+
+真实改变同时递增任务版本和单调的纠错 revision；标记与恢复都使依赖画像失效并取消当前启用层。画像输入排除不可靠结论和无引用证据，推荐不能继续消费被失效的画像。恢复不会复活旧预览或画像，需要重新预览/总结。反馈只写本地状态，不调用 Provider、不改正文或模型原始结论。
+
+写结果未知时页面保留原 CAS 请求，先核对当前报告；不能默默改成最新版本重发。迟到回执不得覆盖新版本或已删除状态。
 
 ### 状态码
 

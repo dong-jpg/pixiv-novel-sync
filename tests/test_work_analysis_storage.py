@@ -47,7 +47,7 @@ def test_work_schema_is_additive_repeatable_and_foreign_key_clean(db):
     }
     assert tables == {
         "work_analysis_runs", "work_analysis_sources",
-        "work_analysis_units", "work_analysis_requests",
+        "work_analysis_units", "work_analysis_requests", "work_analysis_claim_feedback",
     }
     assert dict(db.conn.execute("SELECT * FROM users WHERE user_id=1").fetchone()) == before
     assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []

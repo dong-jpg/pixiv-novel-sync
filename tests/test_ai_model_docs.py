@@ -19,9 +19,7 @@ UNIFIED_REQUIREMENTS = (
 AI_UNIFIED_REQUIREMENTS = (
     ROOT
     / "docs"
-    / "superpowers"
-    / "specs"
-    / "2026-07-27-ai-model-catalog-pools-unified-requirements.md"
+    / "AI_ROUTING_DESIGN.md"
 ).read_text(encoding="utf-8")
 
 
@@ -75,22 +73,24 @@ def test_frontend_docs_cover_model_routing_operations_and_privacy() -> None:
         assert text in FRONTEND_PAGES
 
 
-def test_unified_requirements_distinguish_historical_foundation_and_current_phase() -> None:
-    assert "`CURRENT` 历史模型路由 Task1-22 提供" in UNIFIED_REQUIREMENTS
-    assert "第二阶段仅扩展手动单作品内容报告" in UNIFIED_REQUIREMENTS
-    assert "完整多画像、偏好 SSE、推荐计划持久化和写作能力仍为 OUT" in UNIFIED_REQUIREMENTS
+def test_unified_requirements_distinguish_shared_routing_and_business_scope() -> None:
+    assert "`CURRENT` 共享基础提供" in UNIFIED_REQUIREMENTS
+    assert "作品分析与画像使用独立业务预算及检查点" in UNIFIED_REQUIREMENTS
+    assert "完整多画像、偏好 SSE、推荐计划持久化和 main 写作能力仍为 OUT" in UNIFIED_REQUIREMENTS
     assert "12.6 偏好学习、全库分析与推荐闭环" in UNIFIED_REQUIREMENTS
     assert "个人画像 AI 总结、全库/新增作品分析及推荐反馈闭环" in UNIFIED_REQUIREMENTS
     assert "第二阶段整书/系列 XP 分析 Agent、证据和推荐闭环仍未实现" not in UNIFIED_REQUIREMENTS
     assert "continue 保留409“任务类型暂不支持”" in UNIFIED_REQUIREMENTS
     assert "UI 无可执行继续按钮" in UNIFIED_REQUIREMENTS
-    assert "当前状态：第一阶段 Task 1-22 已完成" in AI_UNIFIED_REQUIREMENTS
+    for rule in ("metadata_only", "32 次物理请求", "首个正文", "expected_version", "不自动跨 Provider"):
+        assert rule in AI_UNIFIED_REQUIREMENTS
     assert "Task 4（有序池、后备图、版本 CAS）是当前开发入口" not in (
         UNIFIED_REQUIREMENTS
     )
     assert "代码处于 Task 4 起点" not in AI_UNIFIED_REQUIREMENTS
     assert "UNIFIED_PROJECT_REQUIREMENTS.md" in DOC_INDEX
-    assert "2026-07-27-ai-model-catalog-pools-unified-requirements.md" in DOC_INDEX
+    assert "AI_ROUTING_DESIGN.md" in DOC_INDEX
+    assert "IMPLEMENTATION_PLAN.md" in DOC_INDEX
 
 
 def test_only_router_provider_implementation_and_connection_test_call_provider() -> None:

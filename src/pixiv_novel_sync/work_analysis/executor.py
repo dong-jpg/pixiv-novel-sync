@@ -91,12 +91,15 @@ class WorkAnalysisExecutor:
             if child is None or child["status"] != "succeeded" or child["artifact"] is None:
                 raise WorkAnalysisError("graph_invalid", 409)
             children[child_id] = validate_artifact(child["artifact"], final=child["unit"]["is_final"])
-        db = self.db_factory()
-        try:
-            with db.read_transaction():
-                texts = read_source_texts(db.conn, state["manifest"])
-        finally:
-            db.close()
+        texts = {}
+        if unit["kind"] != "reduce":
+            novel_ids = {row["novel_id"] for row in unit["primary_ranges"] + unit["context_ranges"]}
+            db = self.db_factory()
+            try:
+                with db.read_transaction():
+                    texts = read_source_texts(db.conn, state["manifest"], novel_ids=novel_ids)
+            finally:
+                db.close()
         try:
             payload, block_map = materialize_unit(
                 state["manifest"], unit, texts, children,

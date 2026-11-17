@@ -111,7 +111,7 @@
       wa.selectedAgent = copy(row); wa.form.agent_id = String(row.agent_id);
       return true;
     }
-    async function read(scope, url, apply) {
+    async function read(scope, url, apply, rejected) {
       if (!live) return false;
       cancel(scope);
       const owner = {generation: ++generation, abort: new AbortController()};
@@ -122,7 +122,10 @@
         apply(value);
         return true;
       } catch (error) {
-        if (live && owners.get(scope) === owner && error.name !== 'AbortError') wa.readErrors[scope] = safeError(error);
+        if (live && owners.get(scope) === owner && error.name !== 'AbortError') {
+          wa.readErrors[scope] = safeError(error);
+          if (rejected) rejected(error);
+        }
         return false;
       } finally {
         if (live && owners.get(scope) === owner) { owners.delete(scope); wa.busy[scope] = false; }
@@ -209,6 +212,9 @@
       const result = await read('run', BASE + '/' + id, data => {
         if (wa.selectedId === id && data.run_id === id && (!wa.run || data.version >= wa.run.version)) {
           wa.run = data;
+          if (wa.report && Number.isSafeInteger(wa.report.version) && wa.report.version < data.version) {
+            cancel('report'); wa.report = null; wa.evidence = {};
+          }
           if (wa.pending && wa.pending.kind !== 'create' && wa.pending.runId === id &&
               data.version !== wa.pending.expectedVersion) wa.pending.canRetry = false;
           if (data.deleted) {
@@ -239,11 +245,37 @@
     }
     async function loadReport() {
       const id = wa.selectedId;
-      if (!wa.run || wa.run.deleted || !wa.run.has_report || !hash32(id)) return false;
+      if (!wa.run || wa.run.deleted || !wa.run.has_report || !hash32(id) ||
+          (wa.pending && wa.pending.kind === 'claim')) return false;
       wa.report = null; wa.evidence = {};
       return read('report', BASE + '/' + id + '/report', data => {
-        if (wa.selectedId === id) { wa.report = data; wa.evidence = {}; }
+        if (wa.selectedId === id && !wa.run.deleted &&
+            (!Number.isSafeInteger(data.version) || data.version >= wa.run.version)) {
+          wa.report = data; wa.evidence = {};
+          if (Number.isSafeInteger(data.version)) wa.run.version = data.version;
+        }
       });
+    }
+    function claimFeedbackAllowed(claimId) {
+      const report = wa.report, run = wa.run;
+      return live && !wa.pending && run && !run.deleted && run.status === 'succeeded' &&
+        !run.report_stale && !run.archive_outdated && report && report.run_id === wa.selectedId &&
+        report.version === run.version && report.can_edit_claim_feedback === true &&
+        report.claim_feedback && !!report.claim_feedback[claimId] &&
+        hash64(report.claim_feedback[claimId].report_claim_id);
+    }
+    async function setClaimFeedback(claimId, unreliable) {
+      if (!claimFeedbackAllowed(claimId) || typeof unreliable !== 'boolean') return false;
+      const feedback = wa.report.claim_feedback[claimId];
+      if (feedback.unreliable === unreliable) return false;
+      cancel('report');
+      wa.pending = {kind: 'claim', method: 'POST',
+        url: BASE + '/' + wa.selectedId + '/claims/' + feedback.report_claim_id,
+        runId: wa.selectedId, expectedVersion: wa.report.version, claimId,
+        reportClaimId: feedback.report_claim_id, unreliable,
+        body: JSON.stringify({expected_version: wa.report.version, unreliable}),
+        phase: 'ready', sending: false, canRetry: false};
+      return sendPending();
     }
     async function inspectEvidence(id) {
       const run = wa.selectedId;
@@ -268,6 +300,20 @@
     }
     function acceptWrite(operation, data) {
       wa.pending = null; wa.writeError = ''; wa.notice = '写入已确认。';
+      if (operation.kind === 'claim') {
+        cancelRunReads();
+        const current = wa.run;
+        if (!current || wa.selectedId !== operation.runId || current.deleted || current.version > data.version) {
+          wa.report = null; wa.evidence = {};
+          return;
+        }
+        wa.run = {...current, version: data.version, claim_feedback_revision: data.claim_feedback_revision,
+          report_stale: data.report_stale, archive_outdated: data.archive_outdated};
+        wa.report = data; wa.evidence = {};
+        wa.notice = operation.unreliable ? '已标记不可靠；该结论已从偏好来源排除，相关画像需要重新总结。' :
+          '已恢复使用；相关画像仍需重新预览和总结，恢复不代表已证实结论。';
+        return;
+      }
       // The receipt acknowledges the command, not necessarily the newest run state.
       const current = wa.run;
       const accepted = current && current.run_id === data.run_id &&
@@ -298,7 +344,11 @@
         } else {
           wa.pending = null; wa.writeError = safeError(error);
           if (operation.kind === 'create') invalidate();
-          else await refreshRun();
+          else {
+            if (operation.kind === 'claim') { cancel('report'); wa.report = null; wa.evidence = {}; }
+            await refreshRun();
+            if (operation.kind === 'claim') await loadReport();
+          }
         }
         return false;
       } finally {
@@ -335,6 +385,32 @@
       if (!live || !operation || operation.phase !== 'unknown' || operation.sending ||
           operation.kind === 'create' || wa.selectedId !== operation.runId) return false;
       operation.canRetry = false;
+      if (operation.kind === 'claim') {
+        return read('reconcile', BASE + '/' + operation.runId + '/report', data => {
+          if (wa.pending !== operation || operation.sending || wa.selectedId !== operation.runId ||
+              data.run_id !== operation.runId || !wa.run || wa.run.deleted) return;
+          if (data.version < Math.max(wa.run.version, operation.expectedVersion)) {
+            wa.notice = '读取返回较旧版本；原写入结果仍未知，请重新核对。'; return;
+          }
+          const feedback = data.claim_feedback && data.claim_feedback[operation.claimId];
+          wa.run.version = data.version; wa.report = data; wa.evidence = {};
+          if (data.version === operation.expectedVersion && data.can_edit_claim_feedback && feedback &&
+              feedback.report_claim_id === operation.reportClaimId) {
+            operation.canRetry = true; wa.notice = '读取确认版本未变化，可明确重试同一 CAS 请求。'; return;
+          }
+          cancelRunReads(); wa.pending = null;
+          const satisfied = feedback && feedback.report_claim_id === operation.reportClaimId &&
+            feedback.unreliable === operation.unreliable;
+          wa.notice = satisfied ? '当前结论状态已核对；原写入结果仍未知，未重复提交。' : '';
+          wa.writeError = satisfied ? '' : '结论或报告状态已经变化，请按当前状态重新选择。';
+        }, error => {
+          if ([404, 410].includes(error.status) && wa.pending === operation) {
+            wa.pending = null; wa.report = null; wa.evidence = {}; wa.units = [];
+            wa.writeError = '报告已删除或不可读取；已停止重试。';
+            refreshRun();
+          }
+        });
+      }
       return read('reconcile', BASE + '/' + operation.runId, data => {
         if (wa.pending !== operation || operation.phase !== 'unknown' || operation.sending ||
             wa.selectedId !== operation.runId || data.run_id !== operation.runId) return;
@@ -389,7 +465,8 @@
     async function mount() { await Promise.all([reloadAgents(), loadRuns()]); if (hash32(source.analysis_id)) await selectRun(source.analysis_id); }
     return {wa, currentAgent: Vue.computed(currentAgent), canStart: Vue.computed(canStart), chooseAgent,
       previewWork, createWork, moveChapter, reloadAgents, loadRuns, selectRun, refreshRun, loadUnits,
-      loadReport, inspectEvidence, controlAllowed, control, retryUnknown, reconcileWrite, evidenceHref,
+      loadReport, inspectEvidence, claimFeedbackAllowed, setClaimFeedback,
+      controlAllowed, control, retryUnknown, reconcileWrite, evidenceHref,
       usageText, coverageText, invalidate, mount, dispose, visibility, beforeUnload, suspend, restore};
   }
   function useReaderEvidence(Vue, novel, novelId) {

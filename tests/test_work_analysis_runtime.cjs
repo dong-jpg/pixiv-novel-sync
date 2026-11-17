@@ -479,6 +479,132 @@ const sensitiveReads = [
     value: {evidence: {novel_id: 101, text_hash: HASH, start: 0, end: 5, quote: 'QUOTE'},
       jump: {novel_id: 101, text_hash: HASH, start: 0, end: 5, context_start: 0, context_text: 'QUOTE'}}},
 ];
+const REPORT_CLAIM = 'd'.repeat(64);
+function claimReport(version = 1, unreliable = false) {
+  return {run_id: RUN, version, claim_feedback_revision: version - 1,
+    can_edit_claim_feedback: true, report_stale: false, archive_outdated: false,
+    artifact: {summary: 'MODEL_ORIGINAL', claims: [{claim_id: UNIT, statement: 'MODEL_ORIGINAL'}], evidence: {}},
+    claim_feedback: {[UNIT]: {report_claim_id: REPORT_CLAIM, unreliable}}};
+}
+function seedClaim(f) {
+  f.controller.wa.selectedId = RUN;
+  f.controller.wa.run = run({status: 'succeeded', has_report: true});
+  f.controller.wa.report = claimReport();
+}
+test('claim mark and restore send exact report-bound CAS without changing model text', async () => {
+  const f = fixture(); seedClaim(f);
+  let version = 1, unreliable = false;
+  f.handle((url, options) => {
+    if (url === BASE + '/' + RUN + '/claims/' + REPORT_CLAIM) {
+      const body = JSON.parse(options.body);
+      assert.deepEqual(body, {expected_version: version, unreliable: !unreliable});
+      version++; unreliable = body.unreliable;
+      return claimReport(version, unreliable);
+    }
+    if (url === BASE + '/' + RUN) return run({version, status: 'succeeded', has_report: true});
+    return f.answer(url, options);
+  });
+  const original = clone(f.controller.wa.report.artifact);
+  assert.equal(await f.controller.setClaimFeedback(UNIT, true), true);
+  assert.equal(f.controller.wa.report.claim_feedback[UNIT].unreliable, true);
+  assert.equal(await f.controller.setClaimFeedback(UNIT, false), true);
+  assert.equal(f.controller.wa.report.claim_feedback[UNIT].unreliable, false);
+  assert.deepEqual(clone(f.controller.wa.report.artifact), original);
+  assert.equal(f.controller.wa.report.claim_feedback_revision, 2);
+  assert.equal(f.writes().length, 2);
+  assert.equal(await f.controller.setClaimFeedback(UNIT, false), false);
+});
+for (const applied of [false, true]) {
+  test(`unknown claim ${applied ? 'applied' : 'not applied'} reconciles without automatic replay`, async () => {
+    const f = fixture(); seedClaim(f);
+    let writes = 0;
+    f.handle((url, options) => {
+      if (options.method === 'POST') { writes++; throw new Error('lost_response'); }
+      if (url.endsWith('/report')) return claimReport(applied ? 2 : 1, applied);
+      return f.answer(url, options);
+    });
+    assert.equal(await f.controller.setClaimFeedback(UNIT, true), false);
+    assert.equal(f.controller.wa.pending.phase, 'unknown');
+    assert.equal(await f.controller.setClaimFeedback(UNIT, false), false);
+    assert.equal(await f.controller.retryUnknown(), false);
+    assert.equal(await f.controller.reconcileWrite(), true);
+    assert.equal(writes, 1);
+    if (applied) {
+      assert.equal(f.controller.wa.pending, null);
+      assert.equal(f.controller.wa.report.claim_feedback[UNIT].unreliable, true);
+      assert.match(f.controller.wa.notice, /原写入结果仍未知/);
+    } else {
+      assert.equal(f.controller.wa.pending.canRetry, true);
+      await f.controller.retryUnknown();
+      assert.equal(writes, 2);
+      assert.equal(f.writes()[0].body, f.writes()[1].body);
+    }
+  });
+}
+for (const deleted of [false, true]) {
+  test(`late claim receipt cannot overwrite newer ${deleted ? 'deleted' : 'restored'} state`, async () => {
+    const f = fixture(), held = later(); seedClaim(f);
+    f.handle((url, options) => {
+      if (options.method === 'POST') return held.promise;
+      if (url === BASE + '/' + RUN) return run({version: 3, status: 'succeeded', has_report: true, deleted});
+      if (url.endsWith('/report')) return claimReport(3, false);
+      return f.answer(url, options);
+    });
+    const pending = f.controller.setClaimFeedback(UNIT, true);
+    await f.controller.refreshRun();
+    assert.equal(f.controller.wa.report, null);
+    held.resolve(claimReport(2, true));
+    assert.equal(await pending, true);
+    assert.equal(f.controller.wa.run.version, 3);
+    assert.equal(f.controller.wa.run.deleted, deleted);
+    assert.equal(f.controller.wa.report, null);
+    assert.equal(f.controller.wa.pending, null);
+    if (!deleted) {
+      await f.controller.loadReport();
+      assert.equal(f.controller.wa.report.claim_feedback[UNIT].unreliable, false);
+    }
+  });
+}
+test('claim conflict reloads current metadata and unknown deleted report cannot trap pending write', async () => {
+  for (const status of [409, null]) {
+    const f = fixture(); seedClaim(f);
+    f.handle((url, options) => {
+      if (options.method === 'POST') throw Object.assign(new Error('failure'), {status});
+      if (url === BASE + '/' + RUN) return run({version: 2, status: 'succeeded', has_report: true, deleted: status === null});
+      if (url.endsWith('/report')) {
+        if (status === null) throw Object.assign(new Error('work_deleted'), {status: 410});
+        return claimReport(2, true);
+      }
+      return f.answer(url, options);
+    });
+    await f.controller.setClaimFeedback(UNIT, true);
+    if (status === null) {
+      await f.controller.reconcileWrite(); await tick();
+      assert.equal(f.controller.wa.run.deleted, true);
+      assert.equal(f.controller.wa.report, null);
+    } else {
+      assert.equal(f.controller.wa.report.version, 2);
+      assert.equal(f.controller.wa.report.claim_feedback[UNIT].unreliable, true);
+    }
+    assert.equal(f.controller.wa.pending, null);
+    assert.equal(f.writes().length, 1);
+  }
+});
+test('claim actions reject stale reports and delayed report reads cannot roll back latest correction', async () => {
+  const f = fixture(), held = later(); seedClaim(f);
+  f.handle(() => held.promise);
+  const reading = f.controller.loadReport();
+  f.controller.wa.run.version = 3;
+  held.resolve(claimReport(1, false));
+  await reading;
+  assert.equal(f.controller.wa.report, null);
+  f.controller.wa.report = claimReport();
+  assert.equal(await f.controller.setClaimFeedback(UNIT, true), false);
+  f.controller.wa.report = claimReport(3);
+  f.controller.wa.run.report_stale = true;
+  assert.equal(await f.controller.setClaimFeedback(UNIT, true), false);
+  assert.equal(f.writes().length, 0);
+});
 function seedSensitive(controller) {
   controller.wa.report = clone(sensitiveReads[0].value);
   controller.wa.evidence = {[HASH]: {parts: {quote: 'OLD_QUOTE'}}};

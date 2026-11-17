@@ -116,6 +116,11 @@ def register_work_analysis_routes(app, service):
         query()
         return current().report(run_id)
 
+    @app.post(BASE + "/<run_id>/claims/<report_claim_id>")
+    @endpoint
+    def work_analysis_claim_feedback(run_id, report_claim_id):
+        return current().claim_feedback(run_id, report_claim_id, body())
+
     @app.get(BASE + "/<run_id>/evidence/<evidence_id>")
     @endpoint
     def work_analysis_evidence(run_id, evidence_id):
