@@ -201,6 +201,247 @@ def test_feedback_reversal_and_report_delete_stop_recommendation_influence(env):
     assert env.learning.detail(run["run_id"])["result"] is None
 
 
+def correct_claim(env, unreliable, *, report=None):
+    report = report or env.db.get_work_analysis_report(env.run_id)
+    claim = next(iter(report["claim_feedback"].values()))
+    return env.db.set_work_analysis_claim_feedback(
+        env.run_id, claim["report_claim_id"], unreliable, report["version"],
+    )
+
+
+def test_claim_feedback_preserves_model_output_and_changes_preference_identity_on_restore(env):
+    run = create_summary(env)
+    execute(env, run["run_id"])
+    detail = env.learning.detail(run["run_id"])
+    env.learning.activate(run["run_id"], detail["version"])
+    raw = env.db.conn.execute("SELECT report_json FROM work_analysis_runs WHERE run_id=?", (env.run_id,)).fetchone()[0]
+    original = env.db.get_work_analysis_report(env.run_id)
+    original_source = capture_sources(env.db.conn)
+    preview = env.learning.preview(request_for(env))
+    marked = correct_claim(env, True)
+    assert marked["claim_feedback_revision"] == 1 and marked["version"] == original["version"] + 1
+    assert marked["artifact"] == original["artifact"]
+    filtered = capture_sources(env.db.conn)
+    assert filtered["sources"][0]["claims"] == [] and filtered["sources"][0]["evidence"] == []
+    assert filtered["source_fingerprint"] != original_source["source_fingerprint"]
+    assert env.db.get_preference_learning_signals()["weights"] == {}
+    assert env.learning.detail(run["run_id"])["status"] == "invalidated"
+    assert env.learning.detail(run["run_id"])["result"] is None
+    assert env.learning.state()["active_run_id"] is None
+    # A retried CAS with a stale version cannot toggle a newer correction.
+    with pytest.raises(WorkAnalysisError, match="version_conflict"):
+        correct_claim(env, True, report=original)
+    assert correct_claim(env, True)["claim_feedback_revision"] == 1
+    restored = correct_claim(env, False)
+    assert restored["claim_feedback_revision"] == 2 and restored["version"] == marked["version"] + 1
+    current_source = capture_sources(env.db.conn)
+    assert current_source["sources"][0]["claims"] == original_source["sources"][0]["claims"]
+    assert current_source["source_fingerprint"] not in {original_source["source_fingerprint"], filtered["source_fingerprint"]}
+    with pytest.raises(WorkAnalysisError, match="stale_preview"):
+        env.learning.create({**request_for(env), "preview_fingerprint": preview["preview_fingerprint"],
+                             "idempotency_key": "old-before-correction"})
+    signals = env.db.get_preference_learning_signals()
+    assert signals["weights"] == {"Synthetic theme": 1} and signals["active_run_id"] is None
+    assert env.learning.detail(run["run_id"])["status"] == "invalidated"
+    assert env.db.conn.execute("SELECT report_json FROM work_analysis_runs WHERE run_id=?", (env.run_id,)).fetchone()[0] == raw
+    assert len(env.summary_calls) == 1  # Correction, restoration and stale preview never call the Provider.
+
+
+@pytest.mark.parametrize("phase", ["before_summary_guard", "before_summary"])
+def test_claim_feedback_change_and_restore_revoke_inflight_summary(env, phase):
+    run = create_summary(env)
+
+    def correct_and_restore():
+        correct_claim(env, True)
+        correct_claim(env, False)
+
+    setattr(env, phase, correct_and_restore)
+    with pytest.raises((RuntimeError, InterruptedError)):
+        execute(env, run["run_id"])
+    detail = env.learning.detail(run["run_id"])
+    assert detail["status"] == "invalidated" and detail["result"] is None and not detail["active"]
+    assert detail["usage"]["network_request_count"] == (phase == "before_summary")
+
+
+def test_claim_feedback_is_bound_to_report_and_deleted_with_report(env):
+    original = env.db.get_work_analysis_report(env.run_id)
+    model_claim_id, state = next(iter(original["claim_feedback"].items()))
+    for false_id in (model_claim_id, "f" * 64):
+        with pytest.raises(WorkAnalysisError, match="not_found"):
+            env.db.set_work_analysis_claim_feedback(env.run_id, false_id, True, original["version"])
+    # Even a byte-for-byte copy of the report has a different externally usable claim ID.
+    copied = dict(env.db.conn.execute("SELECT * FROM work_analysis_runs WHERE run_id=?", (env.run_id,)).fetchone())
+    copied.update(run_id="f" * 32, idempotency_key_hash="e" * 64,
+                  shared_job_id=None, shared_log_id=None, shared_epoch=None)
+    with env.db.transaction() as conn:
+        conn.execute("INSERT INTO work_analysis_runs(" + ",".join(copied) + ") VALUES(" +
+                     ",".join("?" for _ in copied) + ")", tuple(copied.values()))
+    copy_report = env.db.get_work_analysis_report(copied["run_id"])
+    assert copy_report["claim_feedback"][model_claim_id]["report_claim_id"] != state["report_claim_id"]
+    with pytest.raises(WorkAnalysisError, match="not_found"):
+        env.db.set_work_analysis_claim_feedback(copied["run_id"], state["report_claim_id"], True, copied["version"])
+    marked = correct_claim(env, True)
+    env.db.request_work_analysis_stop(env.run_id, "delete", marked["version"])
+    assert not env.db.conn.execute("SELECT * FROM work_analysis_claim_feedback WHERE run_id=?", (env.run_id,)).fetchall()
+    with pytest.raises(WorkAnalysisError, match="work_deleted"):
+        correct_claim(env, False, report=marked)
+    copy_claim = copy_report["claim_feedback"][model_claim_id]["report_claim_id"]
+    env.db.set_work_analysis_claim_feedback(copied["run_id"], copy_claim, True, copy_report["version"])
+    with env.db.transaction() as conn:
+        conn.execute("DELETE FROM work_analysis_runs WHERE run_id=?", (copied["run_id"],))
+    assert not env.db.conn.execute("SELECT * FROM work_analysis_claim_feedback").fetchall()
+    assert env.db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_claim_feedback_cas_serializes_concurrent_writes_and_source_change(env):
+    report = env.db.get_work_analysis_report(env.run_id)
+    claim_id = next(iter(report["claim_feedback"].values()))["report_claim_id"]
+    barrier = Barrier(2)
+
+    def mark():
+        db = env.db_factory()
+        try:
+            barrier.wait(timeout=5)
+            try:
+                return db.set_work_analysis_claim_feedback(env.run_id, claim_id, True, report["version"])["version"]
+            except WorkAnalysisError as exc:
+                return exc.code
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: mark(), range(2)))
+    assert results.count(report["version"] + 1) == 1 and results.count("version_conflict") == 1
+    with env.db.transaction() as conn:
+        conn.execute("UPDATE novel_texts SET text_raw=text_raw || 'changed' WHERE novel_id=1")
+    changed = env.db.get_work_analysis_report(env.run_id)
+    assert changed["can_edit_claim_feedback"] is False
+    with pytest.raises(WorkAnalysisError, match="source_changed"):
+        correct_claim(env, False, report=changed)
+    assert env.db.get_work_analysis_report(env.run_id)["claim_feedback_revision"] == 1
+
+
+def test_claim_feedback_and_report_deletion_share_one_cas_order(env):
+    report = env.db.get_work_analysis_report(env.run_id)
+    claim_id = next(iter(report["claim_feedback"].values()))["report_claim_id"]
+    barrier = Barrier(2)
+
+    def act(action):
+        db = env.db_factory()
+        try:
+            barrier.wait(timeout=5)
+            try:
+                if action == "delete":
+                    db.request_work_analysis_stop(env.run_id, action, report["version"])
+                else:
+                    db.set_work_analysis_claim_feedback(env.run_id, claim_id, True, report["version"])
+                return action
+            except WorkAnalysisError as exc:
+                return exc.code
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = set(pool.map(act, ("delete", "mark")))
+    assert results in ({"delete", "work_deleted"}, {"mark", "version_conflict"})
+    current = env.db.get_work_analysis(env.run_id)
+    if not current["deleted"]:
+        env.db.request_work_analysis_stop(env.run_id, "delete", current["version"])
+    assert not env.db.conn.execute("SELECT * FROM work_analysis_claim_feedback").fetchall()
+
+
+def test_claim_feedback_migrates_existing_reports_and_keeps_unrelated_writing_data(env):
+    original = env.db.get_work_analysis_report(env.run_id)["artifact"]
+    with env.db.transaction() as conn:
+        conn.execute("CREATE TABLE fixture_writing_data(value TEXT NOT NULL)")
+        conn.execute("INSERT INTO fixture_writing_data VALUES('preserved')")
+        conn.execute("DROP TRIGGER preference_report_claim_feedback")
+        conn.execute("ALTER TABLE work_analysis_runs DROP COLUMN claim_feedback_revision")
+    env.db.init_schema()
+    env.db.init_schema()
+    report = env.db.get_work_analysis_report(env.run_id)
+    assert report["artifact"] == original and report["claim_feedback_revision"] == 0
+    assert env.db.conn.execute("SELECT value FROM fixture_writing_data").fetchone()[0] == "preserved"
+    corrected = correct_claim(env, True)
+    reopened = env.db_factory()
+    try:
+        assert reopened.get_work_analysis_report(env.run_id)["claim_feedback"] == corrected["claim_feedback"]
+        assert reopened.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        reopened.close()
+
+
+def test_claim_feedback_zero_revision_preserves_paid_legacy_profile_and_preview_identity(env):
+    from pixiv_novel_sync.work_analysis.contracts import fingerprint
+
+    run = create_summary(env)
+    captured = capture_sources(env.db.conn)
+    source = captured["sources"][0]
+    legacy_identity = [{"source_kind": source["source_kind"], "source_id": source["source_id"],
+                        "reaction": source["reaction"], "note": source["note"], "version": source["feedback_version"],
+                        "report_run_id": source["report_run_id"], "report_hash": source["report_hash"]}]
+    assert captured["source_fingerprint"] == fingerprint(legacy_identity)
+    old_sources = [{key: value for key, value in entry.items() if key != "claim_feedback_revision"}
+                   for entry in captured["sources"]]
+    with env.db.transaction() as conn:
+        conn.execute("UPDATE preference_summary_runs SET sources_json=?,source_fingerprint=? WHERE run_id=?",
+                     (json.dumps(old_sources), fingerprint(legacy_identity), run["run_id"]))
+    execute(env, run["run_id"])
+    env.learning.activate(run["run_id"], env.learning.detail(run["run_id"])["version"])
+    payload = request_for(env)
+    preview = env.learning.preview(payload)
+    env.db.init_schema()
+    assert not env.learning.detail(run["run_id"])["stale"]
+    assert env.db.get_preference_learning_signals()["active_run_id"] == run["run_id"]
+    assert env.learning.create({**payload, "preview_fingerprint": preview["preview_fingerprint"],
+                                "idempotency_key": "legacy-preview-still-current"})["status"] == "queued"
+    correct_claim(env, True)
+    correct_claim(env, False)
+    assert capture_sources(env.db.conn)["source_fingerprint"] != fingerprint(legacy_identity)
+    assert env.db.get_preference_learning_signals()["active_run_id"] is None
+
+
+def test_claim_feedback_keeps_a_full_size_published_report_readable_and_correctable(env):
+    from pixiv_novel_sync.storage.work_analysis.queries import REPORT_RESPONSE_MAX_BYTES
+    from pixiv_novel_sync.work_analysis.artifacts import claim_identity, validate_artifact
+    from pixiv_novel_sync.work_analysis.contracts import canonical_bytes, fingerprint
+    from pixiv_novel_sync.work_analysis.manifest import public_preview_identity, validate_manifest
+
+    report = json.loads(env.db.conn.execute(
+        "SELECT report_json FROM work_analysis_runs WHERE run_id=?", (env.run_id,),
+    ).fetchone()[0])
+    artifact = report["artifact"]
+    original_claim = artifact["claims"][0]
+    artifact["claims"] = []
+    for index in range(128):
+        claim = {**original_claim, "label": f"Synthetic feature {index}"}
+        claim["claim_id"] = claim_identity(artifact["unit_id"], claim)
+        artifact["claims"].append(claim)
+    validate_artifact(artifact, final=True)
+    manifest = report["manifest"]
+    manifest["chapters"].extend({"novel_id": index + 1, "position": index, "title": "", "text_hash": None,
+                                  "chars": 0, "utf8_bytes": 0, "fetched_at": None, "has_text": False}
+                                 for index in range(1, 300))
+    remaining = 1024 * 1024 - len(canonical_bytes(report))
+    for chapter in manifest["chapters"][1:]:
+        added = min(4096, remaining)
+        chapter["title"] = "t" * added
+        remaining -= added
+    assert remaining == 0
+    manifest["manifest_fingerprint"] = fingerprint(public_preview_identity(manifest))
+    validate_manifest(manifest)
+    stored = canonical_bytes(report).decode("utf-8")
+    assert len(stored.encode("utf-8")) == 1024 * 1024
+    with env.db.transaction() as conn:
+        conn.execute("UPDATE work_analysis_runs SET report_json=? WHERE run_id=?", (stored, env.run_id))
+    for value in (None, True, False):
+        result = env.db.get_work_analysis_report(env.run_id) if value is None else correct_claim(env, value)
+        assert result["artifact"] == artifact
+        assert 1024 * 1024 < len(canonical_bytes(result)) <= REPORT_RESPONSE_MAX_BYTES
+    assert env.db.get_work_analysis_report(env.run_id)["claim_feedback_revision"] == 2
+    assert env.db.conn.execute("SELECT report_json FROM work_analysis_runs WHERE run_id=?", (env.run_id,)).fetchone()[0] == stored
+
+
 @pytest.mark.parametrize("action", ["cancel", "delete", "feedback"])
 def test_inflight_control_prevents_late_publication(env, action):
     run = create_summary(env)

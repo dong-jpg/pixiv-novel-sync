@@ -33,6 +33,11 @@ def claim_identity(unit_id, value):
     })
 
 
+def report_claim_identity(run_id, report_hash, claim_id):
+    """Bind a validated model claim to one immutable published report."""
+    return fingerprint({"run_id": run_id, "report_hash": report_hash, "claim_id": claim_id})
+
+
 def _list(value, maximum):
     if not isinstance(value, list) or len(value) > maximum:
         raise WorkAnalysisError("artifact_invalid")

@@ -191,10 +191,17 @@ def capture_manifest(conn, selection):
     return validate_manifest(manifest), texts
 
 
-def read_source_texts(conn, manifest):
+def read_source_texts(conn, manifest, *, novel_ids=None):
+    # 有限读取只校验选中章节；发送和持久化边界仍须校验整个运行的源身份。
     _require_transaction(conn)
     manifest = validate_manifest(manifest)
-    ids = [row["novel_id"] for row in manifest["chapters"]]
+    chapters = manifest["chapters"]
+    if novel_ids is not None:
+        selected = {strict_int(value, 1, 2**63 - 1) for value in novel_ids}
+        if not selected <= {row["novel_id"] for row in chapters}:
+            raise WorkAnalysisError("invalid_plan", 409)
+        chapters = [row for row in chapters if row["novel_id"] in selected]
+    ids = [row["novel_id"] for row in chapters]
     total = 0
     for start in range(0, len(ids), 256):
         batch = ids[start:start + 256]
@@ -208,7 +215,7 @@ def read_source_texts(conn, manifest):
         texts, metadata = _fetch_texts(conn, ids)
     except WorkAnalysisError:
         raise WorkAnalysisError("source_changed", 409) from None
-    for row in manifest["chapters"]:
+    for row in chapters:
         current = metadata.get(row["novel_id"])
         if current is None or current[:3] != (row["text_hash"], row["chars"], row["utf8_bytes"]):
             raise WorkAnalysisError("source_changed", 409)

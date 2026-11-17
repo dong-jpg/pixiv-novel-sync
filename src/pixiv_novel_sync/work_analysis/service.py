@@ -199,6 +199,14 @@ class WorkAnalysisService:
     def report(self, run_id):
         return self._read("get_work_analysis_report", checked_id(run_id))
 
+    def claim_feedback(self, run_id, report_claim_id, payload):
+        data = exact_object(payload, {"expected_version", "unreliable"})
+        if type(data["unreliable"]) is not bool:
+            raise WorkAnalysisError("invalid_request")
+        return self._read("set_work_analysis_claim_feedback", checked_id(run_id),
+                          checked_id(report_claim_id, 64), data["unreliable"],
+                          strict_integer(data["expected_version"], 1, 2**63 - 1))
+
     def evidence(self, run_id, evidence_id):
         return self._read("get_work_analysis_evidence", checked_id(run_id), checked_id(evidence_id, 64))
 

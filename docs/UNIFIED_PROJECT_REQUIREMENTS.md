@@ -1,19 +1,10 @@
 # Pixiv Novel Sync 统一项目需求规格
 
-> 本轮两分支整改与最新验证统一记录在 [项目现状](STATUS.md)；历史审计保留修复前证据，不是当前失败列表。
-
-> 版本：v1.1（文档整合与状态校准版）
-> 整合日期：2026-07-28
-> 状态更新：2026-11-12（用户要求扩展个人画像、全库自动分析和推荐闭环，见 §12.6；版本、测试与发布进度统一见 [项目现状](STATUS.md)，实现、整阶段验收与部署分开记录）。2026-09-15 AI 写作 / 成人润色需求（第 10.3、11、13 节）随模块移至 `ai-writing` 分支，本文件保留此分支的要求；main 不提供写作。
-> 项目：Pixiv Novel Sync
-> 文档性质：需求基线、现行契约索引、状态与来源追溯
-> 覆盖范围：整合输入为 56 份正式 Markdown 与 23 份补充 Markdown（共 79 份，不含本文）
+更新：2026-11-17。本文定义有效需求和范围；当前完成度与验证见 [项目现状](STATUS.md)，执行任务见 [实施计划](IMPLEMENTATION_PLAN.md)。main 包含书库、作品分析、个人偏好学习和远程执行基础；ai-writing 继承 main 并增加写作与成人润色。
 
 ## 1. 文档定位
 
-本文件把项目入口、功能需求、前端契约、审计报告、设计规格、实施计划、任务 brief/report 和历史归档中的有效要求合并为一个可检索的基线。它同时回答四个问题：系统必须提供什么、必须遵守哪些边界、哪些能力已经落地、后续应按什么顺序补齐。
-
-本文不是把所有旧文字直接拼接。重复要求只保留一份；已替代或已经证明过时的方案保留在 §1.3、第 19 节及历史材料中；仅作为历史记录的报告不重新变成现行开发任务。
+本文只保留系统必须提供的能力、必须遵守的边界和明确非目标。操作、实现设计、API 字段和开发任务由各自文档维护，避免把旧计划勾选或历史报告当作当前事实。
 
 ### 1.1 需求状态标记
 
@@ -21,7 +12,7 @@
 |------|------|
 | `MUST` | 已确认的目标要求，后续实现必须满足 |
 | `CURRENT` | 代码、测试或当前 API 契约已经提供的行为 |
-| `DONE` | 有提交、测试或完成报告证明已落地 |
+| `DONE` | 有代码和相应测试证明已落地 |
 | `PARTIAL` | 核心能力存在，但仍有明确缺口 |
 | `PLANNED` | 已确认设计或计划，尚未证明完整落地 |
 | `HISTORICAL` | 归档阶段要求，只作为背景或继承约束 |
@@ -33,13 +24,13 @@
 当文档互相矛盾时，按下面两条链分别判断：
 
 1. **当前事实链**：代码与测试 > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md`、`docs/library-os-style-guide.md` > `CLAUDE.md`。
-2. **目标需求链**：最新已确认的统一需求 > 最新设计规格 > 对应实施计划和任务报告 > 旧计划与归档报告。
+2. **目标需求链**：用户最新明确要求 > 本统一需求 > 当前设计 > 实施计划。
 
-`docs/INDEX.md` 认定 `API_COMPLETE.md` 和 `KNOWLEDGE_GRAPH.md` 是历史快照；它们可以帮助理解演进，但不能覆盖当前接口或数据结构。无法判定的冲突必须保留来源并标记为“待核实”，不能静默选择。
+文档发生冲突时核对实现并修正文档，未验证事实标记为待核实。旧报告、旧 API 快照和已执行计划已移出当前树，历史可通过 Git 查询。
 
-### 1.3 2026-09-14 明确不做
+### 1.3 范围与明确非目标
 
-下列能力出现在旧计划或审计缺口里。2026-11-12 用户明确扩展个人画像、全库自动分析及推荐闭环；其余 OUT 决策继续保留，不据旧计划恢复无关功能。
+个人画像、全库自动分析及推荐闭环已经纳入当前范围。下列非目标继续保留，不据旧计划恢复无关功能。
 
 | 项 | 决定 |
 |---|---|
@@ -51,9 +42,8 @@
 | 4593 条性能夹具、`verify_rescue_performance.py` | `OUT`。 |
 | task_logs owner lease、seen-cursor、trash manifest 启动重放 | `OUT`。取消和垃圾箱回滚按现有水位与事务做。 |
 | Cloudflare 现网证书、48 小时生产观察 | `OUT`。不在代码任务里。 |
-| 2026-08-28 吞吐计划 | `SUPERSEDED`。已拆成 phase 1–3，由后续提交覆盖。 |
 
-2026-11-10 第二阶段新增用户明确选择的已归档作品级内容报告、父级累计预算与业务检查点（§12.5）。2026-11-12 在此基础上增加个人画像 AI 总结、全库/新增作品分析及推荐反馈闭环（§12.6）。完整多画像、偏好 SSE、推荐计划持久化仍为 OUT；写作能力由本 ai-writing 分支提供；作品和画像的业务所有权不恢复旧 task_logs owner lease 工作流。
+作品级内容报告、父级累计预算与业务检查点见 §12.5；个人画像 AI 总结、全库/新增作品分析及推荐反馈闭环见 §12.6。完整多画像、偏好 SSE、推荐计划持久化和 main 写作能力仍为 OUT；作品和画像的业务所有权不恢复旧 task_logs owner lease 工作流。
 
 ## 2. 产品目标与用户边界
 
@@ -101,9 +91,9 @@
 
 ### 4.2 Web 安全
 
-- `MUST` 已配置 Dashboard token 的部署使用会话和 CSRF；不可信 `X-Forwarded-For` 不得用于伪造本机请求。无 token 的纯本机模式保留现有 CSRF 例外，但该例外不能通过代理扩展到远程来源。
+- `MUST` 已配置 Dashboard token 的部署使用持久会话和 CSRF；无 token 的纯本机模式也校验 Host 和 CSRF。不可信 `X-Forwarded-For` 不得用于伪造本机请求。
 - `MUST` 生产反向代理必须显式配置可信边界；无 token 的本机模式不应被描述为公网安全模式。
-- `MUST` 除上述纯本机兼容例外外，所有可变 API 统一校验认证、CSRF、参数类型、资源归属和路径边界。
+- `MUST` Dashboard 的所有可变 API 校验适用认证、CSRF、参数类型、资源归属和路径边界；救援/worker 使用各自独立凭据协议，不能把其豁免扩展到 Dashboard。
 - `MUST` Provider 出站请求复用 SSRF、DNS/IP 固定、Host/SNI、证书校验和禁止重定向策略，不让凭据跟随重定向。
 
 ## 5. Pixiv 同步与归档
@@ -287,7 +277,7 @@
 
 ### 12.1 目标和兼容性
 
-2026-11-03 局部替代：AI 设置/统一文本调用第一阶段以 [批准规格](superpowers/specs/2026-10-31-ai-settings-and-invocation-design.md) 为准；保留 Python3.10+、requests/Flask/SQLite、无独立前端构建器。原 Provider/Agent 数值和默认值不自动升为1M。2026-11-10 第二阶段仅扩展手动单作品内容报告、全文覆盖与短证据、父级预算和检查点恢复；2026-11-12 扩展个人画像、全库自动分析及推荐闭环。实际状态见 [项目现状](STATUS.md)，不因计划或局部测试而标为 DONE。
+共享 AI 以 [AI 调用设计](AI_ROUTING_DESIGN.md) 为准，保留 Python3.10+、requests/Flask/SQLite 和无独立前端构建器。原 Provider/Agent 数值和默认值不自动升为1M。作品分析与画像使用独立业务预算及检查点，不能把通用路由继续等同业务恢复。实际状态见 [项目现状](STATUS.md)。
 
 - `MUST` Provider 可安全发现并同步结构化模型目录，用户可建立有序 primary/secondary/grok/custom 模型池、后备池和 Agent 绑定。
 - `MUST` 既有固定 Agent 自动迁移为 `binding_type=fixed`；ID、Provider、模型、Prompt、参数、启用状态和既有固定调用语义不变。
@@ -319,12 +309,12 @@
 - `MUST` job owner、lease、heartbeat、generation 和终态使用 CAS；stale job 只回收过期租约，不能误杀其他进程的有效任务。
 - `MUST` Provider 同步支持 queued/running/needs_empty_confirmation/succeeded/failed/cancelled，空目录必须二次确认；同步 operation 保存最小状态，调度器按 `sync.task_log_retention_days` 清理，默认 14 天；直接调用清理函数而不传天数时，参数默认仍是 3 天。
 - `MUST` 单页同步响应最多 4 MiB、单次最多 20 MiB、最多 100 页和 5,000 个模型；同步总超时 10 分钟；复用现有 SSRF/DNS/Host-SNI/禁重定向/脱敏。
-- `CURRENT` 历史模型路由 Task1-22 提供 Schema、目录同步、池图/CAS、Router和审计基础；2026-11 AI设置/调用重构的实际提交、全量回归与浏览器/外部验收见 [项目现状](STATUS.md)，不以历史“手工续接”完成描述 main 业务可用性。
+- `CURRENT` 共享基础提供 Schema、目录同步、池图/CAS、Router、用量与诊断；业务继续能力由具体处理器决定，不以底层 API 存在声明 main 可以续写。
 - `OUT` 第一阶段不实现跨任务健康计数、冷却、权重轮询、成本排序和后台定时目录刷新。
 
 ### 12.5 手动作品分析（第二阶段局部扩展）
 
-以 [作品分析规格](superpowers/specs/2026-11-05-work-xp-analysis-design.md) 为约束，[前端 API 契约](frontend-api-contract.md#work-analysis-apis) 为接口事实源；以下 CURRENT 表示已有分支代码，不等于整阶段验收或发布完成。
+以 [作品分析设计](WORK_ANALYSIS_DESIGN.md) 为约束，[前端 API 契约](frontend-api-contract.md#work-analysis-apis) 为接口事实源；CURRENT 表示已有代码，不等于真实模型、手机或生产验收完成。
 
 - `CURRENT` `/dashboard/preferences?view=work-analysis` 是原偏好页的独立视图，无 view 的画像/推荐页面不变；一次只处理用户明确选择的一篇已归档小说或一个已归档系列。
 - `MUST` 手动作品入口不隐式扩大到全库或补章。全库/新增作品分析与个人画像按 §12.6 单独确认。归档、收藏、追更和“感兴趣”不等于已读且喜欢，不推断个人身份或性取向，不自动收藏或关注。
@@ -333,7 +323,7 @@
 - `CURRENT` 作品级检查点与版本 CAS 控制暂停/取消/恢复及增额；正常停止只结算一次时间片，崩溃/撤权保守扣未结算片。源或配置变化使任务失效，同 hash 元数据刷新不使报告旧版；新增系列章仅标 archive_outdated。重启不清预算或自动重发付费调用，旧 main continue 仍不支持。
 - `MUST` 首版仅现有单一 Web 调度 owner、共享单槽和既有线程执行，同步优先；自动同步关闭仍允许手动/完成回调准入，不加 CLI 执行器或独立队列。
 - `CURRENT` 通用调用保持 `metadata_only`；正文无完整输入重放副本，有界短证据可能与极短章重合。业务报告/证据使用 Dashboard 认证、CSRF、no-store 与文本节点，默认折叠；不进入普通日志、进度、URL、localStorage 或公开救援/FTS。删除撤权清理敏感业务产物，迟到 worker 不得复活；删除不承诺备份/WAL 的物理清除。
-- `PLANNED` 原作品分析规格 §6.1 的“标记结论不可靠”尚未实现：目前没有按 claim 纠错、排除和使派生画像失效的端到端流程。§12.6 的作品级评价不代替该项。
+- `CURRENT` 报告支持逐条标记不可靠与恢复，使用报告绑定身份、严格版本和单调纠错 revision。操作保留模型原始结论，排除不可靠项进入画像；标记/恢复都使依赖画像失效，恢复不复活旧结果。§12.6 的作品级喜恶评价不代替该项。外部验收边界见 STATUS。
 
 ### 12.6 偏好学习、全库分析与推荐闭环（2026-11-12 扩展）
 
@@ -367,13 +357,13 @@
 - `MUST` 共享组件、按钮、表单、表格、badge、modal、terminal/log block 和空状态遵循 `library-os-style-guide.md`；页面不能嵌套卡片制造多重容器。
 - `MUST` 交互控件提供键盘焦点、语义标签、足够对比度、可读错误、加载/空/失败/成功状态；不要把重要信息只放在颜色或 hover 中。
 - `MUST` 前端使用安全文本渲染，避免 `v-html`；SSE、任务取消、重试和过期数据均有明确状态。
-- `SUPERSEDED` 早期“三角融合”、蓝紫粉渐变 Logo 提案已被 2026-08-04 的 README/静态 Logo 刷新实施替代；当前 Logo 文件和 README 才是视觉事实。
+- `MUST` 品牌素材以当前 README 引用的 `assets/main-logo.svg` 为准，旧方案不重新成为实施要求。
 
 ## 15. 部署与运维
 
 - `CURRENT` 支持本机启动、`deploy.sh` 的 venv + Nginx + systemd 部署；旧 `scripts/install_server.sh` 仅作为遗留 timer 部署参考。
 - `MUST` 对外部署时 Dashboard 仅监听本机 Flask 端口，由 Nginx/Cloudflare 提供代理和 TLS。
-- `PLANNED/待核实` Cloudflare 方案要求固定域名 `pixiv.dongboapp.com`、橙云代理、`Full (strict)`、Origin CA 证书、80 永久跳转 HTTPS、源站 Flask 监听 `127.0.0.1:5011`；私钥只在服务器生成并保持 `0600`，不进入仓库、日志或对话。计划复选框未维护，实际部署状态必须通过服务器核验。
+- `MUST` 使用 Cloudflare 时启用 `Full (strict)` 并核验证书用途、域名、有效期和源站链；公网 HTTP 跳转 HTTPS，源站仅监听本机。示例域名/端口必须按实际环境配置，私钥只在服务器保存且权限受限；当前部署必须通过目标服务器核验。
 - `MUST` 部署文档说明备份 `data/`、SQLite、`.env`、AI secret 和救援 token 轮换；日志和数据库权限不能向公众开放。
 - `OUT` Docker、多账号、插件系统、移动端 App、国际化和更多 Provider 在 README/旧路线图中属于未来愿景，未被当前规格确认。
 
@@ -388,10 +378,10 @@
 
 ### 16.2 性能目标
 
-- 全文搜索目标：1 万本规模下小于 100ms；同步速度目标约 100 本/分钟，实际受限速和远端响应影响。
-- 救援目录第一页目标不超过 500ms，完整刷新目标不超过 10 秒；列表查询不得读取全文正文。
+- 搜索和救援列表按固定数据规模记录耗时、SQL 次数和读取量；列表不得读取全文正文。未提供测量环境时不承诺固定毫秒或每分钟同步量。
+- 同步吞吐受 Pixiv 限速和用户请求预算约束；性能优化不能通过提高请求频率或跳过完整性校验达成。
 - 单 job 的候选、请求和总 deadline 遵守第 12.3 节上限；模型同步遵守第 12.4 节上限。
-- AI 使用 SSE 流式输出，正常路径首 token 目标小于 2 秒；超时、取消和断连必须释放资源。
+- AI 可流式返回，首 token 受外部模型影响；超时、取消和断连必须释放资源。长篇和画像性能以重复读取量、心跳成本及事务持有时间衡量。
 
 ### 16.3 可靠性
 
@@ -420,7 +410,7 @@
 
 ### 17.3 覆盖率说明
 
-当前 `pyproject.toml` 没有强制覆盖率阈值。归档路线图提出过“核心同步逻辑 80%”这一历史目标，除非重新批准，不将其视为当前发布阻断条件；行为风险应通过针对性回归测试覆盖。
+当前 `pyproject.toml` 没有强制覆盖率阈值。测试按行为风险覆盖错误、并发、资源和兼容边界，不用单一百分比替代验收。
 
 ## 18. 实现状态与优先级
 
@@ -429,16 +419,14 @@
 - 核心 Pixiv 同步、SQLite/文件归档、Web 仪表盘、EPUB、任务调度和共享 JobRunner。
 - 任务取消硬化、Provider key 加密、SSRF/DNS/代理信任边界、测试隔离和多轮审计修复。
 - 偏好本地统计、推荐核心、反馈/屏蔽基础、统一日志投影和关键词清洗。
-- 救援单项实时 API、userscript、正文完整度字段、预计算目录和来源展示的基础 Task 1-5。
-- AI 模型目录、模型池与统一路由第一阶段 Task 1-22：目录同步、池图与 CAS、`ModelRouter`、全调用链、审计、`partial`、手工续接、设置页和日志页。
+- 救援单项实时 API、userscript、正文完整度字段、预计算目录和来源展示。
+- AI 模型目录、池图/CAS、统一调用、用量与诊断、设置和日志；main 通用继续不可用，作品恢复和写作继续分别处理。
 
 ### 18.2 当前主线（main）
 
-1. 本轮共享整改覆盖归档搬移登记与回滚副本保护、定时备份不完整状态传播、推荐分层错误计数、增量画像字段保留，以及共享模型路由预算与内部输出隔离。最新实现/验证统一见 [项目现状](STATUS.md) 与 09-30 执行台账；09-14 计划保留逐项验收及分支归属。
-2. 当前 main 工作区已移除旧待删除计数、推荐历史轮次、三个遗留 OAuth 路由及简单 cron 解析回退。工作区修改不表示提交、远端或现网已经更新。
-3. §1.3 的搜索计划表/跨次 CRUD、RECOMMENDATION_SYNC、explanation_source、偏好 SSE、完整多画像、task_logs owner lease、seen-cursor、完整 trash manifest/启动重放等仍为 **OUT**。§12.5 提供单作品报告，§12.6 新增有明确评价依据的 AI 画像、全库分析与推荐闭环；保留恢复副本不等于新增完整 manifest 系统。
-4. 写作/成人整改仅在 ai-writing；main 不恢复相关模块、页面、路由、测试或已迁出的文档。生产迁移、真实 Provider/Pixiv、证书与灰度观察不由离线回归或合成数据库初始化证明，也不重新纳入 §1.3 已排除的代码任务。
-5. 2026-11-17 全项目复核与分支整合见 [本轮审计](archive/AUDIT_REPORT_2026-11-17.md)。旧 W / F / P 编号仅用于追溯，当前未完成项集中于 [项目现状](STATUS.md)，包括逐条报告纠错、完整远程业务接线、GC 调度、真实 Provider 与生产发布验收；不能由历史测试或分支合并推断已经部署。
+当前开发顺序以 [实施计划](IMPLEMENTATION_PLAN.md) 为准：先补结论纠错、分析重复读取与远程维护，再实施轻量心跳、同步数据语义、写作检索事务和完整远程任务接线。
+
+§1.3 的非目标继续有效；写作/成人功能仅在 ai-writing。生产迁移、真实 Provider/Pixiv、证书与手机验收必须分别确认，不能由离线回归、计划或合并推出已上线。
 
 ### 18.3 后续体验维护
 
@@ -459,41 +447,18 @@
 
 旧归档中已经完成的并发、外键、事务、模块拆分、CLI/Web 共享任务和 Qwen embedding 工作，作为当前质量约束继承，但不重复创建实施任务。
 
-## 20. 来源覆盖与文档治理
+## 20. 文档治理
 
-### 20.1 正式文档来源
+所有现行入口由 [文档索引](INDEX.md) 维护。模型目录/统一调用、作品分析/偏好学习和远程协议分别维护稳定设计文档；原偏好推荐草案的有效要求已合入 §10、§12.6 与作品分析设计。
 
-| 来源组 | 文件 |
-|--------|------|
-| 根目录与开发指导 | `README.md`、`CLAUDE.md`、`assets/logo-design.md` |
-| 当前参考 | `docs/INDEX.md`、`docs/STATUS.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md` |
-| 历史审计与汇编 | `docs/archive/` 下各期 `AUDIT_REPORT_*`、`PLAN_AUDIT_*`、`REMEDIATION_STATUS_*`、`SERVER_DEPLOYMENT_REPORT_*`，以及 `docs/archive/HISTORY_REPORTS.md`、`docs/archive/HISTORY_PLANS.md` |
-| 历史顶层快照 | `docs/archive/API_COMPLETE.md`、`docs/archive/KNOWLEDGE_GRAPH.md` |
-| 活跃规格与计划 | `docs/superpowers/specs/` 与 `docs/superpowers/plans/`；AI 模型第一阶段以 `2026-07-27-ai-model-catalog-pools-unified-requirements.md` 和已完成实施计划为追溯基线 |
-| 归档顶层 | `docs/archive/` 下审计、完成报告、优化路线图和模块拆分文档 |
-| 归档 superpowers | `docs/archive/superpowers/plans/` 与 `docs/archive/superpowers/specs/` 下 Qwen embedding、CLI/Web Job、统一任务队列文档 |
+不再提交审计、验收、部署、完成报告或生成的验证附件。已执行计划和旧设计副本从当前树删除，必要历史通过 Git 查看。可复用验证程序放在 `scripts/`；新结果写入 STATUS 的当前验证区，失败或未验收条件明确说明。
 
-### 20.2 补充资料来源
-
-- `.superpowers/sdd/`：模型 Task 1-4 brief/report、救援 Task 1-5 brief/report、进度账本及 review diff；只接受能与提交、最终报告或最新统一需求相互印证的内容。
-- `docs/archive/monkeycode/novel-tabs-and-user-detail/requirements.md` 与 `design.md`：小说标签、系列详情、关注用户状态、用户详情和全量备份需求。
-- `memory/`：2026-07-06 审计和八项优化进度；仅用于发现未回写的缺口，不作为正式契约。
-
-### 20.3 已知文档质量问题
-
-1. `.superpowers/sdd/progress.md` 的 AI Task 3 状态落后于 Task 3 report、提交记录和 2026-07-27 统一需求，应以后者为准。
-2. `.superpowers/sdd/task-1-brief.md` 与 `model-task-1-brief.md` 内容相同，无法与同名救援 report 可靠配对；必须用模型前缀和最终报告消歧。
-3. 救援 Task 3 report 含多轮复审，后文修正了前文的 meta、删除和历史 membership 语义，应采用文件最后的复审结论。
-4. 多份历史计划复选框未维护，空勾不等于未做，已勾也不等于完整验收。09-30 审查与 10-08 后续验证分开记录，最新状态查[项目现状](STATUS.md)和当前执行台账，不回写历史快照。
-5. Cloudflare 的仓库配置与现网证书/Full (strict) 验收是两件事；后者必须通过服务器检查，不能仅凭仓库文档、离线回归或合成数据库初始化宣称完成。
-6. 当前 API 同时存在 raw JSON 与 `{ok,data}`/`{ok,error}` envelope；统一响应形状是后续重构目标，不能假设现有所有端点已经一致。
-7. 旧 README 写过“10 个定时任务”，历史知识图谱出现过 8/9 个版本；当前 `web/managers.py:SCHEDULER_TASK_CONFIGS` 为 11 个（`tests/test_scheduler_priority.py` 锁定），准确数量必须从当前 task registry 生成，不采用历史硬编码数字。
-8. Embedding 索引文件名在文档间存在差异；实际名称必须以当前代码和迁移测试为准。
+当前 API 仍有 raw JSON 与 envelope 的兼容形态，不能在文档清理时假设所有端点已经统一。任务类型从实际 registry 核对，模板/静态资源、索引文件和命令从当前代码核对，不继承历史硬编码数量或路径。
 
 ## 21. 维护规则
 
 - 新增或变更功能时，先更新本文件对应的需求、状态和来源，再修改 README、API 契约、页面清单或实施计划。
-- 任何新增 `SUPERSEDED` 关系必须说明替代文件、替代范围和仍保留的接口部分。
-- 需求状态变更必须附提交、测试或完成报告；“计划复选框已勾选”不足以证明实现完成。
+- 删除过期文档前将仍有效的约束迁入指南、设计或本文件，并修复入站引用。
+- 需求状态变更必须有代码及对应测试，测试环境与生产启用分别记录；计划勾选不足以证明完成。
 - API、数据库 Schema、认证、安全和 userscript 变更必须同时更新契约、回归测试和本文件的验收矩阵。
-- 归档文件只追加历史说明，不重新成为当前目标；真正重新启用历史候选时，必须创建新的已确认规格并注明范围。
+- 不新增平行报告或按日期复制指南；实施计划在原文件持续更新，历史由 Git 保存。

@@ -26,4 +26,4 @@ received = deserialize_novel(payload, expected_novel_id=novel_id)
 
 此结果边界已经用于本地同步，但还没有注册为现有远程队列任务，也没有向云端发送 Pixiv 凭据。实际远程迁移仍需账户/业务范围互斥、统一限流预算、最小凭据与出口验证，以及 VPS 接收/发布适配器。不能让本机与云端同时执行独立的完整收藏同步，也不能回传可写主库。
 
-测试见 `tests/test_pixiv_fetch.py` 和已有同步、增量、归档与备份回归。最新实施状态见 [STATUS](STATUS.md)，整体后续边界见[阶段说明](superpowers/specs/2026-11-12-remote-next-phase-notes.md)。
+测试见 `tests/test_pixiv_fetch.py` 和已有同步、增量、归档与备份回归。最新实施状态见 [STATUS](STATUS.md)，远程接线依赖与验收标准见 [实施计划 R2–R4](IMPLEMENTATION_PLAN.md)。

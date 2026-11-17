@@ -4,9 +4,9 @@
 
 > AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护。当前代码保留模型目录 / 模型池 / Agent 绑定、手动作品分析，并在偏好页内新增“偏好学习”：明确阅读评价、个人 AI 偏好 / XP 画像、全库及新同步作品分析、推荐反馈消费。实现与生产部署分开记录，见 [项目现状](STATUS.md)。
 
-## 本轮交互更新（2026-10-08，main）
+## 当前交互约定
 
-### AI 设置第一阶段（2026-11-03，重构分支）
+### AI 设置与调用
 
 - `/dashboard/settings/models` 保留 URL，`view=providers|models|groups` 三视图与 `provider=<id>` 筛选随普通导航/刷新/历史往返保存；缺失 Provider 显示明确错误，不伪造空目录。路由组仍使用原模型池整数 ID/API，仅支持顺序尝试。
 - 共享模型选择器保留不可用当前值，名称相同也按 Provider/模型身份区分；打开、过滤、目录刷新、关闭都不写配置。组内上/下移动使用真实有序 members 和 `expected_version` CAS；保存/丢弃/取消草稿确认、冲突保留与读回失败分开处理。
@@ -17,7 +17,7 @@
 
 真实离线 Vue/浏览器375/768/1440验证与真机软键盘、真实 Provider1M准入验收分别记录在 [项目现状](STATUS.md)，本页不把 Node VM 当作浏览器测量。
 
-移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文记录两分支共享书库能力及本 ai-writing 的写作扩展，不等同于生产站点已经更新，当前版本以 [项目现状](STATUS.md) 为准。
+下文记录当前分支的页面行为。自动回归、浏览器模拟、手机真机和实际部署分别验收，当前状态以 [项目现状](STATUS.md) 为准。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。
@@ -48,6 +48,8 @@
 | `/dashboard/preferences?view=work-analysis` | `dashboard_preferences.html` 内 `dashboard_work_analysis.html` | 手动已归档单作品内容报告 | 复用 Library OS；不替换默认偏好页 |
 | `/dashboard/preferences?view=learning` | `dashboard_preferences.html` 内 `dashboard_preference_learning.html` | 阅读喜恶、AI 画像、全库批次与持续自动分析 | 与默认推荐 / 单作品视图通过页内导航互通 |
 | `/dashboard/novels?category=rescue` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 拯救成功小说与系列 | 已接入 `library-page` / `library-page-header` |
+
+作品报告中的每条结论可标记不可靠或恢复，保留原文与证据，清楚显示使用资格。过期/归档更新/删除状态禁用编辑；版本冲突与写结果未知保留可核对状态，迟到响应不能覆盖更新或删除。反馈变化使依赖画像取消启用，需重新生成并启用；操作自身不发模型请求。
 
 ## Shared layout
 
@@ -418,7 +420,7 @@ API：`GET /api/dashboard/rescues`。
 - 系列先加载目录，超过 100 章时可继续加载后续目录页；只有点击某一章时才请求该章正文。
 - 正文接口超时 30 秒，其余请求 15 秒；接口失败时在阅读层显示错误与重试，Pixiv 原页面保持不变。
 
-0.12.2 交互与性能修复（不改版式，尚未完成本版设备验收）：正文分页首尾空行用线性扫描裁剪，避免大量空行卡顿；lookup 应答落到卡片前重新核对作品 ID，丢弃已被 SPA 复用卡片的旧应答；系列目录第一次加载失败也提供「重试」；列表页每 500ms 快速扫描仅限进入该页后的初始 15 秒。缺少可选 `GM_registerMenuCommand` / `GM_setValue` 时只在脚本内部降级，不往页面挂空函数；缺少后者时明确提示无法保存 Token。
+当前 0.12.3：正文分页首尾空行用线性扫描裁剪；lookup 应答落到卡片前重新核对作品 ID、服务器与 Token，丢弃 SPA 复用或凭据变化后的旧应答。未知卡片支持两类缓存和 40-ID 分批；离页释放列表/封面观察器。系列首次失败可重试；每 500ms 快速扫描仅限进入列表后的 15 秒。缺少可选 GM API 只在脚本内部降级，缺少 `GM_setValue` 时明确提示无法保存 Token。设备验收与代码验证分开。
 
 ### `/token-login`
 

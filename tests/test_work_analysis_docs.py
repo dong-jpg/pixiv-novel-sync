@@ -78,15 +78,13 @@ def test_routing_docs_distinguish_parent_reservation_from_generic_continue():
         assert token in text, token
 
 
-def test_status_and_execution_docs_separate_implementation_from_final_acceptance():
+def test_current_docs_separate_implementation_from_external_acceptance():
     status = read_doc("docs/STATUS.md")
-    for token in ("作品分析第二阶段", "Task 9", "原生 Linux", "canonical", "实际部署"):
+    for token in ("作品分析", "Linux", "实际部署"):
         assert token in status, token
-    for path in (
-        "docs/superpowers/specs/2026-11-05-work-xp-analysis-design.md",
-        "docs/superpowers/plans/2026-11-05-work-xp-analysis.md",
-    ):
-        text = read_doc(path)
-        assert "Task 9" in text
-        assert "项目现状" in text
-        assert "整阶段验收" in text
+    design = read_doc("docs/WORK_ANALYSIS_DESIGN.md")
+    for token in ("metadata_only", "Unicode code point", "检查点", "真实", "画像"):
+        assert token in design, token
+    plan = read_doc("docs/IMPLEMENTATION_PLAN.md")
+    for token in ("X1", "A1", "R1", "验收", "canonical LF", "生产"):
+        assert token in plan, token

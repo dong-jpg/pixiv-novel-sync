@@ -92,6 +92,8 @@ DDL = (
             CHECK(length(CAST(budget_history_json AS BLOB))<=65536),
         coverage_json TEXT CHECK(coverage_json IS NULL OR length(CAST(coverage_json AS BLOB))<=65536),
         report_json TEXT CHECK(report_json IS NULL OR length(CAST(report_json AS BLOB))<=1048576),
+        claim_feedback_revision INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(claim_feedback_revision)='integer' AND claim_feedback_revision>=0),
         report_stale INTEGER NOT NULL DEFAULT 0 CHECK(report_stale IN (0,1)),
         archive_outdated INTEGER NOT NULL DEFAULT 0 CHECK(archive_outdated IN (0,1)),
         invalidated_at TEXT,
@@ -169,6 +171,18 @@ DDL = (
         CHECK((entry_kind='attachment' AND request_ordinal=0 AND planned_tokens IS NULL AND usage_json IS NULL)
               OR (entry_kind='request' AND request_ordinal>0 AND planned_tokens IS NOT NULL AND usage_json IS NOT NULL))
     )""",
+    """CREATE TABLE IF NOT EXISTS work_analysis_claim_feedback (
+        run_id TEXT NOT NULL REFERENCES work_analysis_runs(run_id) ON DELETE CASCADE,
+        claim_id TEXT NOT NULL CHECK(length(claim_id)=64 AND claim_id NOT GLOB '*[^0-9a-f]*'),
+        report_hash TEXT NOT NULL CHECK(length(report_hash)=64 AND report_hash NOT GLOB '*[^0-9a-f]*'),
+        unreliable INTEGER NOT NULL CHECK(unreliable IN (0,1)),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(run_id,claim_id)
+    ) WITHOUT ROWID""",
+    """CREATE TRIGGER IF NOT EXISTS work_analysis_clear_claim_feedback
+        AFTER UPDATE OF deleted_at ON work_analysis_runs
+        WHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+        BEGIN DELETE FROM work_analysis_claim_feedback WHERE run_id=NEW.run_id; END""",
     "CREATE INDEX IF NOT EXISTS idx_work_analysis_sources_novel ON work_analysis_sources(novel_id,run_id)",
     "CREATE INDEX IF NOT EXISTS idx_work_analysis_runs_queue ON work_analysis_runs(status,reason,created_at,run_id) WHERE deleted_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_work_analysis_runs_source ON work_analysis_runs(source_kind,source_id) WHERE deleted_at IS NULL",
@@ -279,3 +293,6 @@ def migrate_work_analysis(conn: sqlite3.Connection) -> None:
         raise RuntimeError("work analysis migration requires its caller's transaction")
     for statement in (*DDL, *_source_triggers()):
         conn.execute(statement)
+    if "claim_feedback_revision" not in {row[1] for row in conn.execute("PRAGMA table_info(work_analysis_runs)")}:
+        conn.execute("ALTER TABLE work_analysis_runs ADD COLUMN claim_feedback_revision INTEGER NOT NULL DEFAULT 0 "
+                     "CHECK(typeof(claim_feedback_revision)='integer' AND claim_feedback_revision>=0)")

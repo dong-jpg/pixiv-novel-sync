@@ -225,12 +225,12 @@ def _original_unit(manifest, ranges, *, whole=False):
     )
 
 
-def _verify_source_texts(manifest, texts):
+def _verify_source_texts(manifest, texts, *, novel_ids=None):
     if not isinstance(texts, Mapping):
         raise WorkAnalysisError("source_changed", 409)
     verified = {}
     for chapter in manifest["chapters"]:
-        if not chapter["has_text"]:
+        if not chapter["has_text"] or (novel_ids is not None and chapter["novel_id"] not in novel_ids):
             continue
         body = texts.get(chapter["novel_id"])
         if not isinstance(body, str):
@@ -249,7 +249,8 @@ def _verify_source_texts(manifest, texts):
 
 def _blocks(manifest, unit, texts, *, verify_text):
     chapters = {row["novel_id"]: row for row in manifest["chapters"]}
-    checked = _verify_source_texts(manifest, texts) if verify_text else texts
+    novel_ids = {row["novel_id"] for row in unit["primary_ranges"] + unit["context_ranges"]}
+    checked = _verify_source_texts(manifest, texts, novel_ids=novel_ids) if verify_text else texts
     blocks = {}
     primary_starts = {}
     for row in unit["primary_ranges"]:

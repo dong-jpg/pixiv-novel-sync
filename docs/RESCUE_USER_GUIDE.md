@@ -4,7 +4,7 @@
 
 内容以源码实际行为为准（`src/pixiv_novel_sync/rescue_web.py`、`src/pixiv_novel_sync/storage/rescue.py`、`userscripts/pixiv-rescue.user.js`）。
 
-0.12.3 修复 40-ID 分批边界漏项、未知类型卡片读取系列缓存，以及 SPA 切页后封面对象与列表观察器的释放。升级后保留已有 Token；手机管理器须自行检查更新，代码发布不等于设备已更新。
+当前脚本 0.12.3 支持 40-ID 有界分批、未知类型卡片查询两类缓存、服务器与 Token 隔离的缓存，以及 SPA 切页时观察器/封面的释放。切换服务器或凭据后会拒绝旧请求的迟到响应。升级保留已有 Token；手机管理器须自行检查更新，代码发布不等于设备已更新。
 
 ---
 

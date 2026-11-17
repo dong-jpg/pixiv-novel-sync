@@ -149,6 +149,13 @@ def migrate_preference_learning(conn: sqlite3.Connection):
         + " END"
     )
     statements.append(
+        "CREATE TRIGGER IF NOT EXISTS preference_report_claim_feedback "
+        "AFTER UPDATE OF claim_feedback_revision ON work_analysis_runs "
+        "WHEN OLD.claim_feedback_revision IS NOT NEW.claim_feedback_revision BEGIN "
+        + _invalidate("run_id IN (SELECT run_id FROM preference_summary_sources WHERE report_run_id=OLD.run_id)")
+        + " END"
+    )
+    statements.append(
         "CREATE TRIGGER IF NOT EXISTS preference_report_deleted AFTER DELETE ON work_analysis_runs BEGIN "
         + _invalidate("run_id IN (SELECT run_id FROM preference_summary_sources WHERE report_run_id=OLD.run_id)", "source_deleted")
         + " END"
@@ -183,7 +190,9 @@ def capture_sources(conn):
     # rejected/oversized inputs do not first load every report into memory.
     captured, source_bytes = {}, 2  # canonical JSON array brackets
     reports = conn.execute(
-        "SELECT f.source_kind,f.source_id,r.run_id,r.report_json FROM preference_reading_feedback f "
+        "SELECT f.source_kind,f.source_id,r.run_id,r.report_json,r.claim_feedback_revision,"
+        "(SELECT group_concat(c.report_hash || ':' || c.claim_id) FROM work_analysis_claim_feedback c "
+        "WHERE c.run_id=r.run_id AND c.unreliable=1) AS unreliable_claims FROM preference_reading_feedback f "
         "JOIN work_analysis_runs r ON r.run_id=("
         "SELECT w.run_id FROM work_analysis_runs w WHERE w.source_kind=f.source_kind AND w.source_id=f.source_id "
         "AND w.status='succeeded' AND w.deleted_at IS NULL AND w.report_stale=0 AND w.archive_outdated=0 "
@@ -204,13 +213,18 @@ def capture_sources(conn):
         except (KeyError, TypeError, ValueError):
             continue
         digest = hashlib.sha256(row["report_json"].encode("utf-8")).hexdigest()
+        excluded = {value.split(":", 1)[1] for value in (row["unreliable_claims"] or "").split(",")
+                    if value.startswith(digest + ":")}
+        claims = [claim for claim in artifact["claims"] if claim["claim_id"] not in excluded]
+        evidence_ids = {evidence_id for claim in claims for evidence_id in claim["evidence_ids"]}
         source = {
             "source_key": f"{key[0]}:{key[1]}", "source_kind": key[0], "source_id": key[1],
             "reaction": signal["reaction"], "note": signal["note"], "feedback_version": signal["version"],
             "report_run_id": row["run_id"], "report_hash": digest,
+            "claim_feedback_revision": row["claim_feedback_revision"],
             "claims": [{name: claim[name] for name in ("claim_id", "dimension", "label", "certainty", "evidence_ids")}
-                       for claim in artifact["claims"]],
-            "evidence": list(artifact["evidence"].values()),
+                       for claim in claims],
+            "evidence": [value for key, value in artifact["evidence"].items() if key in evidence_ids],
             "uncertainties": artifact["uncertainties"],
         }
         source_bytes += len(canonical_bytes(source)) + bool(captured)
@@ -231,7 +245,13 @@ def capture_sources(conn):
             identity.append({**signal_identity, "report_run_id": None})
             missing += 1
             continue
-        identity.append({**signal_identity, "report_run_id": source["report_run_id"], "report_hash": source["report_hash"]})
+        source_identity = {**signal_identity, "report_run_id": source["report_run_id"], "report_hash": source["report_hash"]}
+        # Uncorrected reports retain their pre-migration identity, preserving
+        # already paid profiles and previews. The first change starts a strictly
+        # monotonic history; restoring never returns to the legacy identity.
+        if source["claim_feedback_revision"]:
+            source_identity["claim_feedback_revision"] = source["claim_feedback_revision"]
+        identity.append(source_identity)
         sources.append(source)
     return {"sources": sources, "source_fingerprint": fingerprint(identity), "feedback_counts": counts,
             "eligible_works": len(sources), "missing_reports": missing}

@@ -32,7 +32,9 @@ def checked(args, **kwargs):
 def verify_units(directory: Path) -> dict:
     units = directory / "units"
     units.mkdir()
-    names = [f"pixiv-remote-{role}.service" for role in ("controller", "worker")]
+    roles = ("controller", "worker", "gc")
+    service_names = [f"pixiv-remote-{role}.service" for role in roles]
+    names = [*service_names, "pixiv-remote-gc.timer"]
     for name in names:
         shutil.copyfile(ROOT / "deploy/systemd" / name, units / name)
     env = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:/usr/lib/systemd/system:/lib/systemd/system")
@@ -42,10 +44,10 @@ def verify_units(directory: Path) -> dict:
     if exact.returncode:
         expected = "Command /opt/pixiv-novel-sync/app/.venv/bin/pixiv-remote is not executable: No such file or directory"
         lines = exact.stderr.strip().splitlines()
-        if len(lines) != 2 or any(expected not in line for line in lines):
+        if len(lines) != len(service_names) or any(expected not in line for line in lines):
             raise RuntimeError(f"systemd unit validation: {exact.stderr.strip()}")
     # 原 unit 字节不变；临时 drop-in 只替换尚未安装的程序路径，不运行它。
-    for role, name in zip(("controller", "worker"), names):
+    for role, name in zip(roles, service_names):
         dropin = units / f"{name}.d"
         dropin.mkdir()
         (dropin / "verification.conf").write_text(

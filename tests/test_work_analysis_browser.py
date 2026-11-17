@@ -6,7 +6,7 @@ import pytest
 
 from test_ai_settings_browser import WIDTHS, browser, local_vue
 from work_analysis_browser_helpers import (
-    BASE, BODY, END, EVIDENCE, LABEL, QUOTE, RUN, START, OfflineWorkUI,
+    BASE, BODY, CLAIM, END, EVIDENCE, LABEL, QUOTE, REPORT_CLAIM, RUN, START, OfflineWorkUI,
 )
 
 
@@ -285,6 +285,33 @@ def test_report_is_escaped_collapsed_and_reader_uses_only_server_codepoint_evide
     ui.expect(panel.get_by_role("alert")).to_contain_text("当前阅读正文与证据版本不同")
     assert panel.locator("mark").count() == 0
     assert ui.writes() == []
+
+
+def test_claim_feedback_mark_restore_and_lost_receipt_are_visible_and_preserve_original(ui):
+    ui.seed_run()
+    page = ui.page
+    ui.goto("/dashboard/preferences?view=work-analysis&analysis_id=" + RUN)
+    page.get_by_role("button", name="读取已验证报告", exact=True).click()
+    claim = page.locator('[data-claim-id="' + CLAIM + '"]')
+    ui.expect(claim).to_contain_text(LABEL)
+    url = BASE + "/" + RUN + "/claims/" + REPORT_CLAIM
+    ui.allow("POST", url)
+    claim.get_by_role("button", name="标记此结论不可靠", exact=True).click()
+    ui.expect(claim).to_contain_text("已标记不可靠 · 已从偏好来源排除")
+    ui.expect(claim).to_contain_text(LABEL)
+    ui.allow("POST", url)
+    ui.lose_next.add(("POST", url))
+    claim.get_by_role("button", name="恢复使用此结论", exact=True).click()
+    pending = page.get_by_role("region", name="待核对写入")
+    ui.expect(pending).to_contain_text("写入结果未知")
+    ui.expect(claim.get_by_role("button", name="恢复使用此结论", exact=True)).to_be_disabled()
+    pending.get_by_role("button", name="先核对当前状态", exact=True).click()
+    ui.expect(claim).to_contain_text("可用于偏好学习 · 尚未标记不可靠")
+    ui.expect(pending).to_have_count(0)
+    assert len(ui.calls("POST", url)) == 2
+    assert ui.work_report["claim_feedback_revision"] == 2
+    ui.expect(claim).to_contain_text(LABEL)
+    assert claim.locator("img").count() == 0
 
 
 def test_stale_report_keeps_historical_quote_but_410_removes_current_jump(ui):

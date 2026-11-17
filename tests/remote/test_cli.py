@@ -62,6 +62,53 @@ def test_parse_failure_does_not_repeat_pasted_secret(capsys):
     assert "accidental-secret" not in captured.out + captured.err
 
 
+def test_gc_entrypoint_runs_with_only_maintenance_config_and_is_repeatable(tmp_path, monkeypatch, capsys):
+    import hashlib
+    import json
+
+    from pixiv_novel_sync.remote import cli
+    from pixiv_novel_sync.remote.blobs import BlobStore
+    from pixiv_novel_sync.remote.store import RemoteStore
+
+    store = RemoteStore(tmp_path / "remote", "m_fixture")
+    store.migrate()
+    blobs = BlobStore(store.state_dir / "blobs")
+    orphan = blobs.put_bytes(b"unreferenced", 100)
+    reservation = store.reserve_blob("input", "fixture-input", 1000, 1000)
+    payload = b'{"protocol":1}'
+    live = blobs.put_bytes(payload, 100)
+    store.register_input(live, {"manifest": (live, len(payload))}, reservation, 1000)
+    store.enqueue("fixture-run", hashlib.sha256(payload).hexdigest(), "diagnostic.v1", live, 1000)
+    with store.transaction() as conn:
+        conn.execute("UPDATE runs SET deadline=100000")
+    monkeypatch.setattr(cli.time, "time", lambda: 4601)
+    env = {"PIXIV_REMOTE_STATE_DIR": str(store.state_dir), "PIXIV_REMOTE_MACHINE_ID": "m_fixture"}
+    args = ["gc", "--state-dir", str(store.state_dir), "--confirm-state-dir", str(store.state_dir)]
+    assert run_cli(args, env=env) == 0
+    assert json.loads(capsys.readouterr().out)["gc"]["blobs_removed"] == 1
+    assert not (blobs.root / orphan).exists()
+    assert (blobs.root / live).is_file()
+    assert run_cli(args, env=env) == 0
+    assert json.loads(capsys.readouterr().out)["gc"]["blobs_removed"] == 0
+
+
+def test_gc_entrypoint_rejects_wrong_machine_and_missing_state(tmp_path, capsys):
+    from pixiv_novel_sync.remote.store import RemoteStore
+
+    root = tmp_path / "remote"
+    args = ["gc", "--state-dir", str(root), "--confirm-state-dir", str(root)]
+    env = {"PIXIV_REMOTE_STATE_DIR": str(root), "PIXIV_REMOTE_MACHINE_ID": "m_wrong"}
+    assert run_cli(args, env=env) == 1
+    assert not root.exists()
+    assert "control_database_missing" in capsys.readouterr().err
+    store = RemoteStore(root, "m_fixture")
+    store.migrate()
+    epoch = store.epoch
+    assert run_cli(args, env=env) == 1
+    assert "machine_mismatch" in capsys.readouterr().err
+    assert store.epoch == epoch
+
+
 def test_controller_once_reports_a_persisted_provider_failure(tmp_path, monkeypatch):
     from pixiv_novel_sync.remote.instabox import ProviderError
     import pixiv_novel_sync.remote.instabox as instabox

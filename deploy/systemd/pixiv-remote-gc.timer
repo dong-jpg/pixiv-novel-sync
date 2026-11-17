@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Pixiv remote retained data cleanup
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=pixiv-remote-gc.service
+
+[Install]
+WantedBy=timers.target

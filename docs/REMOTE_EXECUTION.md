@@ -1,4 +1,4 @@
-# 远程执行一期运维说明
+# 远程执行运维指南
 
 本功能让 VPS 保留唯一书库、阅读入口和任务记录，由 InstaBox 按需执行诊断或单本 EPUB 导出。现有本地同步与 EPUB/ZIP 下载保持原契约。云实例暂停、冷却或无法连接时，阅读仍由 VPS 提供。
 
@@ -6,13 +6,11 @@
 
 ## 状态与验证边界
 
-指定 VPS 与 `leshao1` 已于 2026-11-12 按启用指令部署，入口为[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)。诊断、合成 EPUB、暂停恢复与完整空闲宽限的真实结果，以及备份未完成的全库结构检查，见[本次验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
+页面入口为 `/dashboard/remote`。当前代码验证和生产边界统一见 [项目现状](STATUS.md)，租约/发布/数据源约束见 [远程执行设计](REMOTE_EXECUTION_DESIGN.md)，完整业务接线顺序见 [实施计划](IMPLEMENTATION_PLAN.md)。
 
 代码默认关闭。仓库中的服务、环境文件和 Nginx 配置都是待安装示例，运行本地测试不会启动用户实例，也不会安装或启用服务。
 
-自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。一期本地实现见[执行记录](superpowers/execution/2026-11-10-instabox-phase-one.md)，11-16 集成修复见[协同复核](archive/REMOTE_COLLABORATION_REVIEW_2026-11-16.md)。历史 202、暂停恢复和合成结果的真实证据保留于上述部署报告；完整 VM 冷启动、平台强制中断/冷却、私有输入与独立备份仍有待验收，不能由本地测试推断。
-
-11-16 在 WSL/Linux 使用[部署验证脚本](../scripts/verify_remote_deployment.py)核对了 unit 语法、合成 TLS、worker 两条代理路径的可信客户端地址、限流与上传时并发心跳，见[JSON 证据](superpowers/execution/remote-deployment-2026-11-16.json)。本地未安装的 ExecStart 仅用临时验证 drop-in 替代，不证明目标主机路径、权限或冷启动。本轮集成候选未部署。
+自动测试使用临时控制数据库、合成小说、fake provider 和本地 HTTP transport。[部署验证脚本](../scripts/verify_remote_deployment.py)用于 Linux unit、TLS、代理、限流和上传并发检查；[页面验证脚本](../scripts/verify_remote_ui.py)使用离线 Vue 和真实 Flask fixture。完整 VM 冷启动、平台强制中断/冷却、私有输入与独立备份须在目标环境另验，不能由本地测试推断。
 
 ## 进程、目录与凭据
 
@@ -21,6 +19,7 @@
 | 现有 Web 服务 | VPS | `config/remote-web.env.example` | 原书库权限、worker bootstrap 的 SHA-256；不需要 InstaBox key |
 | `pixiv-remote controller` | VPS | `config/remote-controller.env.example` | 指定机器的 InstaBox key、独立控制库；没有 worker bootstrap 明文 |
 | `pixiv-remote worker` | InstaBox | `config/remote-worker.env.example` | 独立 worker bootstrap、任务级输入；没有书库 DB、Pixiv/签到凭据、Flask secret 或 AI 解密密钥 |
+| `pixiv-remote gc` | VPS | `config/remote-maintenance.env.example` | 控制目录与机器 ID；不需要平台、worker 或业务密钥，不联网 |
 
 控制目录建议 `/var/lib/pixiv-remote`，其中 `control.db` 为独立 SQLite，文件存储位于 `blobs/`。不要把它配置成业务主库或归档目录。Web 与 controller 需要对该目录具备必要的共享读写权限，建议使用相同专用服务用户；不要授予 Nginx 读取配置秘密的权限。
 
@@ -89,6 +88,7 @@ python -m pip install -c config/remote-renderer-constraints.txt "requests>=2.32.
 
 - `deploy/systemd/pixiv-remote-controller.service`：VPS，示例用户 `pixivsync`。
 - `deploy/systemd/pixiv-remote-worker.service`：云实例，示例用户 `pixivremote`，`Restart=always`、`KillMode=control-group`。
+- `deploy/systemd/pixiv-remote-gc.service` / `.timer`：VPS 独立维护，按下节显式安装启用。
 - `config/nginx/remote-worker-location.conf`：加入现有 HTTPS server，不覆盖整个站点配置。
 
 服务示例不会自动修改既有 `pixiv-novel-sync.service` 或其 timer。目标实例必须确认在冷启动后启动 worker，不能依赖图形桌面登录或只验证内存恢复。
@@ -99,7 +99,7 @@ Nginx 示例顶部的 `limit_req_zone` 必须放在 `http {}` 内一次，不能
 
 bootstrap 与普通 worker location 都显式设置 `gzip off` 和上游 `Accept-Encoding identity`，使响应符合 worker 的 identity 编码要求。上游使用 `proxy_http_version 1.1` 并清空 `Connection` 头；关闭 `proxy_request_buffering`，让应用能够在接收过程中执行身份、配额及字节限制校验，避免 Nginx 先缓存完整上传。`proxy_buffering off` 与 `proxy_cache off` 关闭响应缓冲和缓存；服务端仍返回 `private, no-store`。将这两处 location 一并安装，避免精确匹配的 `/sessions` 入口遗漏相同的传输设置。
 
-配置完成后在 Linux 上独立执行两个 unit 的 `systemd-analyze verify`，并用包含该 zone、location、证书和实际 upstream 的完整测试配置执行 `nginx -t`。检查成功后，仍需获准才能启用线上服务。
+配置完成后在 Linux 上对安装的全部 service / timer 执行 `systemd-analyze verify`，并用包含该 zone、location、证书和实际 upstream 的完整测试配置执行 `nginx -t`。本地配置检查不自动启用线上服务。
 
 ## 队列与生命周期语义
 
@@ -135,13 +135,35 @@ VPS 文件配额 1 GiB，包含进行中的预留空间；worker 工作目录上
 
 GC 使用“事务标记 deleting → 删除已校验路径文件 → 数据库确认”的可重入流程，新引用不能绑定 deleting 对象。未知临时/孤儿文件至少保留一小时，只在受控 blob 目录内处理。
 
-**当前 GC 需要主动运行。** controller 循环和仓库提供的 systemd 服务没有定时调用 GC；上述 24 小时 / 14 天是清理时的保留阈值，不表示文件到期后自动释放空间。使用远程执行期间应定期检查配额并执行下方命令；独立维护 timer 尚属待办。
+仓库提供独立 `pixiv-remote-gc.timer`，**显式安装启用后**每小时清理一次，附加最多五分钟随机延迟；停机错过的轮次会在恢复后补一次。controller 不执行 GC；未安装 timer 的环境仍需主动运行。24 小时 / 14 天是保留阈值，不是精确到期删除时间。
 
 以下命令要求路径明确且两次一致；命令不会搜索或下载数据库：
 
 ```console
 pixiv-remote gc --state-dir /var/lib/pixiv-remote --confirm-state-dir /var/lib/pixiv-remote
 ```
+
+运行环境还需 `PIXIV_REMOTE_MACHINE_ID` 与控制库一致；配置目录若设为其他值，CLI 拒绝不一致目标。目录/数据库不存在时失败，不自动寻找或初始化业务库。
+
+### 安装定时清理
+
+以下操作在已确认的 VPS 维护窗口执行；它只维护本地控制目录，不唤醒云机。先把 `config/remote-maintenance.env.example` 安装为 `/etc/pixiv-remote/maintenance.env`，填写已有机器 ID，确认目录并设为仅维护用户可读。不要复制 controller 的平台 key。
+
+核对 service 的程序路径、`User=pixivsync` 与现有控制库权限。自定义控制目录时同时修改环境和 `ReadWritePaths`；控制目录必须包含 SQLite WAL/SHM 与 blobs，不能设为业务书库目录。然后执行：
+
+```console
+sudo install -m 0644 deploy/systemd/pixiv-remote-gc.service deploy/systemd/pixiv-remote-gc.timer /etc/systemd/system/
+sudo systemd-analyze verify /etc/systemd/system/pixiv-remote-gc.service /etc/systemd/system/pixiv-remote-gc.timer
+sudo systemctl daemon-reload
+sudo systemctl start pixiv-remote-gc.service
+sudo journalctl -u pixiv-remote-gc.service --no-pager -n 30
+sudo systemctl enable --now pixiv-remote-gc.timer
+sudo systemctl list-timers pixiv-remote-gc.timer
+```
+
+oneshot 成功后显示 inactive 是正常结果；核对退出状态与输出的删除计数。路径、机器 ID 或数据库校验失败会非零退出，先修配置再重跑。服务使用 `PrivateNetwork=true`、只读系统保护、低 I/O 优先级和五分钟启动时限；超时后下轮沿用 deleting 标记继续，不把部分清理当完整成功。
+
+停用定时触发使用 `sudo systemctl disable --now pixiv-remote-gc.timer`；如需同时中断已启动的清理，另执行 `sudo systemctl stop pixiv-remote-gc.service`。普通 Web 部署/更新不会自动安装或启用该 timer。长期未启用或持续清理失败仍可能用尽配额，需要监测 unit 状态和可用空间。
 
 ## 备份恢复与回退
 
