@@ -184,4 +184,4 @@ Generation flows through `ai/services/core.py` (`_start_route_job` → `_stream_
 
 ## Deploy
 
-`./deploy.sh` is the single supported web deploy entry (venv + Nginx + systemd, service `pixiv-novel-sync` on 127.0.0.1 behind Nginx); `./update.sh` is the in-place update path on an already-deployed host (pull, reinstall, refresh Nginx/systemd, restart). `scripts/install_server.sh` is legacy timer-based sync only. `DASHBOARD_TOKEN` must be set for any non-localhost exposure — without it the dashboard only allows loopback access, and its absence also hides the CSRF gate described above.
+`./deploy.sh` is the single supported web deploy entry (venv + Nginx + systemd, service `pixiv-novel-sync` on 127.0.0.1 behind Nginx); `./update.sh` is the in-place update path on an already-deployed host (pull, reinstall, refresh Nginx/systemd, restart). `scripts/install_server.sh` is legacy timer-based sync only. `DASHBOARD_TOKEN` must be set for any non-localhost exposure; tokenless loopback mode still enforces Host and CSRF checks.
