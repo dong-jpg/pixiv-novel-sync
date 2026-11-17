@@ -150,11 +150,10 @@ def _run_direct_sync_task(
     add_log("success", f"登录成功, 用户ID: {auth_result.user_id}")
 
     db = Database(settings.storage.db_path)
-    prepare_schema(db)
-    storage = FileStorage(settings)
-    storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
-
     try:
+        prepare_schema(db)
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         service = BookmarkNovelSyncService(
             api=api,
             db=db,
@@ -354,6 +353,8 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         old_stats = (existing or {}).get("stats") or {}
 
         def keep_refined_keywords() -> None:
+            if params.get("reset") or result.get("scope_changed"):
+                return  # 旧范围的精炼词不能泄漏进重新计算的画像，尤其是新范围为空时。
             refined = old_stats.get("refined_keywords")
             if isinstance(refined, list) and refined:
                 stats["refined_keywords"] = list(refined)
@@ -484,6 +485,7 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
                 profile_id=profile_id,
                 search_plan=search_plan,
                 progress_callback=progress_callback,
+                claim_finalization=context.get("claim_finalization"),
             )
         except InterruptedError:
             # 用户主动取消：记录日志后向上传播，由 JobRunner 统一收口为 cancelled 终态，

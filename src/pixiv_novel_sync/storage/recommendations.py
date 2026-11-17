@@ -39,24 +39,24 @@ class RecommendationsMixin:
         return self._row_to_preference_profile(row) if row else None
 
     def create_preference_profile(self, data: dict[str, Any]) -> int:
-        if data.get("is_default"):
-            self.conn.execute("UPDATE preference_profiles SET is_default = 0")
-        cursor = self.conn.execute(
-            """
-            INSERT INTO preference_profiles (name, description, source_scope_json, stats_json, profile_json, is_default)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                data.get("name") or "未命名偏好画像",
-                data.get("description"),
-                json.dumps(data.get("source_scope") or {}, ensure_ascii=False),
-                json.dumps(data.get("stats") or {}, ensure_ascii=False),
-                json.dumps(data.get("profile") or {}, ensure_ascii=False),
-                1 if data.get("is_default") else 0,
-            ),
-        )
-        self._commit_if_needed()
-        return int(cursor.lastrowid)
+        with self.transaction():
+            if data.get("is_default"):
+                self.conn.execute("UPDATE preference_profiles SET is_default = 0")
+            cursor = self.conn.execute(
+                """
+                INSERT INTO preference_profiles (name, description, source_scope_json, stats_json, profile_json, is_default)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data.get("name") or "未命名偏好画像",
+                    data.get("description"),
+                    json.dumps(data.get("source_scope") or {}, ensure_ascii=False),
+                    json.dumps(data.get("stats") or {}, ensure_ascii=False),
+                    json.dumps(data.get("profile") or {}, ensure_ascii=False),
+                    1 if data.get("is_default") else 0,
+                ),
+            )
+            return int(cursor.lastrowid)
 
     def update_preference_profile(self, profile_id: int, data: dict[str, Any]) -> None:
         allowed = {"name", "description", "source_scope", "stats", "profile", "is_default"}
@@ -68,16 +68,6 @@ class RecommendationsMixin:
         for key in ("source_scope", "stats", "profile"):
             if key in data and not isinstance(data[key], dict):
                 raise ValueError(f"{key} 必须是对象")
-        current = self.get_preference_profile(profile_id)
-        if current is None:
-            raise ValueError("偏好画像不存在")
-        if "is_default" in data and not data["is_default"] and current.get("is_default"):
-            others = self.conn.execute(
-                "SELECT COUNT(*) FROM preference_profiles WHERE is_default = 1 AND id != ?",
-                (profile_id,),
-            ).fetchone()[0]
-            if int(others) == 0:
-                raise ValueError("不能取消唯一的默认画像")
         fields: list[str] = []
         params: list[Any] = []
         for key in ("name", "description"):
@@ -95,14 +85,29 @@ class RecommendationsMixin:
             return
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(profile_id)
-        if data.get("is_default"):
-            self.conn.execute("UPDATE preference_profiles SET is_default = 0 WHERE id != ?", (profile_id,))
-        self.conn.execute(f"UPDATE preference_profiles SET {', '.join(fields)} WHERE id = ?", params)
-        self._commit_if_needed()
+        with self.transaction():
+            # Existence and default guards must use the same write snapshot as
+            # the update: a concurrently deleted target must not clear the
+            # remaining default profile before an UPDATE that affects no rows.
+            current = self.get_preference_profile(profile_id)
+            if current is None:
+                raise ValueError("偏好画像不存在")
+            if "is_default" in data and not data["is_default"] and current.get("is_default"):
+                others = self.conn.execute(
+                    "SELECT COUNT(*) FROM preference_profiles WHERE is_default = 1 AND id != ?",
+                    (profile_id,),
+                ).fetchone()[0]
+                if int(others) == 0:
+                    raise ValueError("不能取消唯一的默认画像")
+            if data.get("is_default"):
+                self.conn.execute("UPDATE preference_profiles SET is_default = 0 WHERE id != ?", (profile_id,))
+            self.conn.execute(f"UPDATE preference_profiles SET {', '.join(fields)} WHERE id = ?", params)
 
     def set_default_preference_profile(self, profile_id: int) -> None:
-        self.conn.execute("UPDATE preference_profiles SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
-        self._commit_if_needed()
+        with self.transaction():
+            if self.get_preference_profile(profile_id) is None:
+                raise ValueError("偏好画像不存在")
+            self.conn.execute("UPDATE preference_profiles SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
 
     def delete_preference_profile(self, profile_id: int) -> None:
         self.conn.execute("DELETE FROM preference_profiles WHERE id = ?", (profile_id,))
@@ -219,17 +224,7 @@ class RecommendationsMixin:
     ) -> None:
         """单事务合并一批分析结果: UPSERT 词项计数 + 累加标量 + 记录已分析小说。"""
         with self.transaction():
-            existing = self.conn.execute(
-                "SELECT min_text_length, novel_count FROM preference_accumulator WHERE id = 1"
-            ).fetchone()
-            if (
-                existing is not None
-                and int(existing["min_text_length"]) != int(min_text_length)
-                and int(existing["novel_count"] or 0) > 0
-            ):
-                self.conn.execute("DELETE FROM preference_term_counts")
-                self.conn.execute("DELETE FROM preference_analyzed_novels")
-                self.conn.execute("DELETE FROM preference_accumulator")
+            self.prepare_preference_accumulator_scope(min_text_length)
             # 1. UPSERT 词项计数
             for term_type, counter in term_deltas.items():
                 if not counter:
@@ -246,15 +241,6 @@ class RecommendationsMixin:
                 )
 
             # 2. 累加标量(读-改-写;累加器单行)
-            self.conn.execute(
-                """
-                INSERT INTO preference_accumulator (id, novel_count, series_novel_count, total_chars,
-                    length_buckets_json, source_dist_json, x_restrict_dist_json, min_text_length)
-                VALUES (1, 0, 0, 0, '{}', '{}', '{}', ?)
-                ON CONFLICT(id) DO NOTHING
-                """,
-                (int(min_text_length),),
-            )
             cur = self.get_preference_accumulator()
             new_length = self._merge_count_dict(cur["length_buckets"], scalar_deltas.get("length_buckets", {}))
             new_source = self._merge_count_dict(cur["source_dist"], scalar_deltas.get("source_dist", {}))
@@ -289,6 +275,26 @@ class RecommendationsMixin:
                     "INSERT OR IGNORE INTO preference_analyzed_novels (novel_id) VALUES (?)",
                     [(int(nid),) for nid in analyzed_ids],
                 )
+
+    def prepare_preference_accumulator_scope(self, min_text_length: int) -> bool:
+        """选择分析范围；门槛变化时原子清空旧统计，并记录空范围。"""
+        with self.transaction():
+            existing = self.conn.execute(
+                "SELECT min_text_length FROM preference_accumulator WHERE id = 1"
+            ).fetchone()
+            scope_changed = existing is not None and int(existing[0]) != int(min_text_length)
+            if scope_changed:
+                self.reset_preference_accumulator()
+            self.conn.execute(
+                """
+                INSERT INTO preference_accumulator (id, novel_count, series_novel_count, total_chars,
+                    length_buckets_json, source_dist_json, x_restrict_dist_json, min_text_length)
+                VALUES (1, 0, 0, 0, '{}', '{}', '{}', ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (int(min_text_length),),
+            )
+            return scope_changed
 
     def _merge_count_dict(self, base: dict[str, Any], delta: dict[str, Any]) -> dict[str, int]:
         out: dict[str, int] = {str(k): int(v) for k, v in (base or {}).items()}

@@ -25,6 +25,7 @@ from .utils import (
     _normalize_int,
     _normalize_optional_int,
     _settings_to_dict,
+    _yaml_write_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -1008,35 +1009,49 @@ class SettingsManager:
         self._cache: Settings | None = None
         self._cache_time: float = 0.0
         self._cache_ttl: float = 5.0  # 缓存 5 秒
+        self._cache_env_path: str | None = None
 
     def load(self, env_path: str | None = None) -> Settings:
-        now = time.time()
-        if self._cache is not None and (now - self._cache_time) < self._cache_ttl:
-            return self._cache
-        settings = load_settings(self.config_path, env_path)
-        self._cache = settings
-        self._cache_time = now
-        return settings
+        # 与保存/失效串行：旧配置加载不能在一次成功保存后重新填回缓存。
+        with _yaml_write_lock:
+            now = time.monotonic()
+            if (self._cache is not None and self._cache_env_path == env_path
+                    and (now - self._cache_time) < self._cache_ttl):
+                return self._cache
+            settings = load_settings(self.config_path, env_path)
+            self._cache = settings
+            self._cache_time = now
+            self._cache_env_path = env_path
+            return settings
 
     def invalidate(self) -> None:
         """手动失效缓存（保存设置后调用）。"""
-        self._cache = None
-        self._cache_time = 0.0
+        with _yaml_write_lock:
+            self._cache = None
+            self._cache_time = 0.0
 
     def set_auto_sync_enabled(self, enabled: bool) -> bool:
         """只改定时总开关。不走整份 save_sync_settings，避免把别的字段写成默认值。"""
         if not self.config_path:
             raise ValueError("缺少 config_path，无法保存设置")
-        config_path = Path(self.config_path)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_data = _load_yaml_file(config_path)
-        sync_data = config_data.setdefault("sync", {})
-        sync_data["auto_sync_enabled"] = bool(enabled)
-        _atomic_write_yaml(config_path, config_data)
-        self.invalidate()
+        with _yaml_write_lock:
+            config_path = Path(self.config_path)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_data = _load_yaml_file(config_path)
+            sync_data = config_data.setdefault("sync", {})
+            sync_data["auto_sync_enabled"] = bool(enabled)
+            _atomic_write_yaml(config_path, config_data)
+            self.invalidate()
         return bool(enabled)
 
     def save_sync_settings(
+        self, payload: dict[str, Any], section: str | None = None
+    ) -> dict[str, Any]:
+        # 原子替换只防止半文件；整个读-改-写必须持锁，才能保留并发分区保存。
+        with _yaml_write_lock:
+            return self._save_sync_settings(payload, section)
+
+    def _save_sync_settings(
         self, payload: dict[str, Any], section: str | None = None
     ) -> dict[str, Any]:
         if not self.config_path:

@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 from pixiv_novel_sync.models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 from pixiv_novel_sync.preferences import PreferenceAnalyzer

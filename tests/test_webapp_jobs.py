@@ -1111,6 +1111,16 @@ def test_task_log_status_for_stats_keeps_succeeded_for_clean_run():
     assert _task_log_status_for_stats({"remaining": 6000}) == JobStatus.SUCCEEDED.value
 
 
+def test_task_log_status_for_stats_does_not_hide_failed_novels():
+    assert _task_log_status_for_stats({"novels": 2, "failed": 1}) == "partial"
+    assert _task_log_status_for_stats({
+        "novels": 2, "failed": 1, "incomplete": True, "rotation_pending": True,
+    }) == "partial"
+    assert _task_log_status_for_stats({
+        "novels": 2, "failed": 0, "incomplete": True, "rotation_pending": True,
+    }) == JobStatus.SUCCEEDED.value
+
+
 def test_task_log_status_for_stats_keeps_rotation_round_succeeded():
     """按设计跑不完的轮次不该记 partial：256 个关注作者 ÷ 每轮 users_limit 个。
 

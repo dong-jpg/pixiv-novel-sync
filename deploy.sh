@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 umask 077
 
 # 颜色定义
@@ -31,7 +31,7 @@ fi
 # 1. 安装系统依赖
 echo -e "${GREEN}[1/8] 安装系统依赖...${NC}"
 sudo apt update -qq
-sudo apt install -y -qq python3 python3-pip python3-venv git nginx acl gettext-base > /dev/null 2>&1
+sudo apt install -y -qq python3 python3-pip python3-venv git nginx acl gettext-base curl > /dev/null 2>&1
 
 # 2. 克隆或更新代码
 echo -e "${GREEN}[2/8] 获取最新代码...${NC}"
@@ -42,8 +42,17 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     cp -f config/config.yaml config/config.yaml.bak 2>/dev/null || true
 
     # 拉取最新代码
-    git fetch origin
-    git reset --hard origin/main
+    UPDATE_BRANCH="$(git symbolic-ref --quiet --short HEAD)"
+    case "$UPDATE_BRANCH" in
+        main|ai-writing) ;;
+        *) echo "请先切换到 main 或 ai-writing 分支。" >&2; exit 1 ;;
+    esac
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        echo "存在未提交的代码修改，请先保存后部署。" >&2
+        exit 1
+    fi
+    git fetch origin "$UPDATE_BRANCH"
+    git merge --ff-only "origin/$UPDATE_BRANCH"
 else
     # 目录已有数据但没有 .git：说明是手工部署或上次 clone 不完整，拒绝覆盖
     if [ -d "$INSTALL_DIR/data" ] || [ -f "$INSTALL_DIR/.env" ] || [ -f "$INSTALL_DIR/config/config.yaml" ]; then
@@ -51,8 +60,13 @@ else
         echo -e "${YELLOW}请先备份或手动初始化 git 仓库。${NC}"
         exit 1
     fi
-    rm -rf "$INSTALL_DIR"
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    # 空目录由 git clone 接受；非空目录让 Git 明确拒绝，不递归删除未知文件。
+    DEPLOY_BRANCH="${PIXIV_BRANCH:-main}"
+    case "$DEPLOY_BRANCH" in
+        main|ai-writing) ;;
+        *) echo "PIXIV_BRANCH 仅允许 main 或 ai-writing。" >&2; exit 1 ;;
+    esac
+    git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 fi
 
@@ -64,7 +78,7 @@ find . -type f -name "*.pyo" -delete 2>/dev/null || true
 
 # 4. 创建虚拟环境并安装依赖
 echo -e "${GREEN}[4/8] 安装 Python 依赖...${NC}"
-python3 -m venv --clear .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip -q
 pip install -e . -q
@@ -192,4 +206,5 @@ else
     echo -e "${RED}服务启动失败，请检查日志:${NC}"
     sudo journalctl -u ${SERVICE_NAME} --no-pager -n 20
     sudo nginx -t 2>&1 || true
+    exit 1
 fi

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 umask 077
 
 GREEN='\033[0;32m'
@@ -39,11 +39,10 @@ on_error() {
     exit 1
 }
 
-trap on_error ERR
-
 echo -e "${GREEN}=== Pixiv Novel Sync 更新脚本 ===${NC}"
 
 cd "$INSTALL_DIR"
+trap on_error ERR
 
 # 1. 备份配置
 echo -e "${GREEN}[1/6] 备份配置...${NC}"
@@ -57,8 +56,18 @@ fi
 
 # 2. 拉取最新代码
 echo -e "${GREEN}[2/6] 拉取最新代码...${NC}"
-git fetch origin
-git reset --hard origin/main
+UPDATE_BRANCH="$(git symbolic-ref --quiet --short HEAD)"
+case "$UPDATE_BRANCH" in
+    main|ai-writing) ;;
+    *) echo "请先切换到 main 或 ai-writing 分支。" >&2; exit 1 ;;
+esac
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "存在未提交的代码修改，请先保存后更新。" >&2
+    exit 1
+fi
+git rev-parse HEAD > "$BACKUP_DIR/previous-commit.txt"
+git fetch origin "$UPDATE_BRANCH"
+git merge --ff-only "origin/$UPDATE_BRANCH"
 
 # 3. 清理旧缓存
 echo -e "${GREEN}[3/6] 清理旧缓存...${NC}"
@@ -122,13 +131,21 @@ echo -e "${GREEN}[6/6] 重启服务...${NC}"
 sudo systemctl daemon-reload
 sudo systemctl restart ${SERVICE_NAME}
 
-sleep 2
+HEALTHY=false
+for attempt in $(seq 1 15); do
+    sleep 2
+    if sudo systemctl is-active --quiet "$SERVICE_NAME" \
+        && curl --fail --silent --max-time 2 "http://127.0.0.1:${FLASK_PORT}/api/health" > /dev/null; then
+        HEALTHY=true
+        break
+    fi
+done
 
-if sudo systemctl is-active --quiet ${SERVICE_NAME}; then
-    rm -rf "$BACKUP_DIR"
+if [ "$HEALTHY" = true ]; then
     echo -e "${GREEN}=== 更新成功! ===${NC}"
     echo ""
     echo "访问地址: ${PUBLIC_URL}"
+    echo "配置与更新前提交记录保留在: ${BACKUP_DIR}"
     echo ""
     echo "缓存管理:"
     echo "  查看缓存大小: du -sh /var/cache/nginx/pixiv_img"
@@ -138,4 +155,6 @@ if sudo systemctl is-active --quiet ${SERVICE_NAME}; then
 else
     echo -e "${RED}服务启动失败，请检查日志${NC}"
     sudo journalctl -u ${SERVICE_NAME} --no-pager -n 20
+    echo "更新前提交与配置备份: ${BACKUP_DIR}；数据库迁移后请按备份方案回退。" >&2
+    exit 1
 fi

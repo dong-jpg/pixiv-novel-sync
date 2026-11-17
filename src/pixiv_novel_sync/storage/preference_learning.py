@@ -164,31 +164,36 @@ def capture_sources(conn):
     A series rating takes precedence over ratings of its individual chapters.
     """
     feedback = [dict(row) for row in conn.execute(
-        "SELECT * FROM preference_reading_feedback WHERE reaction!='clear' ORDER BY source_kind,source_id"
+        "SELECT f.*,n.novel_id AS existing_novel,n.series_id AS parent_series,s.series_id AS existing_series "
+        "FROM preference_reading_feedback f "
+        "LEFT JOIN novels n ON f.source_kind='novel' AND n.novel_id=f.source_id "
+        "LEFT JOIN series s ON f.source_kind='series' AND s.series_id=f.source_id "
+        "WHERE f.reaction!='clear' ORDER BY f.source_kind,f.source_id LIMIT 2001"
     )]
     if len(feedback) > 2000:
         raise WorkAnalysisError("input_too_large", 413)
     counts = {key: sum(row["reaction"] == key for row in feedback) for key in ("liked", "disliked", "neutral")}
     rated_series = {row["source_id"] for row in feedback if row["source_kind"] == "series"}
-    sources, identity, missing = [], [], 0
-    for signal in feedback:
-        kind, source_id = signal["source_kind"], signal["source_id"]
-        if not source_exists(conn, kind, source_id):
-            continue
-        signal_identity = {key: signal[key] for key in ("source_kind", "source_id", "reaction", "note", "version")}
-        if kind == "novel":
-            parent = conn.execute("SELECT series_id FROM novels WHERE novel_id=?", (source_id,)).fetchone()
-            if parent is not None and parent["series_id"] in rated_series:
-                identity.append({**signal_identity, "covered_by_series": parent["series_id"]})
-                continue
-        row = conn.execute(
-            "SELECT run_id,report_json FROM work_analysis_runs WHERE source_kind=? AND source_id=? "
-            "AND status='succeeded' AND deleted_at IS NULL AND report_stale=0 AND archive_outdated=0 "
-            "AND report_json IS NOT NULL ORDER BY created_at DESC,run_id DESC LIMIT 1", (kind, source_id),
-        ).fetchone()
-        if row is None:
-            identity.append({**signal_identity, "report_run_id": None})
-            missing += 1
+    eligible = {
+        (signal["source_kind"], signal["source_id"]): signal for signal in feedback
+        if (signal["existing_novel"] is not None or signal["existing_series"] is not None)
+        and not (signal["source_kind"] == "novel" and signal["parent_series"] in rated_series)
+    }
+    # Fetch the latest report for each feedback in one query. Stream its rows so
+    # rejected/oversized inputs do not first load every report into memory.
+    captured, source_bytes = {}, 2  # canonical JSON array brackets
+    reports = conn.execute(
+        "SELECT f.source_kind,f.source_id,r.run_id,r.report_json FROM preference_reading_feedback f "
+        "JOIN work_analysis_runs r ON r.run_id=("
+        "SELECT w.run_id FROM work_analysis_runs w WHERE w.source_kind=f.source_kind AND w.source_id=f.source_id "
+        "AND w.status='succeeded' AND w.deleted_at IS NULL AND w.report_stale=0 AND w.archive_outdated=0 "
+        "AND w.report_json IS NOT NULL ORDER BY w.created_at DESC,w.run_id DESC LIMIT 1) "
+        "WHERE f.reaction!='clear' ORDER BY f.source_kind,f.source_id"
+    )
+    for row in reports:
+        key = (row["source_kind"], row["source_id"])
+        signal = eligible.get(key)
+        if signal is None:
             continue
         try:
             report = json.loads(row["report_json"])
@@ -197,21 +202,37 @@ def capture_sources(conn):
                 raise WorkAnalysisError("artifact_invalid")
             artifact = validate_artifact(report["artifact"], final=True)
         except (KeyError, TypeError, ValueError):
-            identity.append({**signal_identity, "report_run_id": None})
-            missing += 1
             continue
         digest = hashlib.sha256(row["report_json"].encode("utf-8")).hexdigest()
-        identity.append({**signal_identity, "report_run_id": row["run_id"], "report_hash": digest})
-        sources.append({
-            "source_key": f"{kind}:{source_id}", "source_kind": kind, "source_id": source_id,
+        source = {
+            "source_key": f"{key[0]}:{key[1]}", "source_kind": key[0], "source_id": key[1],
             "reaction": signal["reaction"], "note": signal["note"], "feedback_version": signal["version"],
             "report_run_id": row["run_id"], "report_hash": digest,
-            "claims": [{key: claim[key] for key in ("claim_id", "dimension", "label", "certainty", "evidence_ids")}
+            "claims": [{name: claim[name] for name in ("claim_id", "dimension", "label", "certainty", "evidence_ids")}
                        for claim in artifact["claims"]],
             "evidence": list(artifact["evidence"].values()),
             "uncertainties": artifact["uncertainties"],
-        })
-    dump(sources)
+        }
+        source_bytes += len(canonical_bytes(source)) + bool(captured)
+        if source_bytes > 16 * 1024 * 1024:
+            raise WorkAnalysisError("input_too_large", 413)
+        captured[key] = source
+    sources, identity, missing = [], [], 0
+    for signal in feedback:
+        kind, source_id = signal["source_kind"], signal["source_id"]
+        if signal["existing_novel"] is None and signal["existing_series"] is None:
+            continue
+        signal_identity = {key: signal[key] for key in ("source_kind", "source_id", "reaction", "note", "version")}
+        if kind == "novel" and signal["parent_series"] in rated_series:
+            identity.append({**signal_identity, "covered_by_series": signal["parent_series"]})
+            continue
+        source = captured.get((kind, source_id))
+        if source is None:
+            identity.append({**signal_identity, "report_run_id": None})
+            missing += 1
+            continue
+        identity.append({**signal_identity, "report_run_id": source["report_run_id"], "report_hash": source["report_hash"]})
+        sources.append(source)
     return {"sources": sources, "source_fingerprint": fingerprint(identity), "feedback_counts": counts,
             "eligible_works": len(sources), "missing_reports": missing}
 

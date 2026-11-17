@@ -313,7 +313,7 @@
 
 {% block extra_scripts %}
 {% include "dashboard_ai_output_panel.html" %}
-<script>
+<script nonce="{[ csp_nonce() ]}">
   window.initVueApp({
     components: { 'output-panel': window.aiOutputPanelComponent },
     setup() {

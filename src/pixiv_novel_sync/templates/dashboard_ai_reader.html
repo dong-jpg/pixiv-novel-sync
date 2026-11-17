@@ -186,7 +186,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script>
+<script nonce="{[ csp_nonce() ]}">
 function selectionToCodePointRange(root, selection) {
   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) throw new Error('请选择连续片段');
   const range = selection.getRangeAt(0);

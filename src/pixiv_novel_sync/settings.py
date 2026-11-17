@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import logging
+import math
 import os
 import time
 
@@ -172,7 +173,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
     _timeout_raw = _timeout_env if _timeout_env is not None and _timeout_env.strip() else pixiv_raw.get("timeout", 30)
     try:
         timeout = int(_timeout_raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         timeout = 30
     # 拼错的值（如 flase）必须 fail-closed 回落默认（开启校验），不能解析成 False；
     # YAML 侧同理，字符串 "false" 不能被 bool() 当成 True。
@@ -330,7 +331,7 @@ def _parse_optional_int(value: str | None) -> int | None:
         return None
     try:
         return int(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -340,7 +341,7 @@ def _coerce_optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -349,8 +350,9 @@ def _coerce_float(value: Any, default: float) -> float:
     if value in (None, ""):
         return float(default)
     try:
-        return float(value)
-    except (ValueError, TypeError):
+        result = float(value)
+        return result if math.isfinite(result) else float(default)
+    except (ValueError, TypeError, OverflowError):
         return float(default)
 
 
@@ -359,7 +361,7 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
     try:
         return int(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return default
 
 

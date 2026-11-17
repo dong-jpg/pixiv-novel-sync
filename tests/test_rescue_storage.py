@@ -1400,3 +1400,57 @@ def test_rescue_items_batch_matches_single_item_semantics(db: Database) -> None:
     assert batch["novel:82"]["rescue_state"] == single_standalone["rescue_state"]
     assert batch["series:80"]["rescue_state"] == single_series["rescue_state"]
     assert batch["series:80"]["personal_hold"] == single_series["personal_hold"]
+
+
+def test_mixed_lookup_keeps_chapter_inheriting_requested_parent(db: Database) -> None:
+    _seed_series(db, 80, status="deleted", total_novels=1)
+    _seed_novel(db, 81, series_id=80, text="章节正文", status="normal")
+    db.upsert_source(SourceRecord(81, "bookmark_public", "1"))
+    db.conn.execute(
+        "INSERT INTO pending_deletions(item_type, item_id, reason, status) "
+        "VALUES ('novel', 81, 'removed_bookmark', 'pending')"
+    )
+    db.conn.commit()
+
+    single = db.get_rescue_novel(81)
+    batch = db.get_rescue_items_batch([81], [80])
+
+    assert set(batch) == {"novel:81", "series:80"}
+    assert batch["novel:81"] == {**single, "text_raw": ""}
+    assert batch["novel:81"]["eligibility_reason"] == "parent_series_unavailable"
+    assert batch["novel:81"]["pending_removal"] is True
+    assert batch["novel:81"]["personal_hold"] is False
+
+
+@pytest.mark.parametrize("size", [1, 20, 40])
+def test_lookup_query_count_is_bounded_and_never_reads_bodies(db: Database, size: int) -> None:
+    for index in range(size):
+        _seed_series(db, 100 + index, status="deleted", total_novels=1)
+        _seed_novel(db, 1000 + index, series_id=100 + index, status="normal")
+    db.conn.execute(
+        "INSERT INTO assets(novel_id, asset_type, remote_url, local_path, file_hash) "
+        "VALUES (1000, 'cover', 'https://example.invalid/cover', 'cover.jpg', 'cover')"
+    )
+    db.conn.commit()
+    statements: list[str] = []
+    reads: list[tuple[str, str]] = []
+
+    def record_read(action, table, column, _database, _trigger):
+        import sqlite3
+        if action == sqlite3.SQLITE_READ:
+            reads.append((table, column))
+        return sqlite3.SQLITE_OK
+
+    db.conn.set_trace_callback(statements.append)
+    db.conn.set_authorizer(record_read)
+    try:
+        items = db.get_rescue_items_batch(list(range(1000, 1000 + size)), [])
+    finally:
+        db.conn.set_trace_callback(None)
+        db.conn.set_authorizer(None)
+
+    assert len(items) == size
+    assert items["novel:1000"]["has_cover"] is True
+    assert all(not item["text_raw"] for item in items.values())
+    assert ("novel_texts", "text_raw") not in reads
+    assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) <= 3

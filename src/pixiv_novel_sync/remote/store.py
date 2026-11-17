@@ -427,8 +427,11 @@ class RemoteStore:
     def get_run(self, run_id: str):
         require_uuid(run_id)
         with self.read() as conn:
-            row = conn.execute("""SELECT r.*,(SELECT count(*) FROM attempts a WHERE a.run_id=r.run_id) AS attempt_count
-                                  FROM runs r WHERE run_id=?""", (run_id,)).fetchone()
+            row = conn.execute("""SELECT r.*,(SELECT count(*) FROM attempts a WHERE a.run_id=r.run_id) AS attempt_count,
+                                  b.state AS artifact_state FROM runs r
+                                  LEFT JOIN attempts success ON success.run_id=r.run_id AND success.state='succeeded'
+                                  LEFT JOIN artifacts b ON b.attempt_id=success.attempt_id AND b.chunk_id=0
+                                  WHERE r.run_id=?""", (run_id,)).fetchone()
             if not row:
                 raise RemoteError("run_not_found", 404)
             return dict(row)
@@ -437,8 +440,11 @@ class RemoteStore:
         require_int(limit, 1, 50)
         with self.read() as conn:
             return [dict(row) for row in conn.execute("""SELECT r.*,
-                (SELECT count(*) FROM attempts a WHERE a.run_id=r.run_id) AS attempt_count
-                FROM runs r ORDER BY created_at DESC,run_id LIMIT ?""", (limit,))]
+                (SELECT count(*) FROM attempts a WHERE a.run_id=r.run_id) AS attempt_count,
+                b.state AS artifact_state FROM runs r
+                LEFT JOIN attempts success ON success.run_id=r.run_id AND success.state='succeeded'
+                LEFT JOIN artifacts b ON b.attempt_id=success.attempt_id AND b.chunk_id=0
+                ORDER BY r.created_at DESC,r.run_id LIMIT ?""", (limit,))]
 
     def rotate_epoch(self, now: float):
         require_time(now)

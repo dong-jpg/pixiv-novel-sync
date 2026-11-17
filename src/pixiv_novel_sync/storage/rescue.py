@@ -1047,9 +1047,11 @@ class RescueMixin:
             return "success"
         return "partial"
 
-    def _series_summary_rows(self, series_id: int | None = None) -> list[dict[str, Any]]:
-        where_sql = "WHERE se.series_id = ?" if series_id is not None else ""
-        params: tuple[Any, ...] = (int(series_id),) if series_id is not None else ()
+    def _series_summary_rows(self, series_ids: list[int]) -> list[dict[str, Any]]:
+        if not series_ids:
+            return []
+        params = tuple(sorted({int(value) for value in series_ids}))
+        placeholders = ", ".join("?" for _ in params)
         rows = self.conn.execute(
             f"""
             SELECT
@@ -1081,14 +1083,19 @@ class RescueMixin:
                 se.last_checked_at,
                 se.last_seen_at AS updated_at,
                 ro.action AS override_action,
-                ro.note AS override_note
+                ro.note AS override_note,
+                EXISTS (
+                    SELECT 1 FROM pending_deletions pd
+                    WHERE pd.item_type = 'series' AND pd.item_id = se.series_id
+                      AND pd.status = 'pending'
+                ) AS pending_removal
             FROM series se
             LEFT JOIN users u ON u.user_id = se.user_id
             LEFT JOIN novels n ON n.series_id = se.series_id
             LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
             LEFT JOIN rescue_overrides ro
               ON ro.item_type = 'series' AND ro.item_id = se.series_id
-            {where_sql}
+            WHERE se.series_id IN ({placeholders})
             GROUP BY
                 se.series_id, se.title, se.description, se.user_id, u.name,
                 se.cover_url, se.total_novels, se.status, se.last_checked_at,
@@ -1134,22 +1141,11 @@ class RescueMixin:
             "updated_at": row.get("updated_at"),
             "override_action": row.get("override_action"),
             "override_note": str(row.get("override_note") or ""),
-            "pending_removal": self._pending_removal("series", int(row["series_id"])),
+            "pending_removal": bool(row.get("pending_removal")),
         }
 
-    def _pending_removal(self, item_type: str, item_id: int) -> bool:
-        row = self.conn.execute(
-            """
-            SELECT 1 FROM pending_deletions
-            WHERE item_type = ? AND item_id = ? AND status = 'pending'
-            LIMIT 1
-            """,
-            (item_type, int(item_id)),
-        ).fetchone()
-        return row is not None
-
     def evaluate_rescue_series(self, series_id: int) -> dict[str, Any] | None:
-        rows = self._series_summary_rows(int(series_id))
+        rows = self._series_summary_rows([int(series_id)])
         if not rows:
             return None
         return self._series_evaluation_payload(rows[0])
@@ -1175,7 +1171,7 @@ class RescueMixin:
         ids_tuple = tuple(int(sid) for sid in series_ids)
         placeholders = ", ".join("?" for _ in ids_tuple)
         # 每个系列取：已备份章节数、最晚一章的创建日期+ID、所有章节最高 x_restrict、
-        # 有封面的章节数（>0 即为真，与 has_rescue_series_cover 同口径）、作者头像（users.raw_json）
+        # 是否有封面、作者头像（users.raw_json）
         rows = self.conn.execute(
             f"""
             SELECT
@@ -1208,12 +1204,12 @@ class RescueMixin:
                     FROM novels n5
                     WHERE n5.series_id = se.series_id
                 ), 0) AS x_restrict,
-                COALESCE((
-                    SELECT COUNT(*)
+                EXISTS (
+                    SELECT 1
                     FROM novels n6
                     JOIN assets a ON a.novel_id = n6.novel_id AND a.asset_type = 'cover'
                     WHERE n6.series_id = se.series_id
-                ), 0) AS cover_count,
+                ) AS has_cover,
                 u.raw_json AS user_raw_json
             FROM series se
             LEFT JOIN users u ON u.user_id = se.user_id
@@ -1241,7 +1237,7 @@ class RescueMixin:
                 "last_create_date": row["last_create_date"],
                 "latest_novel_id": int(row["latest_novel_id"]) if row["latest_novel_id"] else None,
                 "x_restrict": int(row["x_restrict"] or 0),
-                "has_cover": bool(int(row["cover_count"] or 0) > 0),
+                "has_cover": bool(row["has_cover"]),
                 "author_avatar_url": author_avatar_url,
             }
         return result
@@ -1255,10 +1251,20 @@ class RescueMixin:
         return parsed if isinstance(parsed, list) else []
 
     def _novel_rescue_row(self, novel_id: int, include_text: bool = True) -> dict[str, Any] | None:
+        rows = self._novel_rescue_rows([int(novel_id)], include_text=include_text)
+        return rows[0] if rows else None
+
+    def _novel_rescue_rows(
+        self, novel_ids: list[int], *, include_text: bool = False
+    ) -> list[dict[str, Any]]:
+        if not novel_ids:
+            return []
+        params = tuple(sorted({int(value) for value in novel_ids}))
+        placeholders = ", ".join("?" for _ in params)
         # 只有按 ID 取正文（get_rescue_novel）需要 text_raw；评估与 lookup 只看 has_content，
         # 不要为了判断「有没有正文」把整本正文读出来再丢掉
         text_column = "nt.text_raw" if include_text else "'' AS text_raw"
-        row = self.conn.execute(
+        rows = self.conn.execute(
             f"""
             SELECT
                 n.novel_id,
@@ -1276,17 +1282,26 @@ class RescueMixin:
                 {text_column},
                 COALESCE(nt.has_content, 0) AS has_content,
                 ro.action AS override_action,
-                ro.note AS override_note
+                ro.note AS override_note,
+                EXISTS (
+                    SELECT 1 FROM pending_deletions pd
+                    WHERE pd.item_type = 'novel' AND pd.item_id = n.novel_id
+                      AND pd.status = 'pending'
+                ) AS pending_removal,
+                EXISTS (
+                    SELECT 1 FROM assets a
+                    WHERE a.novel_id = n.novel_id AND a.asset_type = 'cover'
+                ) AS has_cover
             FROM novels n
             LEFT JOIN users u ON u.user_id = n.user_id
             LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
             LEFT JOIN rescue_overrides ro
               ON ro.item_type = 'novel' AND ro.item_id = n.novel_id
-            WHERE n.novel_id = ?
+            WHERE n.novel_id IN ({placeholders})
             """,
-            (int(novel_id),),
-        ).fetchone()
-        return dict(row) if row else None
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _novel_evaluation_payload(
         self,
@@ -1350,7 +1365,8 @@ class RescueMixin:
             "updated_at": data.get("updated_at"),
             "override_action": data.get("override_action"),
             "override_note": str(data.get("override_note") or ""),
-            "pending_removal": self._pending_removal("novel", int(data["novel_id"])),
+            "pending_removal": bool(data.get("pending_removal")),
+            "has_cover": bool(data.get("has_cover")),
         }
 
     def evaluate_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
@@ -1453,13 +1469,6 @@ class RescueMixin:
             "restrict_value": str(row["restrict_value"] or "public"),
         }
 
-    def has_rescue_cover(self, novel_id: int) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM assets WHERE novel_id = ? AND asset_type = 'cover' LIMIT 1",
-            (int(novel_id),),
-        ).fetchone()
-        return row is not None
-
     def get_rescue_series_cover_asset(self, series_id: int) -> dict[str, Any] | None:
         """系列没有独立封面资产，退而用系列下第一篇有本地封面的小说。
 
@@ -1483,17 +1492,6 @@ class RescueMixin:
             "restrict_value": str(row["restrict_value"] or "public"),
         }
 
-    def has_rescue_series_cover(self, series_id: int) -> bool:
-        row = self.conn.execute(
-            """
-            SELECT 1 FROM novels n
-            JOIN assets a ON a.novel_id = n.novel_id AND a.asset_type = 'cover'
-            WHERE n.series_id = ? LIMIT 1
-            """,
-            (int(series_id),),
-        ).fetchone()
-        return row is not None
-
     def get_rescue_items_batch(
         self,
         novel_ids: list[int],
@@ -1506,41 +1504,31 @@ class RescueMixin:
         personal_hold、pending_removal 全部合并成按批的 IN (...) 查询；
         语义与单条版一致：无备份/无救援状态 → 不出现在返回 map 里。
         """
-        novels = {}
-        series = {}
+        requested_series = {int(value) for value in series_ids}
         with self.read_transaction():
-            for novel_id in novel_ids:
-                data = self._novel_rescue_row(int(novel_id), include_text=False)
-                if data is None:
-                    continue
-                novels[int(novel_id)] = data
-            for series_id in series_ids:
-                payload = self.evaluate_rescue_series(int(series_id))
-                if payload is not None and payload.get("rescue_state") is not None:
-                    series[int(series_id)] = payload
-
-            # 父系列评估批量化：小说的 rescue_state 可能继承自父系列
-            parent_ids = sorted({
+            novels = {
+                int(row["novel_id"]): row
+                for row in self._novel_rescue_rows(novel_ids)
+            }
+            # 显式请求的系列也必须进入父系列映射，否则混合 lookup 会漏掉正常章节。
+            parent_ids = requested_series | {
                 int(data["series_id"])
                 for data in novels.values()
                 if data.get("series_id") is not None
-                and int(data["series_id"]) not in series
-            })
+            }
             parent_map: dict[int, dict[str, Any]] = {}
-            for parent_id in parent_ids:
-                payload = self.evaluate_rescue_series(parent_id)
-                if payload is not None and payload.get("rescue_state") is not None:
-                    parent_map[parent_id] = payload
+            for row in self._series_summary_rows(list(parent_ids)):
+                payload = self._series_evaluation_payload(row)
+                if payload.get("rescue_state") is not None:
+                    parent_map[int(row["series_id"])] = payload
+            series = {
+                series_id: payload for series_id, payload in parent_map.items()
+                if series_id in requested_series
+            }
 
-            # personal_hold / pending_removal 批量化
-            hold_keys: set[tuple[str, int]] = set()
-            for novel_id in novels:
-                hold_keys.add(("novel", novel_id))
-                data = novels[novel_id]
-                if data.get("series_id") is not None:
-                    pass  # 父系列 hold 不进小说 payload，与单条版语义一致
-            for series_id in series:
-                hold_keys.add(("series", series_id))
+            # pending_removal 与封面标记已随行查询取得；持有状态只做一次批量查询。
+            hold_keys = {("novel", novel_id) for novel_id in novels}
+            hold_keys.update(("series", series_id) for series_id in series)
             hold_map = self._personal_hold_batch(hold_keys)
 
             results: dict[str, dict[str, Any]] = {}

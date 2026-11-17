@@ -11,7 +11,7 @@ for (const file of [...names.map(n => `dashboard_ai_${n}.html`), 'dashboard_wiza
 }
 const chapterTemplate = fs.readFileSync(path.join(root, 'dashboard_ai_chapters.html'), 'utf8');
 const modalTemplate = fs.readFileSync(path.join(root, 'dashboard_ai_pipeline_modal.html'), 'utf8');
-const script = chapterTemplate.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\{\[[\s\S]*?\]\}/g, '1');
+const script = chapterTemplate.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1].replace(/\{\[[\s\S]*?\]\}/g, '1');
 function mount(source = script) {
   let state;
   const requests = [];
@@ -47,7 +47,7 @@ function mount(source = script) {
 }
 (async () => {
   for (const name of ['dashboard_ai_notes.html', 'dashboard_ai_project.html', 'dashboard_wizard.html']) {
-    const source = fs.readFileSync(path.join(root, name), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\{\[[\s\S]*?\]\}/g, '1');
+    const source = fs.readFileSync(path.join(root, name), 'utf8').match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1].replace(/\{\[[\s\S]*?\]\}/g, '1');
     assert.ok(mount(source).state, name + ' setup exports');
   }
   {

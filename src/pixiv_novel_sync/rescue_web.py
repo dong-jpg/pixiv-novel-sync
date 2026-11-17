@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import secrets
 import threading
 import time
@@ -172,6 +171,7 @@ def register_rescue_routes(
     app.extensions["rescue_rate_limiter_unauthenticated"] = limiter_unauthenticated
     app.extensions["rescue_rate_limiter"] = limiter
     app.extensions["rescue_rate_limiter_cover"] = limiter_cover
+    token_cache_lock = threading.RLock()
 
     def current_settings() -> Settings:
         return settings()
@@ -188,19 +188,21 @@ def register_rescue_routes(
         return str(Path(current_settings().storage.db_path).resolve())
 
     def _load_token_cache() -> tuple[str, str] | None:
-        cache = _token_cache()
-        key = _cache_key()
-        if key not in cache:
-            db = open_db()
-            try:
-                record = db.get_rescue_token_record()
-            finally:
-                db.close()
-            cache[key] = None if not record else (
-                str(record["token_hash"]),
-                str(record.get("token_prefix") or ""),
-            )
-        return cache[key]
+        # 缓存填充与轮换/撤销共用锁，防止迟到的旧库快照复活已经失效的 Token。
+        with token_cache_lock:
+            cache = _token_cache()
+            key = _cache_key()
+            if key not in cache:
+                db = open_db()
+                try:
+                    record = db.get_rescue_token_record()
+                finally:
+                    db.close()
+                cache[key] = None if not record else (
+                    str(record["token_hash"]),
+                    str(record.get("token_prefix") or ""),
+                )
+            return cache[key]
 
     def _store_token_cache(record: dict | None) -> None:
         if not record:
@@ -376,8 +378,9 @@ def register_rescue_routes(
         token_prefix = token[:12]
         db = open_db()
         try:
-            record = db.save_rescue_token_record(_token_digest(token), token_prefix)
-            _store_token_cache(record)
+            with token_cache_lock:
+                record = db.save_rescue_token_record(_token_digest(token), token_prefix)
+                _store_token_cache(record)
         finally:
             db.close()
         return jsonify(
@@ -396,8 +399,9 @@ def register_rescue_routes(
     def revoke_rescue_token():
         db = open_db()
         try:
-            db.clear_rescue_token_record()
-            _store_token_cache(None)
+            with token_cache_lock:
+                db.clear_rescue_token_record()
+                _store_token_cache(None)
         finally:
             db.close()
         return jsonify({"ok": True, "data": {"configured": False}})
@@ -454,7 +458,7 @@ def register_rescue_routes(
 
         assets.local_path 记录的是下载时 str(target)——相对当时的工作目录
         （生产即项目根），不是相对 public_dir。先按 cwd 解析；失败再按库根
-        解析兜底，两者做同一套「解析后仍在预期根内」的穿越校验。
+        解析兜底；两条路径最终都必须位于配置的书库根内，不能以 cwd 作为授权边界。
         """
         if asset is None:
             return _public_error("该备份没有封面", 404)
@@ -468,13 +472,14 @@ def register_rescue_routes(
             else current.storage.public_dir
         )
         candidate: Path | None = None
-        for base in (Path.cwd(), Path(library_root).resolve()):
+        resolved_root = Path(library_root).resolve()
+        for base in (Path.cwd(), resolved_root):
             try:
                 resolved_base = base.resolve()
                 resolved = (resolved_base / rel).resolve()
             except (OSError, ValueError):
                 continue
-            if not str(resolved).startswith(str(resolved_base) + os.sep):
+            if not resolved.is_relative_to(resolved_root):
                 continue
             if resolved.is_file():
                 candidate = resolved
@@ -615,9 +620,7 @@ def register_rescue_routes(
             # 批量取：单条版在 40 ID 时要跑 40~80 次聚合查询（每本小说还会为
             # 父系列再评一次），这里按批合并为行查询 + 批量 hold/pending 判定
             batch = db.get_rescue_items_batch(novel_ids, series_ids)
-            # 本地封面可用性：油猴据此决定是否把失效卡重建为带封面的正常卡片
-            cover_flags = {value: db.has_rescue_cover(value) for value in novel_ids}
-            # 系列卡片字段（含 has_cover，与 has_rescue_series_cover 同口径）：追更列表填空用
+            # 本地封面标记随批量小说查询取得；系列卡片字段供追更列表填空使用。
             series_cards = db.get_rescue_series_cards(series_ids) if series_ids else {}
         finally:
             db.close()
@@ -630,7 +633,7 @@ def register_rescue_routes(
                 "series_id": item.get("series_id"),
                 "rescue_state": item.get("rescue_state"),
                 "personal_hold": bool(item.get("personal_hold")),
-                "has_cover": bool(cover_flags.get(item["novel_id"], False)),
+                "has_cover": bool(item.get("has_cover")),
             }
             for item in (batch.get(f"novel:{value}") for value in novel_ids)
             if item is not None

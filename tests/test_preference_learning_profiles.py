@@ -392,6 +392,46 @@ def test_series_and_chapter_feedback_do_not_double_count_the_same_work(env):
     assert env.db.get_preference_learning_signals()["weights"]["Synthetic theme"] == 1
 
 
+@pytest.mark.parametrize("new_series_id", [None, 11])
+def test_moving_a_chapter_invalidates_the_old_series_learning_basis(env, new_series_id):
+    run = create_summary(env)
+    execute(env, run["run_id"])
+    env.learning.activate(run["run_id"], env.learning.detail(run["run_id"])["version"])
+    with env.db.transaction() as conn:
+        conn.execute("INSERT INTO series(series_id,title,user_id,total_novels) VALUES(11,'Other series',1,1)")
+        conn.execute("UPDATE novels SET series_id=? WHERE novel_id=1", (new_series_id,))
+    report = env.db.get_work_analysis_report(env.run_id)
+    assert report["archive_outdated"] and not report["report_stale"]
+    summary = env.learning.detail(run["run_id"])
+    assert summary["stale"] and not summary["active"]
+    assert summary["result"] is None and summary["sources"] == []
+    assert env.learning.state()["missing_reports"] == 1
+    assert env.db.get_preference_learning_signals()["weights"] == {}
+
+
+def test_source_capture_batches_queries_without_reading_novel_bodies(env):
+    env.learning.feedback("novel", 1, {"reaction": "liked", "expected_version": 0})
+    env.learning.feedback("series", 10, {"reaction": "liked", "expected_version": 0})
+    with env.db.transaction() as conn:
+        for source_id in range(20, 40):
+            conn.execute("INSERT INTO series(series_id,title,user_id,total_novels) VALUES(?,'Missing report',1,1)",
+                         (source_id,))
+            env.db.set_reading_feedback("series", source_id, "neutral", 0)
+    queries = []
+    with env.db.read_transaction() as conn:
+        conn.set_trace_callback(queries.append)
+        try:
+            captured = capture_sources(conn)
+        finally:
+            conn.set_trace_callback(None)
+    selects = [query for query in queries if query.lstrip().upper().startswith("SELECT")]
+    assert len(selects) <= 2
+    assert all("novel_texts" not in query.lower() for query in selects)
+    assert captured["feedback_counts"] == {"liked": 2, "disliked": 0, "neutral": 20}
+    assert captured["eligible_works"] == 1 and captured["missing_reports"] == 20
+    assert [source["source_key"] for source in captured["sources"]] == ["series:10"]
+
+
 def test_migration_is_repeatable_and_keeps_callers_transaction():
     conn = sqlite3.connect(":memory:")
     try:

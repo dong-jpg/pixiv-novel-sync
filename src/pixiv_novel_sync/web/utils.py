@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import os
 import secrets
 import threading
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # 配置文件读-改-写串行锁：save_sync_settings / set_auto_sync_enabled 两条路径
 # 并发时会互相丢更新（都先读旧 YAML 再整体回写）。进程内锁即可——本应用约定
 # 单进程部署（多 worker 会破坏单活动任务不变量，见 CLAUDE.md）。
-_yaml_write_lock = threading.Lock()
+_yaml_write_lock = threading.RLock()
 
 
 def _atomic_write_yaml(path: Path, data: Any) -> None:
@@ -298,6 +299,8 @@ def _normalize_float(value: Any, min_value: float = 0.0) -> float:
     if value in (None, ""):
         return float(min_value)
     result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("数值必须是有限数")
     if result < min_value:
         raise ValueError(f"数值不能小于 {min_value}")
     return result

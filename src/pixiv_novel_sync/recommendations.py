@@ -4,6 +4,7 @@ import difflib
 import logging
 import math
 from collections.abc import Callable
+from itertools import chain
 from typing import Any
 
 from pixivpy3 import AppPixivAPI
@@ -12,7 +13,7 @@ from .auth import PixivAuthManager
 from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
-from .sync.utils import retry_on_pixiv_error
+from .sync.utils import response_is_pixiv_error_page, retry_on_pixiv_error
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ class RecommendationService:
         profile_id: int | None = None,
         search_plan: dict[str, Any] | None = None,
         progress_callback: Any = None,
+        claim_finalization: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         def _emit(event_type: str, data: dict[str, Any]) -> None:
             # 进度回调兼具取消探询：回调内若检测到取消会抛 InterruptedError
@@ -194,6 +196,13 @@ class RecommendationService:
             if stats["searched"] > 0 and stats["query_errors"] == stats["searched"]:
                 self.db.update_recommendation_run(run_id, "failed", stats=stats, error_message="全部搜索查询失败")
                 raise RuntimeError("推荐搜索全部失败")
+            # 发布结果与取消互斥：最后一次进度回调之后仍可能收到取消，
+            # 仅靠轮询无法关闭「cancelled 但推荐已经落库」的窗口。
+            _emit("_cancel_check", {})
+            if self.stop_requested is not None and self.stop_requested():
+                raise InterruptedError("Task stopped by user")
+            if claim_finalization is not None and not claim_finalization():
+                raise InterruptedError("Task stopped by user")
             # 单事务发布：全部 upsert + run 终态一起提交，失败则整体回滚
             with self.db.transaction():
                 getter = getattr(self.db, "get_preference_learning_signals", None)
@@ -283,6 +292,8 @@ class RecommendationService:
             if emit:
                 emit("_cancel_check", {})
             response = self._call_search(api, next_query)
+            if response_is_pixiv_error_page(response):
+                raise RuntimeError("Pixiv 搜索返回错误响应")
             novels = list(getattr(response, "novels", []) or [])
             if not novels:  # 7.1: 空页即停
                 break
@@ -327,14 +338,18 @@ class RecommendationService:
         # 7.2: 修正空集回退语义 - 两个集合应该合并而非回退
         recommended = filter_state.get("recommended_novel_ids", set())
         dismissed = filter_state.get("dismissed_novel_ids", set())
-        previously_recommended = recommended | dismissed
-        if filters.get("exclude_recommended_before", True) and novel_id in previously_recommended:
+        if filters.get("exclude_recommended_before", True) and (novel_id in recommended or novel_id in dismissed):
             return None
 
         # P1: 相似度去重
         title = str(getattr(novel, "title", "") or "")
         author_id = int(getattr(getattr(novel, "user", None), "id", 0) or 0)
         tags = self._tags(novel)
+        # 屏蔽项先用本地数据排除，避免为注定丢弃的候选再拉取整个系列。
+        if filters.get("exclude_muted_authors", True) and str(author_id) in filter_state.get("muted_authors", set()):
+            return None
+        if filters.get("exclude_muted_tags", True) and set(tags) & filter_state.get("muted_tags", set()):
+            return None
         profile_data = profile.get("profile") or profile
         primary_tags = set((profile_data.get("search_strategy") or {}).get("primary_tags") or [])
         if self._is_similar_to_existing(
@@ -360,7 +375,7 @@ class RecommendationService:
         if (
             filters.get("exclude_recommended_before", True)
             and series_id
-            and series_id in (recommended_series | dismissed_series)
+            and (series_id in recommended_series or series_id in dismissed_series)
         ):
             return None
         text_length = int(getattr(novel, "text_length", 0) or 0)
@@ -384,14 +399,6 @@ class RecommendationService:
 
         author = getattr(novel, "user", None)
         author_name = str(getattr(author, "name", "") or "") if author else ""
-        # 7.3: 统一filter_state取值
-        if filters.get("exclude_muted_authors", True) and str(author_id) in filter_state.get("muted_authors", set()):
-            return None
-
-        # 7.3: 统一filter_state取值
-        if filters.get("exclude_muted_tags", True) and set(tags) & filter_state.get("muted_tags", set()):
-            return None
-
         score, matched = self._score(novel, tags, profile, series_total_text_length)
         title = str(getattr(novel, "title", "") or "未命名")
         caption = str(getattr(novel, "caption", "") or "")
@@ -533,11 +540,13 @@ class RecommendationService:
                 response = retry_on_pixiv_error(max_retries=3, stop_requested=self.stop_requested)(
                     lambda: api.novel_series(**next_query)
                 )()
+            except InterruptedError:
+                raise
             except TypeError:
                 response = api.novel_series(series_id)
-            except Exception:
-                # 系列 API 失败按 0 处理，不中断整轮推荐
-                return (0, 0)
+            # 临时失败必须由调用方计入 candidate_errors，不能冒充零字数系列。
+            if response_is_pixiv_error_page(response):
+                raise RuntimeError("Pixiv 系列返回错误响应")
             novels = self._extract_series_novels(response)
             total_count += len(novels)
             total_length += sum(self._novel_text_length(item) for item in novels)
@@ -600,20 +609,20 @@ class RecommendationService:
         """
         threshold = float(filters.get("similarity_threshold", 0.8))
         if existing_items is None:
-            existing = list(self.db.get_recent_recommendation_items(limit=100, status="new"))
+            existing = self.db.get_recent_recommendation_items(limit=100, status="new")
         else:
-            existing = list(existing_items)
-        existing.extend(pending_items or [])
+            existing = existing_items
         ignore = ignored_tags or set()
+        candidate_tags = set(tags) - ignore
 
-        for item in existing:
+        for item in chain(existing, pending_items or []):
             if item.get("author_id") != author_id:
                 continue
             similarity = difflib.SequenceMatcher(None, title, str(item.get("title") or "")).ratio()
             if similarity >= threshold:
                 return True
             existing_tags = set(item.get("tags") or []) - ignore
-            common_tags = (set(tags) - ignore) & existing_tags
+            common_tags = candidate_tags & existing_tags
             if len(common_tags) >= 3 and existing_tags and len(common_tags) / len(existing_tags) >= 0.7:
                 return True
 

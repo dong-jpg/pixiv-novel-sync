@@ -178,7 +178,7 @@
 {% block extra_scripts %}
 {% include "dashboard_ai_output_panel.html" %}
 {% include "dashboard_ai_source_search.html" %}
-<script>
+<script nonce="{[ csp_nonce() ]}">
 initVueApp({
   components: {
     'output-panel': window.aiOutputPanelComponent,

@@ -34,7 +34,7 @@ class _Pulse:
             return self.stopped
         db = self.db_factory()
         try:
-            state = db.get_work_analysis(self.lease.run_id)
+            state = db.get_work_analysis_control(self.lease.run_id)
             self.stopped = state is None or state["status"] != "running"
             if not self.stopped:
                 self.stopped = not db.heartbeat_work_analysis(self.lease, now=_utc_now())

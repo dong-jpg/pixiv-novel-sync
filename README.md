@@ -12,8 +12,8 @@
 
 ## 分支选择
 
-- **main：私人书库。** 面向同步、归档、阅读和规则推荐；main 不包含写作模块。
-- **写作需求：** 请使用独立维护的 [ai-writing 分支](https://github.com/dong-jpg/pixiv-novel-sync/tree/ai-writing)，项目、章节和创作向导不在本分支中提供。
+- **main：私人书库。** 包含同步、归档、阅读、推荐、偏好 / XP 分析及远程执行试点；main 不包含写作模块。
+- **ai-writing：书库与写作。** [ai-writing 分支](https://github.com/dong-jpg/pixiv-novel-sync/tree/ai-writing)包含 main 的全部功能，额外提供创作项目、章节、创作向导、风格蒸馏与润色。共享改动先进入 main，再合并到 ai-writing。
 
 ## 当前 ai-writing 分支
 
@@ -26,6 +26,8 @@
 - **移动阅读**：在手机浏览器阅读、保存阅读进度，也可导出 EPUB 到自己的阅读器。
 - **规则推荐**：依据本地统计和规则整理阅读偏好、搜索 Pixiv 并筛选候选，支持反馈及屏蔽作者、标签。
 - **本地救援**：从私人备份中查找失效作品，书库入口为 `/dashboard/novels?category=rescue`。
+- **可选偏好学习**：结合已归档作品报告和明确的读后评价生成个人偏好 / XP 画像；全库及新增作品分析受累计授权预算限制。
+- **远程执行试点**：VPS 保留书库，InstaBox 按需执行诊断和单本 EPUB 导出。收藏、关注与追更同步仍在 VPS 本地执行，详见 [远程能力边界](docs/REMOTE_EXECUTION.md)。
 
 已归档文件可以本地保存或导出阅读；网页的 Vue 仍从 CDN 加载（样式已随仓库提供），不承诺完整离线网页。
 
@@ -107,7 +109,7 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 ## 部署与安全
 
-Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 systemd，并配置虚拟环境。执行前先审阅脚本并备份；更新现有安装时会将安装目录代码重置为 `origin/main`。
+Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 systemd，并配置虚拟环境。执行前先审阅脚本并备份；新安装默认 main（可设 `PIXIV_BRANCH=ai-writing`）。更新保留当前分支，只从 `origin/main` 或 `origin/ai-writing` 快进，有未提交代码或分叉时中止。[update.sh](update.sh)保留配置与旧提交记录，并核对本机健康接口；它不代替数据库和归档备份。
 
 [scripts/install_server.sh](scripts/install_server.sh) 仅保留给旧 timer 同步部署，不是新版 Web 入口。
 

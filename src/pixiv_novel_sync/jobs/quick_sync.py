@@ -61,12 +61,11 @@ def run_bookmark_sync(
         raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
 
     db = Database(settings.storage.db_path)
-    prepare_schema(db)
-    _save_self_profile(db, auth_result)
-    storage = FileStorage(settings)
-    storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
-
     try:
+        prepare_schema(db)
+        _save_self_profile(db, auth_result)
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
         # 引擎包装 API 重试时读的是 service.stop_requested，必须在这里接线，
         # 否则取消信号打不断 429/网络错误的退避重试。

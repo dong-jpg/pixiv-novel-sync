@@ -262,6 +262,15 @@ def _source_triggers() -> tuple[str, ...]:
             WHEN NEW.series_id IS NOT NULL BEGIN {outdated}; END""",
         f"""CREATE TRIGGER IF NOT EXISTS work_analysis_series_member_added AFTER UPDATE OF series_id ON novels
             WHEN NEW.series_id IS NOT NULL AND OLD.series_id IS NOT NEW.series_id BEGIN {outdated}; END""",
+        """CREATE TRIGGER IF NOT EXISTS work_analysis_series_member_removed AFTER UPDATE OF series_id ON novels
+            WHEN OLD.series_id IS NOT NULL AND OLD.series_id IS NOT NEW.series_id
+            BEGIN
+                UPDATE work_analysis_runs SET archive_outdated=1,version=version+1,updated_at=CURRENT_TIMESTAMP
+                WHERE source_kind='series' AND source_id=OLD.series_id
+                  AND deleted_at IS NULL AND archive_outdated=0
+                  AND EXISTS(SELECT 1 FROM work_analysis_sources s
+                             WHERE s.run_id=work_analysis_runs.run_id AND s.novel_id=OLD.novel_id);
+            END""",
     )
 
 
