@@ -1,6 +1,6 @@
-# Qwen3-Embedding-8B 接入方案
+# 写作检索与 embedding 配置
 
-> **2026-09-30 配置补充**：本地embedding可通过 `PIXIV_NOVEL_SYNC_USE_EMBEDDINGS=true` 显式启用；未启用不加载本地模型，配置变化会刷新retriever缓存。API embedding请求校验目标URL，禁止绕过Provider地址安全约束。实际本地模型下载/真实API验收见 [整改状态](archive/REMEDIATION_STATUS_2026-09-30.md)。
+仅适用于 ai-writing。本地 embedding 可通过 `PIXIV_NOVEL_SYNC_USE_EMBEDDINGS=true` 显式启用；未启用不加载本地模型，配置变化会刷新 retriever 缓存。API embedding 请求校验目标 URL，不能绕过 Provider 地址约束。真实模型下载/API 与费用验收边界见 [项目现状](STATUS.md)。
 
 当前已为 AI 写作工作室的项目记忆检索增加 OpenAI-compatible embedding 接口。配置以下环境变量后，章节摘要、关键事件索引和项目上下文搜索会优先使用远程 embedding 检索；未配置时仍回退到现有 TF-IDF 检索。
 
@@ -36,6 +36,7 @@ QWEN_EMBEDDING_MODEL=Qwen3-Embedding-8B
 - 同一章节的摘要和关键事件内容未变化时，会复用已有向量索引，避免重复消耗 API 调用。
 - 新索引以 float32 BLOB 存储；旧的 JSON 向量索引仍可被读取，便于平滑升级。
 - 远程 API 在实际索引或搜索过程中报错时，错误会继续暴露给调用方，方便发现网络、额度或鉴权问题。
+- 响应的 index 必须唯一、完整并对应本次输入，向量维度一致且数值有限；重建失败回滚，保留旧索引。
 
 ## 隐私与成本
 
@@ -64,10 +65,8 @@ QWEN_EMBEDDING_MODEL=Qwen3-Embedding-8B
 - 大量章节摘要或关键事件被批量修改。
 - 想清理旧 JSON 向量或旧模型索引。
 
-## 推荐落地顺序
+## 当前限制与优化
 
-1. 写作项目记忆：对章节摘要、关键事件、伏笔和项目状态做向量检索，生成下一章时召回最相关上下文。
-2. 本地小说语义搜索：按剧情、关系、风格、情绪查询本地归档，不再依赖标题和标签完全命中。
-3. 偏好画像增强：把收藏小说和候选小说向量化，和现有标签/热度/长度评分融合。
-4. 去重与聚类：识别主题相似、风格相近、重复归档或系列变体。
-5. UI 管理：把 embedding provider 做进 dashboard 配置页，复用现有 AI provider 的密钥加密能力。
+检索用于写作项目上下文，不代表已经实现全库小说语义搜索、推荐向量化、聚类或独立 embedding 设置 UI。
+
+索引先取得内容/revision，在业务事务外计算向量，再用短事务核对当前章节和配置后发布。较旧请求晚返回、章节已删除或模型配置改变时丢弃旧结果，不自动重试；计算失败保留原索引。生产变更模型或重建前先确认外发数据和费用范围。验收边界见 [实施计划 W1](IMPLEMENTATION_PLAN.md)。

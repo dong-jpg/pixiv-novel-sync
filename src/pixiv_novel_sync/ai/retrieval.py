@@ -18,6 +18,7 @@ import sqlite3
 import struct
 import threading
 from collections import Counter
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -38,11 +39,41 @@ class RetrievalEntry:
         self.score = score
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedChapterIndex:
+    """已完成分词或向量计算、尚未写入索引的章节快照。"""
+
+    project_id: int
+    chapter_number: int
+    config_key: tuple[Any, ...] = field(repr=False)
+    rows: tuple[tuple[Any, ...], ...]
+    model_name: str | None = None
+
+
+def _chapter_texts(summary: str, key_events: list[str] | None) -> list[tuple[str, str]]:
+    texts = [(summary, "summary")] if summary and summary.strip() else []
+    texts.extend((event, "key_event") for event in key_events or [] if event and event.strip())
+    return texts
+
+
 class BaseRetriever:
     """检索器基类。"""
 
     def index_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> None:
+        self.publish_chapter(self.prepare_chapter(project_id, chapter_number, summary, key_events))
+
+    def prepare_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> PreparedChapterIndex:
         raise NotImplementedError
+
+    def publish_chapter(self, prepared: PreparedChapterIndex) -> None:
+        raise NotImplementedError
+
+    def _index_config_key(self) -> tuple[Any, ...]:
+        return (self,)
+
+    def _validate_prepared(self, prepared: PreparedChapterIndex) -> None:
+        if prepared.config_key != self._index_config_key():
+            raise RuntimeError("检索器配置已变更，请重新准备章节索引")
 
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
         raise NotImplementedError
@@ -78,29 +109,25 @@ class TFIDFRetriever(BaseRetriever):
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_project ON retrieval_entries(project_id)")
         self.conn.commit()
 
-    def index_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> None:
+    def prepare_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> PreparedChapterIndex:
+        rows = tuple(
+            (project_id, chapter_number, content, entry_type, json.dumps(self._tokenize(content), ensure_ascii=False))
+            for content, entry_type in _chapter_texts(summary, key_events)
+        )
+        return PreparedChapterIndex(project_id, chapter_number, self._index_config_key(), rows)
+
+    def publish_chapter(self, prepared: PreparedChapterIndex) -> None:
         with self._lock, self.conn:
+            self._validate_prepared(prepared)
             # 删除旧条目
             self.conn.execute(
                 "DELETE FROM retrieval_entries WHERE project_id = ? AND chapter_number = ?",
-                (project_id, chapter_number),
+                (prepared.project_id, prepared.chapter_number),
             )
-            # 索引摘要
-            if summary and summary.strip():
-                tokens = self._tokenize(summary)
-                self.conn.execute(
-                    "INSERT INTO retrieval_entries (project_id, chapter_number, content, entry_type, tokens_json) VALUES (?, ?, ?, ?, ?)",
-                    (project_id, chapter_number, summary, "summary", json.dumps(tokens, ensure_ascii=False)),
-                )
-            # 索引关键事件
-            if key_events:
-                for event in key_events:
-                    if event and event.strip():
-                        tokens = self._tokenize(event)
-                        self.conn.execute(
-                            "INSERT INTO retrieval_entries (project_id, chapter_number, content, entry_type, tokens_json) VALUES (?, ?, ?, ?, ?)",
-                            (project_id, chapter_number, event, "key_event", json.dumps(tokens, ensure_ascii=False)),
-                        )
+            self.conn.executemany(
+                "INSERT INTO retrieval_entries (project_id, chapter_number, content, entry_type, tokens_json) VALUES (?, ?, ?, ?, ?)",
+                prepared.rows,
+            )
             self.conn.commit()
             self._cache_generation += 1
             self._search_cache.clear()
@@ -242,6 +269,7 @@ class EmbeddingRetriever(BaseRetriever):
             raise ImportError("需要安装 sentence-transformers: pip install sentence-transformers")
 
         self.model = SentenceTransformer(model_name)
+        self.model_name = model_name
         self.db_path = db_path.parent / "ai_retrieval_vec.db"
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._lock = threading.Lock()
@@ -259,34 +287,33 @@ class EmbeddingRetriever(BaseRetriever):
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_vec_project ON retrieval_vectors(project_id)")
         self.conn.commit()
 
-    def index_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> None:
+    def _index_config_key(self) -> tuple[Any, ...]:
+        return (self, self.model_name, id(self.model))
+
+    def prepare_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> PreparedChapterIndex:
         import numpy as np
 
-        texts: list[tuple[str, str]] = []
-        if summary and summary.strip():
-            texts.append((summary, "summary"))
-        if key_events:
-            for event in key_events:
-                if event and event.strip():
-                    texts.append((event, "key_event"))
-
+        config_key = self._index_config_key()
+        texts = _chapter_texts(summary, key_events)
         contents = [t[0] for t in texts]
         embeddings = self.model.encode(contents, normalize_embeddings=True) if contents else []
+        rows = tuple(
+            (project_id, chapter_number, content, entry_type, np.array(emb, dtype=np.float32).tobytes())
+            for (content, entry_type), emb in zip(texts, embeddings)
+        )
+        return PreparedChapterIndex(project_id, chapter_number, config_key, rows, self.model_name)
 
+    def publish_chapter(self, prepared: PreparedChapterIndex) -> None:
         with self._lock, self.conn:
+            self._validate_prepared(prepared)
             self.conn.execute(
                 "DELETE FROM retrieval_vectors WHERE project_id = ? AND chapter_number = ?",
-                (project_id, chapter_number),
+                (prepared.project_id, prepared.chapter_number),
             )
-            if not texts:
-                self.conn.commit()
-                return
-
-            for (content, entry_type), emb in zip(texts, embeddings):
-                self.conn.execute(
-                    "INSERT INTO retrieval_vectors (project_id, chapter_number, content, entry_type, embedding) VALUES (?, ?, ?, ?, ?)",
-                    (project_id, chapter_number, content, entry_type, np.array(emb, dtype=np.float32).tobytes()),
-                )
+            self.conn.executemany(
+                "INSERT INTO retrieval_vectors (project_id, chapter_number, content, entry_type, embedding) VALUES (?, ?, ?, ?, ?)",
+                prepared.rows,
+            )
             self.conn.commit()
 
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
@@ -432,15 +459,16 @@ class APIEmbeddingRetriever(BaseRetriever):
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_api_vec_project_model ON retrieval_api_vectors(project_id, model)")
         self.conn.commit()
 
-    def index_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> None:
-        texts: list[tuple[str, str]] = []
-        if summary and summary.strip():
-            texts.append((summary, "summary"))
-        if key_events:
-            for event in key_events:
-                if event and event.strip():
-                    texts.append((event, "key_event"))
+    def _index_config_key(self) -> tuple[Any, ...]:
+        return (
+            self, self.model_name, id(self.client), self.client.base_url,
+            self.client.api_key, self.client.model_name, self.client.timeout,
+        )
 
+    def prepare_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> PreparedChapterIndex:
+        config_key = self._index_config_key()
+        model_name = self.model_name
+        texts = _chapter_texts(summary, key_events)
         desired_entries = [
             (sha256(content.encode("utf-8")).hexdigest(), entry_type)
             for content, entry_type in texts
@@ -448,41 +476,43 @@ class APIEmbeddingRetriever(BaseRetriever):
         with self._lock:
             existing_entries = self.conn.execute(
                 """
-                SELECT content_hash, entry_type
+                SELECT content, content_hash, entry_type, model, dimension, embedding_blob, embedding_json
                 FROM retrieval_api_vectors
                 WHERE project_id = ? AND chapter_number = ? AND model = ?
                 ORDER BY id
                 """,
-                (project_id, chapter_number, self.model_name),
+                (project_id, chapter_number, model_name),
             ).fetchall()
-        if existing_entries == desired_entries:
-            return
+        if [(row[1], row[2]) for row in existing_entries] == desired_entries:
+            # 复用向量快照而非仅记录“无需更新”；准备后索引仍可能被其他发布改写。
+            rows = tuple((project_id, chapter_number, *row) for row in existing_entries)
+            return PreparedChapterIndex(project_id, chapter_number, config_key, rows, model_name)
 
         embeddings = self.client.embed([content for content, _entry_type in texts]) if texts else []
+        rows = tuple(
+            (
+                project_id, chapter_number, content, sha256(content.encode("utf-8")).hexdigest(),
+                entry_type, model_name, len(embedding), _encode_float32_vector(embedding), None,
+            )
+            for (content, entry_type), embedding in zip(texts, embeddings)
+        )
+        return PreparedChapterIndex(project_id, chapter_number, config_key, rows, model_name)
+
+    def publish_chapter(self, prepared: PreparedChapterIndex) -> None:
         with self._lock, self.conn:
+            self._validate_prepared(prepared)
             self.conn.execute(
                 "DELETE FROM retrieval_api_vectors WHERE project_id = ? AND chapter_number = ? AND model = ?",
-                (project_id, chapter_number, self.model_name),
+                (prepared.project_id, prepared.chapter_number, prepared.model_name),
             )
-            for (content, entry_type), embedding in zip(texts, embeddings):
-                self.conn.execute(
-                    """
-                    INSERT INTO retrieval_api_vectors
-                        (project_id, chapter_number, content, content_hash, entry_type, model, dimension, embedding_blob, embedding_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        project_id,
-                        chapter_number,
-                        content,
-                        sha256(content.encode("utf-8")).hexdigest(),
-                        entry_type,
-                        self.model_name,
-                        len(embedding),
-                        _encode_float32_vector(embedding),
-                        None,
-                    ),
-                )
+            self.conn.executemany(
+                """
+                INSERT INTO retrieval_api_vectors
+                    (project_id, chapter_number, content, content_hash, entry_type, model, dimension, embedding_blob, embedding_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                prepared.rows,
+            )
             self.conn.commit()
 
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import socket
 import sqlite3
+import struct
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +17,62 @@ def public_embedding_dns(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))])
 
 from pixiv_novel_sync.ai.retrieval import APIEmbeddingRetriever, TFIDFRetriever, create_retriever
+
+
+@pytest.mark.parametrize("kind,table", [
+    ("tfidf", "retrieval_entries"),
+    ("api", "retrieval_api_vectors"),
+    ("local", "retrieval_vectors"),
+])
+def test_preparation_preserves_index_and_publication_needs_no_computation(tmp_path, monkeypatch, kind, table):
+    if kind == "tfidf":
+        retriever = TFIDFRetriever(tmp_path / "main.db")
+    elif kind == "api":
+        retriever = APIEmbeddingRetriever(tmp_path / "main.db", "https://api.example.test/v1", "test-key")
+        monkeypatch.setattr(retriever.client, "embed", lambda texts: [[1.0, 0.0] for _ in texts])
+    else:
+        # 替身覆盖本地模型路径，无需安装模型、numpy 或下载文件。
+        model = SimpleNamespace(encode=lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
+        monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(SentenceTransformer=lambda name: model))
+        monkeypatch.setitem(sys.modules, "numpy", SimpleNamespace(
+            float32=float,
+            array=lambda values, dtype: SimpleNamespace(tobytes=lambda: struct.pack("<2f", *values)),
+        ))
+        retriever = retrieval.EmbeddingRetriever(tmp_path / "main.db")
+    try:
+        retriever.index_chapter(1, 1, "已发布")
+        prepared = retriever.prepare_chapter(1, 1, "新摘要", ["新事件"])
+        assert retriever.conn.execute(f"SELECT content FROM {table} ORDER BY id").fetchall() == [("已发布",)]
+        assert retriever.conn.in_transaction is False
+
+        def fail(*args, **kwargs):
+            raise AssertionError("发布阶段不能分词或计算向量")
+
+        if kind == "tfidf":
+            monkeypatch.setattr(retriever, "_tokenize", fail)
+        elif kind == "api":
+            monkeypatch.setattr(retriever.client, "embed", fail)
+        else:
+            monkeypatch.setattr(retriever.model, "encode", fail)
+        retriever.publish_chapter(prepared)
+        assert retriever.conn.execute(f"SELECT content FROM {table} ORDER BY id").fetchall() == [("新摘要",), ("新事件",)]
+    finally:
+        retriever.close()
+
+
+def test_prepared_api_index_rejects_in_place_model_change(tmp_path, monkeypatch):
+    retriever = APIEmbeddingRetriever(tmp_path / "main.db", "https://api.example.test/v1", "test-key")
+    monkeypatch.setattr(retriever.client, "embed", lambda texts: [[1.0, 0.0] for _ in texts])
+    try:
+        retriever.index_chapter(1, 1, "已发布")
+        prepared = retriever.prepare_chapter(1, 1, "待发布")
+        retriever.client.model_name = "changed-model"
+        with pytest.raises(RuntimeError, match="配置已变更"):
+            retriever.publish_chapter(prepared)
+        assert retriever.conn.execute("SELECT content FROM retrieval_api_vectors").fetchall() == [("已发布",)]
+        assert retriever.conn.in_transaction is False
+    finally:
+        retriever.close()
 
 
 def test_tfidf_delete_chapter_removes_only_target_chapter(tmp_path):

@@ -9,7 +9,7 @@ from pixiv_novel_sync.webapp import create_app
 
 TEMPLATES = Path("src/pixiv_novel_sync/templates")
 # AI 页面：公共层（csrfFetch / errorText / streamSSE）必须由 base.html 提供。
-# dashboard_ai.html 已按 docs/superpowers/specs/2026-09-02-dashboard-ai-page-split-design.md
+# dashboard_ai.html 的现行页面拆分见 docs/frontend-pages.md
 # 拆成前四个一级页面，断言范围随之扩大——原来一页守住的东西现在要四页都守住。
 AI_PAGES = (
     "dashboard_ai_projects.html",

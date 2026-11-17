@@ -357,7 +357,7 @@
 - `MUST` Provider delta 只在服务端内存缓冲；完整事实、安全、差异和策略校验通过后才能发送候选，partial 缓冲必须丢弃。
 - `MUST` 应用时在 `BEGIN IMMEDIATE` 内重验章节 revision、正文和片段 hash、角色事实、策略、binding、owner 和 warning acknowledgment，再以乐观锁写回。
 - `MUST` 成人审计输入、通用日志和应用记录不得保存原片段、上下文、完整 Prompt、Provider 原始响应、未完成/安全阻断候选或 API key；完整校验后的未应用候选只允许临时保存在 owner-scoped `ai_jobs.output_text`，应用或保留期清理后删除。
-- `OUT` 成人偏好注入按T4-18允许的删字段方案收口：请求契约不再接受画像/注入强度字段，不能把字段存在误当功能实现。取消与审查进度的当前状态见 `docs/REMEDIATION_STATUS_2026-09-30.md`，08-13报告仅为历史。
+- `OUT` 成人局部润色不接受画像/注入强度字段。取消、候选重放、策略版本和应用约束见 [局部润色指南](ADULT_POLISH_USER_GUIDE.md) 与当前 API 契约。
 
 ## 14. 视觉、响应式与可访问性
 

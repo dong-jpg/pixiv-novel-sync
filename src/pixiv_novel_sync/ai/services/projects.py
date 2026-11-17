@@ -233,21 +233,24 @@ class AIProjectsMixin:
                 raise AIServiceError("章节不存在")
             db.update_ai_chapter(chapter_id, payload, expected_revision=payload.get("expected_revision", payload.get("chapter_revision")))
             if {"summary", "key_events"} & set(payload):
-                # 正文事务已提交；索引入口另取写事务，重新读取当前版本而非提交时快照。
+                # 正文已提交；索引计算不持主库事务，发布前另取写事务核对版本。
                 self.index_chapter_for_retrieval(int(before["project_id"]), chapter_id)
         finally:
             db.close()
 
     def delete_chapter(self, chapter_id: int) -> None:
+        retriever = self._get_retriever()
         db = self._db()
         try:
-            chapter = db.get_ai_chapter(chapter_id)
-            if not chapter:
-                raise AIServiceError("章节不存在")
-            project_id = int(chapter.get("project_id") or 0)
-            chapter_number = int(chapter.get("chapter_number") or 0)
-            self._get_retriever().delete_chapter(project_id, chapter_number)
-            db.delete_ai_chapter(chapter_id)
+            # 与索引发布共用主库写锁；旧计算只能在删除前发布或在删除后放弃。
+            with db.transaction():
+                chapter = db.get_ai_chapter(chapter_id)
+                if not chapter:
+                    raise AIServiceError("章节不存在")
+                project_id = int(chapter.get("project_id") or 0)
+                chapter_number = int(chapter.get("chapter_number") or 0)
+                db.delete_ai_chapter(chapter_id)
+                retriever.delete_chapter(project_id, chapter_number)
         finally:
             db.close()
 
@@ -1349,30 +1352,45 @@ class AIProjectsMixin:
                             added += 1
 
     def index_chapter_for_retrieval(self, project_id: int, chapter_id: int) -> None:
-        """以主库写事务串行化最新快照与索引写入，防止跨连接倒序覆盖。"""
-        # 检索器配置可能通过另一连接读取主库，必须在持有写锁之前完成。
+        """事务外计算索引，短写事务内复核当前章节与配置后发布。"""
         retriever = self._get_retriever()
+        with self._retriever_lock:
+            if self._closed or self._retriever is not retriever:
+                return
+            config_key = self._retriever_config_key
         db = self._db()
         try:
-            with db.transaction():
-                chapter = db.get_ai_chapter(chapter_id)
-                if not chapter:
-                    raise AIServiceError("章节不存在")
-                actual_project_id = int(chapter.get("project_id") or 0)
-                if actual_project_id != int(project_id):
-                    raise AIServiceError("章节不属于该项目")
-                chapter_number = int(chapter["chapter_number"])
-                summary = chapter.get("summary") or ""
-                key_events = chapter.get("key_events") or []
-                if summary.strip() or key_events:
-                    retriever.index_chapter(
-                        project_id=project_id,
-                        chapter_number=chapter_number,
-                        summary=summary,
-                        key_events=key_events,
-                    )
-                else:
-                    retriever.delete_chapter(project_id, chapter_number)
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter:
+                raise AIServiceError("章节不存在")
+            if int(chapter.get("project_id") or 0) != int(project_id):
+                raise AIServiceError("章节不属于该项目")
+            prepared = retriever.prepare_chapter(
+                project_id=project_id,
+                chapter_number=int(chapter["chapter_number"]),
+                summary=chapter.get("summary") or "",
+                key_events=chapter.get("key_events") or [],
+            )
+            # 生命周期锁仅覆盖发布，避免配置切换关闭正在发布的连接。
+            with self._retriever_lock:
+                if (self._closed or self._retriever is not retriever
+                        or self._retriever_config_key != config_key
+                        or self._retriever_settings_key() != config_key):
+                    return
+                with db.transaction():
+                    current = db.get_ai_chapter(chapter_id)
+                    if not current or any(current.get(key) != chapter.get(key) for key in (
+                        "id", "project_id", "chapter_number", "chapter_revision", "content", "summary", "key_events",
+                    )):
+                        return
+                    if (self._retriever_settings_key() != config_key
+                            or prepared.config_key != retriever._index_config_key()):
+                        return
+                    if prepared.rows:
+                        retriever.publish_chapter(prepared)
+                    else:
+                        # 空章节清除全部模型的残留，且无需调用 embedding。
+                        retriever.delete_chapter(project_id, prepared.chapter_number)
         finally:
             db.close()
 

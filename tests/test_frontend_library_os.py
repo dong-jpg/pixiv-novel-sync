@@ -9,7 +9,7 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-# dashboard_ai.html 已按 docs/superpowers/specs/2026-09-02-dashboard-ai-page-split-design.md
+# dashboard_ai.html 的现行页面拆分见 docs/frontend-pages.md
 # 拆成四个一级页面。dashboard_ai_pipeline_modal.html 不在其中：它只是章节页 include
 # 进来的 markup partial，没有自己的路由，也没有自己的 setup()。
 AI_PAGES = (
@@ -188,7 +188,7 @@ def test_current_frontend_docs_describe_task_logs_and_ai_pages():
 
 def test_frontend_pages_document_current_ai_boundaries():
     pages = read(DOCS / "frontend-pages.md")
-    studio = read(DOCS / "AI_WRITING_STUDIO_PLAN.md")
+    studio = read(DOCS / "AI_WRITING_GUIDE.md")
 
     assert "AI 创作小说" in pages
     assert "`/dashboard/wizard`" in pages

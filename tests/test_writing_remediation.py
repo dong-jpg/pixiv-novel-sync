@@ -399,6 +399,9 @@ def test_summary_index_cannot_overwrite_newer_writer(writing, monkeypatch):
     db, first, pid, cid = writing
     second = AIWritingService(first.db_path)
     retriever = TFIDFRetriever(first.db_path)
+    for service in (first, second):
+        service._retriever = retriever
+        service._retriever_config_key = service._retriever_settings_key()
     paused = Event()
     release = Event()
     def delayed_retriever():
@@ -456,7 +459,7 @@ def test_retry_keeps_unselected_failure_and_warning(writing, monkeypatch):
     assert result["warnings"] == [warning]
 
 
-def test_index_snapshot_and_write_share_main_database_transaction(writing, monkeypatch):
+def test_index_publication_and_write_share_main_database_transaction(writing, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
     db, first, pid, cid = writing
@@ -465,19 +468,22 @@ def test_index_snapshot_and_write_share_main_database_transaction(writing, monke
     second_attempting = Event()
     release_index = Event()
     retriever = TFIDFRetriever(first.db_path)
-    original_index = retriever.index_chapter
+    for service in (first, second):
+        service._retriever = retriever
+        service._retriever_config_key = service._retriever_settings_key()
+    original_publish = retriever.publish_chapter
     original_update = Database.update_ai_chapter
     def update(self, chapter_id, payload, **kwargs):
         if payload.get("summary") == "最新森林":
             second_attempting.set()
         return original_update(self, chapter_id, payload, **kwargs)
-    def index(project_id, chapter_number, summary, key_events):
-        if summary == "旧城堡":
+    def publish(prepared):
+        if prepared.rows[0][2] == "旧城堡":
             entered_index.set()
             assert release_index.wait(10)
-        return original_index(project_id, chapter_number, summary, key_events)
+        return original_publish(prepared)
     monkeypatch.setattr(Database, "update_ai_chapter", update)
-    monkeypatch.setattr(retriever, "index_chapter", index)
+    monkeypatch.setattr(retriever, "publish_chapter", publish)
     monkeypatch.setattr(first, "_get_retriever", lambda: retriever)
     monkeypatch.setattr(second, "_get_retriever", lambda: retriever)
     try:

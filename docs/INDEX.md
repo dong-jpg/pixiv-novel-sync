@@ -45,7 +45,7 @@ main 提供归档、同步、阅读、推荐、救援、作品分析、偏好学
 
 ## ai-writing 专属资料
 
-- [AI 写作工作台](AI_WRITING_STUDIO_PLAN.md)：创作项目、章节和向导的设计与使用参考。
+- [AI 写作指南](AI_WRITING_GUIDE.md)：创作项目、章节、向导、继续和检索的当前使用边界。
 - [成人局部润色](ADULT_POLISH_USER_GUIDE.md)：认证、角色确认、审查与应用。
 - [检索与 embedding](QWEN_EMBEDDING_INTEGRATION.md)：可选检索配置和限制。
 

@@ -199,37 +199,43 @@ class AIServiceCore:
             prepare_invocation_providers=self._prepare_invocation_providers,
         )
 
+    @staticmethod
+    def _retriever_settings_key() -> tuple[str | None, str | None, str, int, bool]:
+        """只读取配置，允许索引发布时复核而不初始化模型或访问网络。"""
+        embedding_base_url = (
+            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_BASE_URL")
+            or os.getenv("QWEN_EMBEDDING_BASE_URL")
+        )
+        embedding_api_key = (
+            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
+            or os.getenv("QWEN_EMBEDDING_API_KEY")
+        )
+        use_embeddings = os.getenv("PIXIV_NOVEL_SYNC_USE_EMBEDDINGS", "false").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        embedding_model = (
+            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
+            or os.getenv("QWEN_EMBEDDING_MODEL")
+            or ("paraphrase-multilingual-MiniLM-L12-v2"
+                if use_embeddings and not embedding_base_url else "Qwen3-Embedding-8B")
+        )
+        timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
+        try:
+            embedding_timeout = max(int(timeout_raw), 1)
+        except ValueError:
+            embedding_timeout = 60
+        return (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout, use_embeddings)
+
     def _get_retriever(self) -> BaseRetriever:
         # 7.7: 加锁保护缓存逻辑,避免多线程竞态
         with self._retriever_lock:
             if self._closed:
                 raise AIServiceError("AI 服务已关闭")
-            embedding_base_url = (
-                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_BASE_URL")
-                or os.getenv("QWEN_EMBEDDING_BASE_URL")
-            )
-            embedding_api_key = (
-                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
-                or os.getenv("QWEN_EMBEDDING_API_KEY")
-            )
-            use_embeddings = os.getenv("PIXIV_NOVEL_SYNC_USE_EMBEDDINGS", "false").strip().lower() in {
-                "1", "true", "yes", "on",
-            }
-            embedding_model = (
-                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
-                or os.getenv("QWEN_EMBEDDING_MODEL")
-                or ("paraphrase-multilingual-MiniLM-L12-v2"
-                    if use_embeddings and not embedding_base_url else "Qwen3-Embedding-8B")
-            )
-            timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
-            try:
-                embedding_timeout = max(int(timeout_raw), 1)
-            except ValueError:
-                embedding_timeout = 60
-            config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout, use_embeddings)
+            config_key = self._retriever_settings_key()
             if self._retriever is None or self._retriever_config_key != config_key:
                 if self._retriever is not None and hasattr(self._retriever, "close"):
                     self._retriever.close()  # type: ignore[attr-defined]
+                embedding_base_url, embedding_api_key, embedding_model, embedding_timeout, use_embeddings = config_key
                 self._retriever = create_retriever(
                     self.db_path,
                     use_embeddings=use_embeddings,

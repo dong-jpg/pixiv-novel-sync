@@ -1,6 +1,6 @@
 # 成人局部润色使用指南
 
-> **2026-09-30 更新**：重新生成携带旧job访问令牌，并在新任务metadata到达前保留旧候选；事件重放不续签token。参与者仅按目标片段校验，掩码恢复保留原名字/别名表面形式。策略升级是显式操作并保留版本历史；旧候选不得直接应用。成人偏好画像字段已从请求契约移除，传入会被拒绝，不表示已经支持偏好注入。当前验证边界见 [整改状态](archive/REMEDIATION_STATUS_2026-09-30.md)。
+仅适用于 ai-writing，当前验证边界见 [项目现状](STATUS.md)。重新生成携带旧 job 访问令牌，在新任务 metadata 到达前保留旧候选；事件重放不续签 token。参与者按目标片段校验，掩码恢复保留原名字/别名表面形式。策略升级是显式操作并保留版本历史；旧候选不得直接应用。成人偏好画像字段不在请求契约内，传入会被拒绝。
 
 本文说明当前版本成人局部润色 Agent 的配置、使用边界和故障排查。它是面向 Dashboard 用户的操作文档；字段级 API 约定仍以 [frontend-api-contract.md](frontend-api-contract.md) 为准。
 
@@ -14,7 +14,7 @@
 ## 配置顺序
 
 1. 设置稳定的 `DASHBOARD_TOKEN`，登录 `/dashboard`。
-2. 在 `/dashboard/settings` 配置 Provider，确认 key 已加密保存。
+2. 在 `/dashboard/settings/models` 配置 Provider，确认 key 已加密保存；策略在 `/dashboard/settings/adult` 管理。
 3. 同步 Provider 模型目录，或添加手工模型；按需要创建 fixed/pool binding。
 4. 创建或启用 `task_type=adult_polish` 的 Agent。
 5. 为 `safety` 和 `fact_guard` 分别配置支持 `json` 的固定模型或模型池。两个 binding 都必须存在，且不能通过普通 Agent CRUD 跳过。
