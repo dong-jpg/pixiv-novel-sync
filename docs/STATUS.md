@@ -13,7 +13,7 @@
 | main | 同步、归档、救援、阅读、推荐、作品分析、偏好学习、远程执行试点与共享 AI 基础设施 | 共享功能与修复先进入 main |
 | ai-writing | main 全部功能，加创作项目、章节、向导、风格蒸馏、检索与润色 | 合并 main；写作代码不反向合入 main |
 
-本轮整合了原 `codex/preference-intelligence`、`codex/remote-collaboration-audit` 与 `codex/remote-phase-two` 的成果，保留偏好学习、远程恢复加固、阅读进度和实际部署历史。旧油猴缓存分支的改动已被后续实现覆盖，登记合并时保留当前实现。最终提交、推送与分支清理结果见本轮审计记录。
+本轮整合了原 `codex/preference-intelligence`、`codex/remote-collaboration-audit` 与 `codex/remote-phase-two` 的成果，保留偏好学习、远程恢复加固、阅读进度和实际部署历史。旧油猴缓存分支的改动已被后续实现覆盖，登记合并时保留当前实现。两条长期分支已一起推送；验证祖先关系并保留完整 Git 备份后，清理了 15 条本地临时分支和最后一条远端临时分支。GitHub 与本地均只保留 main / ai-writing，写作分支通过真实 merge 包含当前 main。发布与恢复记录见本轮审计。
 
 **代码交付不等于实际部署。** 本轮没有登录生产主机、更新服务、唤醒云实例或调用付费模型。最新留存生产代码记录是 2026-11-13 `4b8133e`；11-16 早先的公开健康探测不证明生产 HEAD 未变化。作品分析、个人画像、全库分析及本轮修复仍需生产发布。
 
@@ -42,7 +42,7 @@
 
 原生 Linux / canonical LF、浏览器与真实部署的历史结果仍可在下表追溯。历史版本通过不代表本次合并版本已经在同环境通过；skip 不计为通过，合成内容不代表真实私人小说或模型质量验收。
 
-本轮 main 代码 `c3a4385`：Windows / Python 3.11.3 全量 **3556 passed, 17 skipped**，含已启用的离线 Vue / Chromium 与油猴浏览器用例。17 个跳过是环境权限或不适用参数条件；本轮未做新的 Linux 或生产验证。写作分支的最终验证单独记录。
+本轮 Windows / Python 3.11.3 最终全量：main 代码 `c3a4385` 为 **3556 passed, 17 skipped**；ai-writing `3ca843f` 为 **4065 passed, 17 skipped**，含已启用的离线 Vue / Chromium 与油猴浏览器用例。17 个跳过是环境权限或不适用参数条件。两分支 wheel 均构建成功，并各通过 11 项安装产物页面 / 资源验证；本轮未做新的 Linux 或生产验证。此后仅补录交付文档。
 
 ## 尚未完成
 
