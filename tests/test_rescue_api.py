@@ -93,6 +93,66 @@ def _rotate_token(client) -> str:
     return str(response.get_json()["data"]["token"])
 
 
+@pytest.mark.parametrize("action", ["rotate", "revoke"])
+def test_late_cache_fill_cannot_revive_replaced_token(app, client, monkeypatch, action) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    old_token = _rotate_token(client)
+    app.extensions["rescue_token_cache"].clear()
+    original = Database.get_rescue_token_record
+    read_old = threading.Event()
+    release = threading.Event()
+    changed = threading.Event()
+    reader_thread = None
+
+    def held_read(database):
+        record = original(database)
+        if threading.get_ident() == reader_thread:
+            read_old.set()
+            assert release.wait(5)
+        return record
+
+    def lookup_old():
+        nonlocal reader_thread
+        reader_thread = threading.get_ident()
+        return app.test_client().get(
+            "/api/rescue/v1/lookup?novel_ids=10",
+            headers={"Authorization": "Bearer " + old_token},
+        ).status_code
+
+    def replace_token():
+        try:
+            other = app.test_client()
+            if action == "rotate":
+                return _rotate_token(other)
+            response = other.delete("/api/dashboard/rescue-token")
+            assert response.status_code == 200
+            return None
+        finally:
+            changed.set()
+
+    monkeypatch.setattr(Database, "get_rescue_token_record", held_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reading = pool.submit(lookup_old)
+        try:
+            assert read_old.wait(5)
+            replacing = pool.submit(replace_token)
+            changed.wait(0.5)
+        finally:
+            release.set()
+        assert reading.result(timeout=5) == 200
+        new_token = replacing.result(timeout=5)
+
+    assert client.get("/api/rescue/v1/lookup?novel_ids=10", headers={
+        "Authorization": "Bearer " + old_token,
+    }).status_code == 401
+    if new_token:
+        assert client.get("/api/rescue/v1/lookup?novel_ids=10", headers={
+            "Authorization": "Bearer " + new_token,
+        }).status_code == 200
+
+
 def _set_catalog_refreshed_at(app, refreshed_at: str) -> None:
     db = Database(Path(app.config["PIXIV_DB_PATH"]))
     try:

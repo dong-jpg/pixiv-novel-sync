@@ -270,6 +270,8 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         self._respond()
 
     def do_POST(self) -> None:
+        # Windows 在关闭仍有未读取请求体的连接时可能发送 RST，掩盖真实 hook 断言。
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self._respond()
 
     def log_message(self, _format: str, *_args) -> None:
@@ -281,6 +283,7 @@ class _ForwardProxyHandler(BaseHTTPRequestHandler):
     seen_host: str | None = None
 
     def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         type(self).seen_target = self.path
         type(self).seen_host = self.headers.get("Host")
         body = b'{"ok": true}'
@@ -301,6 +304,7 @@ class _GatedRedirectHandler(BaseHTTPRequestHandler):
     request_count = 0
 
     def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         type(self).request_count += 1
         body = b"redirect body"
         self.send_response(302)
@@ -333,6 +337,7 @@ class _RedirectTargetHandler(BaseHTTPRequestHandler):
         self._record_request()
 
     def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self._record_request()
 
     def log_message(self, _format: str, *_args) -> None:

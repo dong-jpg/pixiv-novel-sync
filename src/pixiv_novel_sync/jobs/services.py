@@ -163,8 +163,8 @@ def run_user_backup_task(
     storage = _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    prepare_schema(db)
     try:
+        prepare_schema(db)
         service = BookmarkNovelSyncService(
             api=api,
             db=db,
@@ -612,8 +612,8 @@ def _run_user_status_like_task(
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    prepare_schema(db)
     try:
+        prepare_schema(db)
         items = list_items(db)
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(items)} 个{total_label}需要检查")
@@ -654,8 +654,8 @@ def _run_status_task(
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    prepare_schema(db)
     try:
+        prepare_schema(db)
         item_ids = list_ids(db)
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(item_ids)} 个{total_label}需要检查")
@@ -856,25 +856,10 @@ def _process_status_items(
     return stats
 
 
-def _list_all_users(db: Database) -> list[dict[str, Any]]:
-    users: list[dict[str, Any]] = []
-    page_num = 1
-    while True:
-        page_data = db.list_users(page=page_num, page_size=500)
-        items = page_data.get("items", [])
-        if not items:
-            break
-        users.extend(items)
-        if page_num >= page_data.get("total_pages", 1):
-            break
-        page_num += 1
-    return users
-
-
 def _list_users_for_status_check(db: Database) -> list[dict[str, Any]]:
     """状态检查专用的用户清单：按 last_checked_at 轮转，最久未检查的排最前。
 
-    不能用 ``_list_all_users``（走 ``list_users`` 的列表页排序），否则每轮顺序固定，
+    不能使用 ``list_users`` 的列表页排序，否则每轮顺序固定，
     熔断一次就把队尾永久饿死。见 ``get_users_for_status_check`` 的注释——清单里还会
     剔除降频中的已知受限用户，所以 total_users 可能小于全部用户数。
     """

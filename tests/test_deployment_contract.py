@@ -56,7 +56,8 @@ def test_web_deploy_backup_path_nginx_render_and_unit_path() -> None:
 
     assert "umask 077" in update
     assert 'BACKUP_DIR="${INSTALL_DIR}/.backup/' in update
-    assert 'rm -rf "$BACKUP_DIR"' in update
+    assert 'rm -rf "$BACKUP_DIR"' not in update
+    assert 'git rev-parse HEAD > "$BACKUP_DIR/previous-commit.txt"' in update
     assert "/tmp/pixiv-novel-sync-backup" not in update
 
     for script in (deploy, update):

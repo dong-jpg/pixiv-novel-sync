@@ -466,3 +466,16 @@ def test_rescue_cover_endpoints_serve_local_assets(tmp_path: Path, monkeypatch) 
     # 不存在
     assert client.get("/api/rescue/v1/novels/999/cover", headers=headers).status_code == 404
     assert client.get("/api/rescue/v1/series/999/cover", headers=headers).status_code == 404
+
+    # cwd 是项目根而非书库边界。损坏/旧的资产记录不能把项目配置当成封面返回。
+    sensitive = tmp_path / ".env"
+    sensitive.write_text("private-configuration", encoding="utf-8")
+    for local_path in (".env", str(sensitive), str(public_dir / ".." / ".env")):
+        db = Database(db_path)
+        try:
+            db.conn.execute("UPDATE assets SET local_path = ? WHERE novel_id = 900", (local_path,))
+            db.conn.commit()
+        finally:
+            db.close()
+        assert client.get("/api/rescue/v1/novels/900/cover", headers=headers).status_code == 404
+        assert client.get("/api/rescue/v1/series/500/cover", headers=headers).status_code == 404

@@ -151,14 +151,14 @@ class NovelsMixin:
         """
         row = self.conn.execute(
             """
-            SELECT n.cover_url, nt.text_raw
+            SELECT n.cover_url, nt.has_content
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
             WHERE n.novel_id = ?
             """,
             (novel_id,),
         ).fetchone()
-        if row is None or not str(row["text_raw"] or "").strip():
+        if row is None or not row["has_content"]:
             return False
         cover_url = str(row["cover_url"] or "").strip()
         if require_assets and cover_url:
@@ -301,7 +301,7 @@ class NovelsMixin:
             SELECT COUNT(*)
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
-            WHERE n.series_id = ?
+            WHERE n.series_id = ? AND nt.has_content = 1
             """,
             (series_id,),
         ).fetchone()
@@ -317,8 +317,7 @@ class NovelsMixin:
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
             WHERE n.series_id = ?
-              AND nt.text_raw IS NOT NULL
-              AND nt.text_raw != ''
+              AND nt.has_content = 1
               AND (
                     n.cover_url IS NULL
                     OR n.cover_url = ''
@@ -337,7 +336,7 @@ class NovelsMixin:
         return int(row[0]) if row else 0
 
     def list_series_novel_texts(self, series_id: int) -> list[dict[str, Any]]:
-        """按创建时间升序列出系列下所有小说正文（含 title/text_raw/text_markdown/create_date）。"""
+        """为 ai-writing 的系列导入保留：按创建时间列出系列正文。"""
         rows = self.conn.execute(
             """
             SELECT nt.text_raw, nt.text_markdown, n.title, n.create_date
@@ -564,8 +563,7 @@ class NovelsMixin:
                     FROM novels n
                     JOIN novel_texts nt ON nt.novel_id = n.novel_id
                     WHERE n.novel_id IN ({placeholders})
-                      AND nt.text_raw IS NOT NULL
-                      AND nt.text_raw != ''
+                      AND nt.has_content = 1
                       AND (
                             n.cover_url IS NULL
                             OR n.cover_url = ''
@@ -588,8 +586,7 @@ class NovelsMixin:
                     FROM novels n
                     JOIN novel_texts nt ON nt.novel_id = n.novel_id
                     WHERE n.novel_id IN ({placeholders})
-                      AND nt.text_raw IS NOT NULL
-                      AND nt.text_raw != ''
+                      AND nt.has_content = 1
                     """,
                     batch,
                 ).fetchall()

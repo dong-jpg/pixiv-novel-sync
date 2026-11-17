@@ -70,3 +70,7 @@ def test_no_retry_on_non_429_status_code_even_with_rate_word() -> None:
 
 def test_retry_on_network_error_still_works() -> None:
     assert _run_with_retry(RuntimeError("connection reset by peer"), max_retries=1) == 2
+
+
+def test_interruption_is_not_retried_even_when_message_mentions_network() -> None:
+    assert _run_with_retry(InterruptedError("network request cancelled"), max_retries=2) == 1

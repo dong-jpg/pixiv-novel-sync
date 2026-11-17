@@ -87,7 +87,12 @@ class AIServiceCore:
 
     def _db(self) -> Database:
         # Database.ensure_schema 已做进程级按路径记忆，这里不再自持一份缓存。
-        return prepare_schema(Database(self.db_path))
+        db = Database(self.db_path)
+        try:
+            return prepare_schema(db)
+        except BaseException:
+            db.close()
+            raise
 
     def _provider_cache_key(self, config: AIProviderConfig) -> tuple[Any, ...]:
         return (
@@ -104,6 +109,8 @@ class AIServiceCore:
     def _get_provider(self, config: AIProviderConfig) -> AIProvider:
         key = self._provider_cache_key(config)
         with self._provider_lock:
+            if self._closed:
+                raise AIServiceError("AI 服务已关闭")
             cached = self._provider_cache.get(key)
             if cached is not None:
                 return cached

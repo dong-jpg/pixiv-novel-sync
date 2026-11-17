@@ -54,3 +54,26 @@ def test_submission_rejects_missing_length_and_oversized_body(remote_web_fixture
     headers = f.login() | {"Idempotency-Key": "oversize", "Content-Type": "application/json"}
     result = f.client.post("/api/dashboard/remote/runs", data=b" " * (16 * 1024 + 1), headers=headers)
     assert result.status_code == 413
+
+
+def test_run_list_database_connections_do_not_grow_per_row(remote_web_fixture, monkeypatch):
+    f = remote_web_fixture
+    headers = f.login()
+    for index in range(8):
+        submitted = f.client.post("/api/dashboard/remote/runs", json={"kind": "diagnostic.v1"},
+                                  headers=headers | {"Idempotency-Key": f"list-{index}"})
+        assert submitted.status_code == 202
+    connections = []
+    original_connect = f.store._connect
+
+    def count_connection():
+        connections.append(None)
+        return original_connect()
+
+    monkeypatch.setattr(f.store, "_connect", count_connection)
+    response = f.client.get("/api/dashboard/remote/runs")
+    assert response.status_code == 200
+    runs = response.get_json()["runs"]
+    assert len(runs) == 8
+    assert all(run["can_download"] is False and run["result_expired"] is False for run in runs)
+    assert len(connections) == 1

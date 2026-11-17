@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.12.2
+// @version      0.12.3
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；「好P友新作」tab 改为「拯救系列」，追更列表空白框原位替换为备份卡片。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.12.2';
+  const SCRIPT_VERSION = '0.12.3';
   // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
   // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
   const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
@@ -52,8 +52,8 @@
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
   // 等一会」。lookup 结果缓存 10 分钟（目录变更由同步任务驱动，10 分钟足够
-  // 新鲜）；封面 blob 缓存 24 小时（封面内容几乎不变）。缓存键带 token 前缀
-  // 哈希，轮换 Token 后旧缓存自然失效。
+  // 新鲜）；封面 blob 缓存 24 小时（封面内容几乎不变）。缓存键带服务器与 Token
+  // 哈希，切换书库或轮换 Token 后旧缓存自然失效。
   // 封面是一键一张 dataURL（单张几十 KB）。脚本没有 GM_listValues，无法枚举
   // 存储里有哪些键：0.9.0 及以前只在读取时判过期、从不删除，旧键一直留到
   // 管理器配额写满、GM_setValue 静默失败。现在用一个 GM 键记录最近使用的
@@ -67,11 +67,11 @@
   const COVER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function cacheKeySuffix() {
-    const token = String(GM_getValue(TOKEN_KEY, '') || '');
+    const scope = apiOrigin() + '\n' + String(GM_getValue(TOKEN_KEY, '') || '').trim();
     // 简单滚动哈希即可，避免把 Token 明文写进存储键
     let h = 0;
-    for (let i = 0; i < token.length; i += 1) {
-      h = (h * 31 + token.charCodeAt(i)) | 0;
+    for (let i = 0; i < scope.length; i += 1) {
+      h = (h * 31 + scope.charCodeAt(i)) | 0;
     }
     return String(h >>> 0);
   }
@@ -375,17 +375,23 @@
 
   function apiGet(path, timeoutMs) {
     const token = String(GM_getValue(TOKEN_KEY, '') || '').trim();
+    const origin = apiOrigin();
     if (!token) return Promise.reject(new Error('missing_token'));
     return new Promise(function (resolve, reject) {
       GM_xmlhttpRequest({
         method: 'GET',
-        url: apiOrigin() + path,
+        url: origin + path,
         headers: {
           Authorization: 'Bearer ' + token,
           Accept: 'application/json'
         },
         timeout: timeoutMs || 15000,
         onload: function (response) {
+          // 请求期间切换书库或清除 Token：旧应答不能画进新页面、写入新身份的缓存。
+          if (origin !== apiOrigin() || token !== String(GM_getValue(TOKEN_KEY, '') || '').trim()) {
+            reject(new Error('stale_credentials'));
+            return;
+          }
           if (response.status < 200 || response.status >= 300) {
             reject(new Error(apiErrorKind(Number(response.status || 0))));
             return;
@@ -418,15 +424,20 @@
   // 否则会进 nginx access log 和浏览器历史。返回 object URL 供 <img> 使用。
   function apiGetBlobUrl(path) {
     const token = String(GM_getValue(TOKEN_KEY, '') || '').trim();
+    const origin = apiOrigin();
     if (!token) return Promise.reject(new Error('missing_token'));
     return new Promise(function (resolve, reject) {
       GM_xmlhttpRequest({
         method: 'GET',
-        url: apiOrigin() + path,
+        url: origin + path,
         headers: { Authorization: 'Bearer ' + token },
         responseType: 'blob',
         timeout: 15000,
         onload: function (response) {
+          if (origin !== apiOrigin() || token !== String(GM_getValue(TOKEN_KEY, '') || '').trim()) {
+            reject(new Error('stale_credentials'));
+            return;
+          }
           if (response.status < 200 || response.status >= 300) {
             // 与 apiGet 同一套分类：429 要认出来，封面被限流时等卡片下次进入视口再取
             reject(new Error(apiErrorKind(Number(response.status || 0))));
@@ -1014,6 +1025,7 @@
   // 封面：本地缓存（dataURL，24h）优先，未命中再经 blob 取回并回写缓存。
   // 列表页救援卡与阅读层封面共用这一份逻辑。
   function loadRescueCover(img, coverId, coverType, onFail) {
+    const scope = cacheKeySuffix();
     const cached = readCoverCache(coverId, coverType);
     if (cached) {
       img.src = cached;
@@ -1024,6 +1036,10 @@
       : '/api/rescue/v1/novels/' + encodeURIComponent(String(coverId)) + '/cover';
     apiGetBlobUrl(coverPath)
       .then(function (url) {
+        if (scope !== cacheKeySuffix()) {
+          URL.revokeObjectURL(url);
+          return;
+        }
         // object URL 有两个读者：<img> 显示、下面回写缓存的 fetch，两边都用完再回收。
         // 0.12.0 及以前只建不回收，每张没缓存的封面都在页面里留一份
         let readers = 2;
@@ -1044,7 +1060,9 @@
           .then(function (blob) {
             const fr = new FileReader();
             fr.onload = function () {
-              if (typeof fr.result === 'string') writeCoverCache(coverId, coverType, fr.result);
+              if (scope === cacheKeySuffix() && typeof fr.result === 'string') {
+                writeCoverCache(coverId, coverType, fr.result);
+              }
             };
             fr.readAsDataURL(blob);
           })
@@ -1092,6 +1110,7 @@
   // 切页时调用：旧页面的封面节点已经没用了，不让观察器一直拿着它们（连带整棵旧阅读层）
   function resetCoverRetries() {
     if (coverRetryObserver) coverRetryObserver.disconnect();
+    if (coverObserver) coverObserver.disconnect();
   }
 
   function renderWorkHeader(container, data, options) {
@@ -1736,8 +1755,9 @@
         closeBatch();
       }
       current.entries.push(entry);
-      if (novelNew) current.novelIds.add(entry.id);
-      if (seriesNew) current.seriesIds.add(entry.id);
+      // 关闭上一批后去重集合已更换；不能沿用旧批的 novelNew / seriesNew。
+      if (entry.type === 'novel' || entry.type === 'unknown') current.novelIds.add(entry.id);
+      if (entry.type === 'series' || entry.type === 'unknown') current.seriesIds.add(entry.id);
     });
     closeBatch();
     return batches;
@@ -1817,7 +1837,9 @@
     const cachedEntries = readLookupCache();
     const pendingEntries = [];
     found.broken.forEach(function (entry) {
-      const cached = readCachedLookup(cachedEntries, entry.id, entry.type === 'series' ? 'series' : 'novel');
+      const cached = entry.type === 'unknown'
+        ? (readCachedLookup(cachedEntries, entry.id, 'series') || readCachedLookup(cachedEntries, entry.id, 'novel'))
+        : readCachedLookup(cachedEntries, entry.id, entry.type);
       if (cached) {
         renderRescuedCard(entry.card, cached, entry.type === 'series');
         entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
@@ -2556,6 +2578,10 @@
     if (!isRescueFeedPage()) resetRescueFeed();
     if (!isWatchlistPage()) pruneWatchCards();
     if (!isFeedPage()) removeFeedObserver();
+    if (!isBookmarksListPage() && !isWatchlistPage() && window.__pixivRescueObserver) {
+      window.__pixivRescueObserver.disconnect();
+      window.__pixivRescueObserver = null;
+    }
   }
 
   // 系列页章节卡片照 Pixiv 手机站 .works-item-novel（2026-10-26 实测）：

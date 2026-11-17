@@ -109,6 +109,9 @@ class PreferenceAnalyzer:
         - max_batches: 本次最多跑几批(手动按钮用大值,定时任务用 1)
         - progress: 可选回调 progress(processed, remaining)
         """
+        # 范围改变必须在筛掉「已分析」记录之前重置。等到 merge 时再重置，
+        # 全部作品已分析或新范围为空时根本不会进入 merge，旧统计会一直保留。
+        scope_changed = self.db.prepare_preference_accumulator_scope(min_text_length)
         total_processed = 0
         for _ in range(max(1, int(max_batches))):
             rows = self.db.fetch_unanalyzed_preference_rows(min_text_length=min_text_length, batch_size=batch_size)
@@ -153,6 +156,7 @@ class PreferenceAnalyzer:
             "analyzed_total": analyzed,
             "remaining": remaining,
             "done": remaining == 0,
+            "scope_changed": scope_changed,
         }
 
     def rebuild_profile_from_accumulator(self) -> dict[str, Any]:

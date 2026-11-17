@@ -86,11 +86,9 @@ def register_remote_routes(app, settings_callback):
                     "deadline", "finished_at", "error_code", "attempt_count")}
         payload["attempt_count"] = payload["attempt_count"] or 0
         expired = run["finished_at"] is not None and clock() >= run["finished_at"] + RETENTION_SECONDS
-        with store.read() as conn:
-            artifact = conn.execute("""SELECT b.state FROM artifacts b JOIN attempts a USING(attempt_id)
-                WHERE a.run_id=? AND a.state='succeeded'""", (run["run_id"],)).fetchone()
-        payload["result_expired"] = run["state"] == "succeeded" and (expired or bool(artifact and artifact[0] == "expired"))
-        payload["can_download"] = run["state"] == "succeeded" and not payload["result_expired"] and bool(artifact and artifact[0] == "published")
+        artifact_state = run["artifact_state"]
+        payload["result_expired"] = run["state"] == "succeeded" and (expired or artifact_state == "expired")
+        payload["can_download"] = run["state"] == "succeeded" and not payload["result_expired"] and artifact_state == "published"
         return payload
 
     def machine_view():

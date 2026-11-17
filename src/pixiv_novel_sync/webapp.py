@@ -414,7 +414,8 @@ def _task_log_status_for_stats(stats: dict[str, Any] | None) -> str:
     """
     if not isinstance(stats, dict):
         return JobStatus.SUCCEEDED.value
-    if stats.get("aborted_reason") or stats.get("truncated"):
+    # 单本抓取失败也属于真实缺口，不能被正常轮转的 rotation_pending 掩盖。
+    if stats.get("aborted_reason") or stats.get("truncated") or stats.get("failed", 0):
         return _TASK_LOG_STATUS_PARTIAL
     if stats.get("incomplete") and not stats.get("rotation_pending"):
         return _TASK_LOG_STATUS_PARTIAL
@@ -1389,7 +1390,9 @@ def create_app(
     @app.post("/api/save-token")
     def save_token():
         manager = oauth_manager
-        payload = request.get_json(silent=True) or {}
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "请求体必须是 JSON 对象"}), 400
         refresh_token = str(payload.get("refresh_token") or "").strip()
         user_id_raw = payload.get("user_id")
         if user_id_raw in (None, ""):
@@ -1405,8 +1408,6 @@ def create_app(
         # 把下一行变成新的 KEY=VALUE，造成配置注入。
         if not re.fullmatch(r"[A-Za-z0-9_\-]{10,}", refresh_token):
             return jsonify({"error": "invalid refresh_token format"}), 400
-        if user_id is not None and user_id <= 0:
-            return jsonify({"error": "invalid user_id"}), 400
         manager.save_to_env(refresh_token, user_id)
         return jsonify({"ok": True, "message": "已写入 .env"})
 

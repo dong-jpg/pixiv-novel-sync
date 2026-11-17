@@ -177,6 +177,8 @@ def retry_on_pixiv_error(
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     last_exc = e
                     # 429 或网络错误才重试
@@ -231,90 +233,6 @@ def _to_plain(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return {str(key): _to_plain(item) for key, item in vars(value).items() if not key.startswith("_")}
     return str(value)
-
-
-def _extract_tags(tags: Any) -> list[dict[str, Any]]:
-    """提取标签列表，转换为普通 dict 列表。"""
-    results: list[dict[str, Any]] = []
-    for tag in tags or []:
-        results.append(_to_plain(tag))
-    return results
-
-
-def _extract_cover_url(novel: Any) -> str | None:
-    """提取小说封面 URL，优先级：large > medium > square_medium。"""
-    image_urls = getattr(novel, "image_urls", None)
-    for field in ("large", "medium", "square_medium"):
-        url = getattr(image_urls, field, None) if image_urls is not None else None
-        if url:
-            return str(url)
-    return None
-
-
-def _extract_novel_text(webview: Any) -> str:
-    """从 webview 响应中提取小说文本内容。
-
-    尝试多个可能的字段名: novel_text, text, body。
-    """
-    for key in ("novel_text", "text", "body"):
-        value = getattr(webview, key, None)
-        if value:
-            return str(value)
-    if isinstance(webview, dict):
-        for key in ("novel_text", "text", "body"):
-            value = webview.get(key)
-            if value:
-                return str(value)
-    return ""
-
-
-def _is_pixiv_image_url(url: str) -> bool:
-    """True only when the URL host is exactly ``pximg.net`` or a ``*.pximg.net`` subdomain.
-
-    A plain substring test (``"pximg.net" in url``) also matches hostile hosts such
-    as ``pximg.net.evil.com`` or ``evil-pximg.net``, which would let attacker-controlled
-    novel content drive arbitrary downloads through the configured proxy (SSRF).
-    """
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except ValueError:
-        return False
-    return host == "pximg.net" or host.endswith(".pximg.net")
-
-
-def _collect_asset_urls(novel: Any, webview: Any) -> list[tuple[str, str]]:
-    """收集小说的所有资源 URL（封面 + 内联图片）。
-
-    Returns:
-        List of (asset_type, url) tuples, where asset_type is "cover" or "inline_image".
-    """
-    results: list[tuple[str, str]] = []
-    cover_url = _extract_cover_url(novel)
-    if cover_url:
-        results.append(("cover", cover_url))
-
-    plain_webview = _to_plain(webview)
-    visited: set[str] = set()
-    for url in _walk_urls(plain_webview):
-        if _is_pixiv_image_url(url) and url not in visited:
-            visited.add(url)
-            results.append(("inline_image", url))
-    return results
-
-
-def _walk_urls(value: Any) -> list[str]:
-    """递归遍历数据结构，提取所有 HTTP/HTTPS URL。"""
-    urls: list[str] = []
-    if isinstance(value, str):
-        if value.startswith("http://") or value.startswith("https://"):
-            urls.append(value)
-    elif isinstance(value, dict):
-        for item in value.values():
-            urls.extend(_walk_urls(item))
-    elif isinstance(value, list):
-        for item in value:
-            urls.extend(_walk_urls(item))
-    return urls
 
 
 def _filename_from_url(url: str) -> str:

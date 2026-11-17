@@ -914,7 +914,7 @@ def test_recommendation_run_task_propagates_interrupted_error(tmp_path, monkeypa
         def __init__(self, db, settings):
             self.stop_requested = None
 
-        def run(self, profile_id=None, search_plan=None, progress_callback=None):
+        def run(self, profile_id=None, search_plan=None, progress_callback=None, claim_finalization=None):
             raise InterruptedError("Task stopped by user")
 
     monkeypatch.setattr("pixiv_novel_sync.recommendations.RecommendationService", FakeService)
@@ -935,7 +935,7 @@ def test_recommendation_run_cancel_marks_job_cancelled(tmp_path, monkeypatch):
         def __init__(self, db, settings):
             self.stop_requested = None
 
-        def run(self, profile_id=None, search_plan=None, progress_callback=None):
+        def run(self, profile_id=None, search_plan=None, progress_callback=None, claim_finalization=None):
             raise InterruptedError("Task stopped by user")
 
     monkeypatch.setattr("pixiv_novel_sync.recommendations.RecommendationService", FakeService)

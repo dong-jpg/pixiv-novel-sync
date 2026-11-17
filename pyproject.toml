@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pixiv-novel-sync"
 version = "0.1.0"
-description = "Self-hosted Pixiv novel library: incremental sync, local archive and search, mobile reading, EPUB export, rule-based recommendations and rescue reading"
+description = "Self-hosted Pixiv novel library with incremental sync, private archives, mobile reading, EPUB export, rescue userscript and optional AI preference analysis"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [

@@ -412,6 +412,31 @@ def test_userscript_fixture_keeps_healthy_novel_untouched(rescue_browser) -> Non
     page.close()
 
 
+@pytest.mark.parametrize("known_type", ["novel", "series"])
+def test_lookup_batch_boundary_preserves_both_unknown_id_kinds(rescue_browser, known_type) -> None:
+    page = rescue_browser.new_page()
+    ids = list(range(1000, 1040))
+    href = lambda value: (f"/novel/show.php?id={value}" if known_type == "novel"
+                          else f"/novel/series/{value}")
+    html = "<ul>" + "".join(
+        f'<li><a href="{href(value)}">该作品无法显示</a></li>' for value in ids
+    ) + '<li id="unknown"><span data-gtm-value="1000">该作品无法显示</span></li></ul>'
+    prefix = "https://pixiv.dongboapp.com/api/rescue/v1/lookup?"
+    first = prefix + ("novel_ids=" if known_type == "novel" else "series_ids=") + "%2C".join(map(str, ids))
+    second = prefix + "novel_ids=1000&series_ids=1000"
+    _install_script(page, html, {
+        first: {"novels": [], "series": []},
+        second: {"novels": [{"novel_id": 1000, "title": "边界章节"}], "series": []},
+    }, path="/users/2/bookmarks/novels")
+    try:
+        page.wait_for_function("() => document.querySelector('#unknown').textContent.includes('边界章节')")
+        requests = [item["url"] for item in page.evaluate("window.__rescueRequests")]
+        assert second in requests
+        assert page.locator("#unknown a").get_attribute("href") == "/novel/show.php?id=1000&pixiv_rescue=1"
+    finally:
+        page.close()
+
+
 def test_userscript_fixture_leaves_healthy_touch_page_without_main_untouched(rescue_browser) -> None:
     """回归 2026-10-23：手机站健康正文页没有 <main>（Vue 挂在 #spa-contents）。
 
@@ -681,10 +706,10 @@ def _broken_card_html(novel_id: int) -> str:
     )
 
 
-def _cover_key_suffix(token: str) -> str:
+def _cover_key_suffix(token: str, origin: str = "https://pixiv.dongboapp.com") -> str:
     """复刻脚本 cacheKeySuffix 的滚动哈希（h * 31 + charCode，32 位截断）。"""
     h = 0
-    for char in token:
+    for char in origin + "\n" + token.strip():
         h = (h * 31 + ord(char)) & 0xFFFFFFFF
     return str(h)
 
@@ -1972,6 +1997,47 @@ def test_userscript_fixture_lookup_reply_skips_card_that_changed(rescue_browser,
         page.evaluate("() => document.getElementById('list').append(window.__detached)")
         page.locator(".pixiv-rescue-rescued-title", has_text="旧作品备份").wait_for(state="visible", timeout=5000)
         assert page.evaluate(lookups, LOOKUP_URL + "101") == 1
+    page.close()
+
+
+@pytest.mark.parametrize("change", ["token", "origin"])
+def test_lookup_response_cannot_cross_a_credential_change(rescue_browser, change) -> None:
+    page = rescue_browser.new_page()
+    page.clock.install(time=1_800_000_000_000)
+    _install_list_script(
+        page, "<!DOCTYPE html><ul>" + _broken_card_html(101) + "</ul>",
+        {LOOKUP_URL + "101": _held_lookup_novel(101, "旧书库的标题")},
+        {"pixivRescueToken": LIST_TOKEN}, hold=["novel_ids=101"],
+    )
+    page.wait_for_function("() => window.__rescueHeld.length > 0")
+    page.evaluate("""(change) => {
+        window.__rescueStore.set(change === 'token' ? 'pixivRescueToken' : 'pixivRescueOrigin',
+            change === 'token' ? 'new_token' : 'https://backup.example');
+        window.__rescueRelease('novel_ids=101');
+    }""", change)
+    page.wait_for_function("() => !document.querySelector('[data-pixiv-rescue=card-pending]')")
+    assert page.locator(".pixiv-rescue-rescued-card").count() == 0
+    assert page.evaluate("() => window.__rescueStore.get('pixivRescueLookupCache') || ''") == ""
+    page.close()
+
+
+def test_lookup_cache_does_not_reuse_another_server_with_the_same_token(rescue_browser) -> None:
+    page = rescue_browser.new_page()
+    now_ms = page.evaluate("Date.now()")
+    old_entry = _held_lookup_novel(101, "旧服务器标题")["novels"][0]
+    store = {
+        "pixivRescueToken": LIST_TOKEN, "pixivRescueOrigin": "https://backup.example",
+        "pixivRescueLookupCache": json.dumps({
+            "suffix": _cover_key_suffix(LIST_TOKEN),
+            "entries": {"n:101": {"at": now_ms, "item": old_entry}},
+        }),
+    }
+    _install_list_script(page, "<!DOCTYPE html><ul>" + _broken_card_html(101) + "</ul>", {
+        "https://backup.example/api/rescue/v1/lookup?novel_ids=101":
+            _held_lookup_novel(101, "当前服务器标题"),
+    }, store)
+    page.locator(".pixiv-rescue-rescued-title", has_text="当前服务器标题").wait_for(state="visible")
+    assert page.locator(".pixiv-rescue-rescued-title", has_text="旧服务器标题").count() == 0
     page.close()
 
 

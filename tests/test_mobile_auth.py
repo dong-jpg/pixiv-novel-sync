@@ -35,6 +35,11 @@ def auth_env(tmp_path, monkeypatch):
     env_path.write_text("", encoding="utf-8")
     clock = SimpleNamespace(now=1_791_400_000.0)
     monkeypatch.setattr(webapp_module.time, "time", lambda: clock.now)
+    # 配置缓存按单调时间过期；登录会话按真实时间戳过期，两者一起推进。
+    from pixiv_novel_sync.web import managers
+    monkeypatch.setattr(managers, "time", SimpleNamespace(
+        time=lambda: clock.now, monotonic=lambda: clock.now,
+    ))
 
     def no_network(*args, **kwargs):
         raise AssertionError("Authentication tests must not use the network")

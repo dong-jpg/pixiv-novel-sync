@@ -21,7 +21,6 @@ from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
-from .sync import utils as _sync_helpers
 from .utils_env import secure_atomic_write
 from .sync.utils import (
     apply_pixiv_retry_patch,
@@ -41,10 +40,6 @@ PixivErrorPage = _pixiv_fetch.PixivErrorPage
 _parse_pixiv_error_json = _pixiv_fetch._parse_pixiv_error_json
 _stable_meta_for_hash = _pixiv_fetch._stable_meta_for_hash
 _RATE_LIMIT_ERROR_TOKENS = _pixiv_fetch._RATE_LIMIT_ERROR_TOKENS
-_extract_tags = _sync_helpers._extract_tags
-_extract_cover_url = _sync_helpers._extract_cover_url
-_extract_novel_text = _sync_helpers._extract_novel_text
-_collect_asset_urls = _sync_helpers._collect_asset_urls
 
 class RemoteListTruncated(RuntimeError):
     """远端列表翻页触顶，结果不能拿来做差集。"""
@@ -389,6 +384,9 @@ class BookmarkNovelSyncService:
                         )
 
                     _merge_stats(stats, counters)
+                    if counters.get("failed", 0):
+                        stats["incomplete"] = True
+                        stats.setdefault("aborted_reason", "novel_sync_errors")
 
                     # 只有实际同步（非跳过）才计入 synced_items。正文确实不可获取的
                     # （content_unavailable）也不计：它们永远归档不了，每轮都会重来一遍，
@@ -442,9 +440,7 @@ class BookmarkNovelSyncService:
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
 
-        # Phase 3.1: 备份现有用户列表,防止API异常返回空列表导致误删
-        existing_users = self.db.conn.execute("SELECT user_id, name FROM users").fetchall()
-        existing_user_count = len(existing_users)
+        existing_user_count = self.db.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         logger.debug(f"Existing users before sync: {existing_user_count}")
 
         next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
@@ -510,11 +506,11 @@ class BookmarkNovelSyncService:
         safety_limit: int,
         page_delay: float,
         progress_callback: Any = None,
-    ) -> tuple[list[Any], bool]:
+    ) -> tuple[list[Any], bool, bool]:
         """整页取回关注列表（只收集用户对象，不同步任何作品）。
 
-        返回 (去重后的 user 列表, 是否不完整)。翻页触顶或接口报错都会把第二个
-        返回值置 True——此时列表是残缺的，调用方需要在 stats 里标记未取完。
+        返回 (去重后的 user 列表, 是否不完整, 是否拉取失败)。翻页触顶或接口报错
+        都会把第二个返回值置 True，第三个值区分上游错误与安全页数上限。
         """
         collected: list[Any] = []
         seen_ids: set[int] = set()
@@ -799,6 +795,9 @@ class BookmarkNovelSyncService:
                         )
 
                     _merge_stats(stats, counters)
+                    if counters.get("failed", 0):
+                        stats["incomplete"] = True
+                        stats.setdefault("aborted_reason", "novel_sync_errors")
 
                     # 只有实际同步（非跳过）才计入 synced_items
                     if counters.get("novels", 0) > 0:
@@ -1458,6 +1457,8 @@ class BookmarkNovelSyncService:
                                         stats["novels"] += 1
                                     if counters.get("failed", 0):
                                         stats["failed"] = stats.get("failed", 0) + counters.get("failed", 0)
+                                        stats["incomplete"] = True
+                                        stats.setdefault("aborted_reason", "novel_sync_errors")
                                     if counters.get("content_unavailable", 0):
                                         # 正文确实已不可获取（作品删除/私密）：与临时失败分开计数，
                                         # 避免每轮同步都当成普通 failed 反复重试。
@@ -1715,6 +1716,11 @@ class BookmarkNovelSyncService:
         防止把暂时拉不到的收藏误标为"已取消"。
         """
         stats = {"total_checked": 0, "new_pending": 0, "cleaned": 0, "skipped_deleted": 0}
+        restricts = tuple(dict.fromkeys(restricts))
+        if not restricts or any(value not in {"public", "private"} for value in restricts):
+            raise ValueError("收藏检测范围必须是 public 或 private")
+        source_types = tuple(f"bookmark_{value}" for value in restricts)
+        source_placeholders = ",".join("?" for _ in source_types)
 
         if progress_callback:
             progress_callback("phase", {"phase": "获取远程收藏列表"})
@@ -1736,7 +1742,8 @@ class BookmarkNovelSyncService:
 
         # 完整性 sanity check：如果远端结果异常少，宁可拒绝继续
         local_count = self.db.conn.execute(
-            "SELECT COUNT(DISTINCT novel_id) FROM sources WHERE source_type LIKE 'bookmark_%'"
+            f"SELECT COUNT(DISTINCT novel_id) FROM sources WHERE source_type IN ({source_placeholders})",
+            source_types,
         ).fetchone()[0]
 
         # 3.2误删防护:远端/本地数量骤降比例阈值
@@ -1760,7 +1767,8 @@ class BookmarkNovelSyncService:
 
         # 3. 获取本地收藏 ID 集合
         local_rows = self.db.conn.execute(
-            "SELECT DISTINCT novel_id FROM sources WHERE source_type LIKE 'bookmark_%'"
+            f"SELECT DISTINCT novel_id FROM sources WHERE source_type IN ({source_placeholders})",
+            source_types,
         ).fetchall()
         local_ids = {row[0] for row in local_rows}
 
@@ -1794,8 +1802,8 @@ class BookmarkNovelSyncService:
         # 6. 验证并写入 pending
         for novel_id in candidates:
             source_row = self.db.conn.execute(
-                "SELECT source_type FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%' LIMIT 1",
-                (novel_id,),
+                f"SELECT source_type FROM sources WHERE novel_id = ? AND source_type IN ({source_placeholders}) LIMIT 1",
+                (novel_id, *source_types),
             ).fetchone()
             source_type = source_row[0] if source_row else "bookmark_public"
 
