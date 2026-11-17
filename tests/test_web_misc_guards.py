@@ -61,6 +61,10 @@ def test_busy_sync_returns_409(tmp_path, monkeypatch) -> None:
 
 
 def test_login_clears_session_and_expires_after_seven_days(tmp_path, monkeypatch) -> None:
+    from hashlib import sha256
+
+    from pixiv_novel_sync.storage_db import Database
+
     monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
@@ -73,8 +77,13 @@ def test_login_clears_session_and_expires_after_seven_days(tmp_path, monkeypatch
     assert client.post("/api/auth/login", data={"token": "secret-token"}).status_code == 302
     with client.session_transaction() as sess:
         assert "stale" not in sess
-        assert sess["authenticated"] is True
-        sess["authenticated_at"] = time.time() - 8 * 24 * 3600
+        session_id = sess["auth_session_id"]
+    with Database(load_settings(env_path=str(env_path)).storage.db_path) as db:
+        record = db.get_web_auth_session(sha256(session_id.encode("ascii")).hexdigest())
+    assert record is not None
+    assert record["expires_at"] - record["created_at"] == 7 * 24 * 3600
+    expired_now = record["created_at"] + 8 * 24 * 3600
+    monkeypatch.setattr(time, "time", lambda: expired_now)
 
     expired = client.get("/api/dashboard/status")
     assert expired.status_code == 401

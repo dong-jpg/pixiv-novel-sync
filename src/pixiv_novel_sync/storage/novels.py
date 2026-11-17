@@ -207,6 +207,7 @@ class NovelsMixin:
                 n.source_url,
                 n.archive_dir,
                 nt.text_raw,
+                nt.text_hash,
                 nt.text_markdown,
                 n.raw_json,
                 rp.status AS reading_status,
@@ -360,7 +361,8 @@ class NovelsMixin:
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM reading_progress WHERE novel_id = ?", (novel_id,))
-                self.conn.execute("DELETE FROM preference_analyzed_novels WHERE novel_id = ?", (novel_id,))
+                # D4：保留 preference_analyzed_novels 标记。词频累加器不能按本扣减，
+                # 清掉标记的话作品被同步带回后会再分析一次，词频与 novel_count 翻倍。
                 self.conn.execute(
                     "DELETE FROM rescue_catalog_sources WHERE item_type = 'novel' AND item_id = ?",
                     (novel_id,),
@@ -378,12 +380,18 @@ class NovelsMixin:
                     self.refresh_rescue_item("series", series_id)
 
     def delete_bookmark(self, novel_id: int) -> None:
-        """删除收藏记录"""
-        self.conn.execute(
-            "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
-            (novel_id,),
-        )
-        self._commit_if_needed()
+        """删除收藏记录，并在同一事务里刷新它的救援目录条目。
+
+        拯救目录的来源与 personal_relation 是反规范化的快照：只删 sources 不刷新，
+        拯救页会继续显示「我的收藏」，而实时算的 personal_hold 已是 False，两边矛盾，
+        直到下一次同步任务全量重建（审查 2026-10-28 W4）。
+        """
+        with self.transaction():
+            self.conn.execute(
+                "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
+                (novel_id,),
+            )
+            self.refresh_rescue_item("novel", int(novel_id))
 
     def replace_fts(self, novel_id: int, title: str, caption: str, author_name: str, body: str) -> None:
         """更新FTS索引。

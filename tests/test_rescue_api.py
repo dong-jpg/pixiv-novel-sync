@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -573,6 +572,137 @@ def test_rescue_parent_series_exposes_chapter_and_paginated_directory(client) ->
     assert chapter.get_json()["data"]["eligibility_reason"] == "parent_series_unavailable"
 
 
+def _seed_series_chapters(app) -> None:
+    """给已删系列 20 再加两章（章节 21 已在基础数据里，发布时间为空 → 排第 1）。"""
+    db = Database(Path(app.config["PIXIV_DB_PATH"]))
+    try:
+        for novel_id, status, created, text in (
+            (22, "deleted", "2026-01-02T10:00:00+09:00", "第二章" * 411 + "末"),
+            (23, "normal", "2026-01-03T10:00:00+09:00", "第三章" * 266 + "末末"),
+        ):
+            db.conn.execute(
+                """
+                INSERT INTO novels (
+                    novel_id, user_id, series_id, title, visible, restrict_value,
+                    x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                    raw_json, meta_hash, status, create_date
+                ) VALUES (?, 1, 20, ?, 1, 'public', 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (novel_id, f"第{novel_id - 20}章", len(text), novel_id * 10, novel_id * 100,
+                 '["R-18", "设定"]', '{"is_original": true, "novel_ai_type": 1, "secret": "x"}',
+                 f"h{novel_id}", status, created),
+            )
+            db.conn.execute(
+                "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) VALUES (?, ?, 1, ?)",
+                (novel_id, text, f"t{novel_id}"),
+            )
+        db.conn.execute(
+            "INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at) "
+            "VALUES (22, 'cover', 'https://i.pximg.net/c.jpg', 'covers/22.jpg', 'f22', '2026-01-02')"
+        )
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+    finally:
+        db.close()
+
+
+def test_rescue_series_chapters_expose_pixiv_card_fields(app, client) -> None:
+    """系列页卡片照 Pixiv：每章标签、收藏/浏览快照、原创/AI 标记、有无封面；头部总字数与更新时间。"""
+    _seed_series_chapters(app)
+    token = _rotate_token(client)
+    response = client.get(
+        "/api/rescue/v1/series/20/chapters", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    items = data["items"]
+    assert [(item["novel_id"], item["chapter_number"]) for item in items] == [(21, 1), (22, 2), (23, 3)]
+    second = items[1]
+    assert second["tags"] == ["R-18", "设定"]
+    assert (second["total_bookmarks"], second["total_views"], second["x_restrict"]) == (220, 2200, 1)
+    assert second["is_original"] is True and second["ai_type"] == 1
+    assert second["has_cover"] is True and items[2]["has_cover"] is False
+    # 原始 JSON 不外传
+    assert all("raw_json" not in item and "tags_json" not in item for item in items)
+    assert data["total_text_length"] == 4 + 1234 + 800
+    assert data["last_create_date"] == "2026-01-03T10:00:00+09:00"
+
+
+def test_rescue_novel_exposes_stats_and_series_navigation(app, client) -> None:
+    """正文页：同步时的收藏/浏览快照与原创标记；系列章节带「第几话」与上一话/下一话。"""
+    _seed_series_chapters(app)
+    token = _rotate_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    chapter = client.get("/api/rescue/v1/novels/22", headers=headers).get_json()["data"]
+    assert (chapter["total_bookmarks"], chapter["total_views"]) == (220, 2200)
+    assert chapter["is_original"] is True and chapter["ai_type"] == 1
+    assert chapter["series_nav"] == {
+        "series_id": 20,
+        "series_title": "救援系列",
+        "chapter_number": 2,
+        "chapter_total": 3,
+        "prev": {"novel_id": 21, "title": "系列章节", "chapter_number": 1},
+        "next": {"novel_id": 23, "title": "第3章", "chapter_number": 3},
+    }
+    first = client.get("/api/rescue/v1/novels/21", headers=headers).get_json()["data"]
+    assert first["series_nav"]["prev"] is None and first["series_nav"]["next"]["novel_id"] == 22
+    # 不属于系列的单篇没有系列导航；原始 JSON 不外传
+    standalone = client.get("/api/rescue/v1/novels/10", headers=headers).get_json()["data"]
+    assert standalone["series_nav"] is None
+    assert "raw_json" not in standalone and "secret" not in str(standalone)
+
+
+def _set_user_raw_json(app, raw_json: str) -> None:
+    db = Database(Path(app.config["PIXIV_DB_PATH"]))
+    try:
+        db.conn.execute("UPDATE users SET raw_json = ? WHERE user_id = 1", (raw_json,))
+        db.conn.commit()
+    finally:
+        db.close()
+
+
+def test_rescue_series_list_and_lookup_expose_pixiv_series_card_fields(app, client) -> None:
+    """0.12.0「拯救系列」tab 与追更列表填空照搬 Pixiv 系列卡：已备份话数、最新一话、R-18、封面、作者头像。
+
+    章节数与最新一话只算已备份章节（has_content = 1），口径同章节目录；x_restrict 取系列内最大值。
+    """
+    _seed_series_chapters(app)
+    _set_user_raw_json(app, '{"profile_image_urls": {"medium": "https://i.pximg.net/user-profile/img/a_170.jpg"},'
+                            ' "secret": "x"}')
+    token = _rotate_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    expected = {
+        "user_id": 1, "chapter_count": 3, "last_create_date": "2026-01-03T10:00:00+09:00",
+        "latest_novel_id": 23, "x_restrict": 1, "has_cover": True,
+        "author_avatar_url": "https://i.pximg.net/user-profile/img/a_170.jpg",
+    }
+
+    listed = client.get("/api/rescue/v1/series?page=1&page_size=10", headers=headers)
+    assert listed.status_code == 200
+    data = listed.get_json()["data"]
+    assert [item["series_id"] for item in data["items"]] == [20]
+    card = data["items"][0]
+    assert {key: card[key] for key in expected} == expected
+    assert card["expected_count"] == 1 and card["rescue_state"] == "success"
+
+    looked_up = client.get("/api/rescue/v1/lookup?series_ids=20", headers=headers)
+    assert looked_up.status_code == 200
+    series = looked_up.get_json()["data"]["series"]
+    assert len(series) == 1
+    assert {key: series[0][key] for key in expected} == expected
+    assert series[0]["expected_count"] == 1
+    # 原始 JSON 不外传
+    for payload in (listed.get_json(), looked_up.get_json()):
+        assert "raw_json" not in str(payload) and "secret" not in str(payload)
+
+    # 头像只放行 Pixiv 图床的 https 地址
+    _set_user_raw_json(app, '{"profile_image_urls": {"medium": "http://evil.example/a.jpg"}}')
+    again = client.get("/api/rescue/v1/lookup?series_ids=20", headers=headers).get_json()["data"]["series"][0]
+    assert again["author_avatar_url"] is None
+
+
 def test_dashboard_rescue_list_and_override_crud(client) -> None:
     listed = client.get("/api/dashboard/rescues?item_type=novel&state=success")
     assert listed.status_code == 200
@@ -992,6 +1122,49 @@ def test_dashboard_novel_detail_includes_rescue_evaluation(client) -> None:
     assert normal["rescue"]["remote_status"] == "normal"
 
 
+def test_dashboard_novel_detail_sends_the_body_once_as_utf8(app, client) -> None:
+    """回归（审查 2026-10-28 性能 P3）：详情接口同时返回 text_raw 与 text_markdown（后者是
+    标题/简介 + 同一份正文），汉字还被转成 \\uXXXX，20 万字小说 2.4 MB；只发一份 UTF-8
+    是 0.61 MB。阅读页只在 text_raw 为空时才用 markdown，那种情况照旧回 markdown。"""
+    db = Database(Path(app.config["PIXIV_DB_PATH"]))
+    try:
+        body = "第一章\n" + "长篇正文。" * 2000
+        db.conn.execute(
+            "UPDATE novel_texts SET text_raw = ?, text_markdown = ? WHERE novel_id = 10",
+            (body, "# 救援小说\n\n" + body),
+        )
+        db.conn.execute(
+            "UPDATE novel_texts SET text_raw = '', text_markdown = '# 只有 markdown' WHERE novel_id = 11"
+        )
+        db.conn.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/dashboard/novels/10")
+    payload = response.get_json()
+    assert payload["text_raw"] == body
+    assert payload["text_markdown"] is None
+    assert "长篇正文。".encode("utf-8") in response.data
+    assert b"\\u957f" not in response.data
+    assert len(response.data) < len(body.encode("utf-8")) + 4_000
+
+    fallback = client.get("/api/dashboard/novels/11").get_json()
+    assert fallback["text_markdown"] == "# 只有 markdown"
+
+
+def test_rescue_lookup_deduplicates_ids_before_the_40_id_limit(client) -> None:
+    """回归（审查 2026-10-28 W6）：去重拿字符串 chunk 去比 list[int]，永远不生效，
+    重复 ID 会挤占 40 个的配额，返回里也会出现重复条目。"""
+    token = _rotate_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.get("/api/rescue/v1/lookup?novel_ids=" + ",".join(["10"] * 41), headers=headers)
+
+    assert response.status_code == 200
+    novels = response.get_json()["data"]["novels"]
+    assert [item["novel_id"] for item in novels] == [10]
+
+
 def test_dashboard_series_detail_includes_rescue_coverage(client) -> None:
     detail = client.get("/api/dashboard/series/20").get_json()
 
@@ -1097,9 +1270,9 @@ def test_dashboard_rescue_override_uses_existing_csrf_protection(
     csrf_app.config.update(TESTING=True)
     _seed_rescue_data(db_path)
     csrf_client = csrf_app.test_client()
-    with csrf_client.session_transaction() as session:
-        session["authenticated"] = True
-        session["authenticated_at"] = time.time()
+    assert csrf_client.post(
+        "/api/auth/login", data={"token": "admin-secret"}
+    ).status_code == 302
 
     blocked = csrf_client.put(
         "/api/dashboard/rescue-overrides/novel/10",

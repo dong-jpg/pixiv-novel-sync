@@ -1,5 +1,7 @@
 # Pixiv Novel Sync Logo 设计说明
 
+> 本文描述 `assets/logo.svg` 与 `assets/logo-mark.svg`（Writer's Desk，含 AI 创作寓意），它们是 ai-writing 分支的品牌。main 的 README 使用 `assets/main-logo.svg`（书页与同步环），设计依据见 [main 品牌与自述设计](../docs/superpowers/specs/2026-10-09-main-readme-branding-design.md)；按该设计，这两个旧文件保留不替换。
+
 ## 设计方向
 
 当前 Logo 采用 Writer's Desk 方向：像一个安静的本地编辑台，而不是高饱和的科技渐变标志。它需要同时表达三件事：

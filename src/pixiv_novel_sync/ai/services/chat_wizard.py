@@ -87,9 +87,9 @@ class AIChatWizardMixin:
         db = self._db()
         output_parts: list[str] = []
         route_context: RouteJobContext | None = None
-        session_id = int(payload.get("session_id") or 0)
-        user_message = (payload.get("user_message") or "").strip()
         try:
+            session_id = int(payload.get("session_id") or 0)
+            user_message = (payload.get("user_message") or "").strip()
             if not session_id:
                 raise AIServiceError("缺少 session_id")
             if not user_message:

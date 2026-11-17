@@ -11,6 +11,14 @@ from .storage_db import Database, prepare_schema
 
 
 def register_preference_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
+    @app.after_request
+    def private_preference_responses(response):
+        if request.path.startswith(("/api/dashboard/preferences/", "/api/dashboard/recommendations/")):
+            response.headers["Cache-Control"] = "private, no-store, no-cache, max-age=0, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     def current_settings() -> Settings:
         return settings() if callable(settings) else settings
 
@@ -30,7 +38,11 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     @app.get("/dashboard/preferences")
     def dashboard_preferences_page():
-        return render_template("dashboard_preferences.html")
+        return render_template(
+            "dashboard_preferences.html",
+            work_analysis_view=request.args.get("view") == "work-analysis",
+            work_learning_view=request.args.get("view") == "learning",
+        )
 
     @app.get("/api/dashboard/preferences/profiles")
     def list_preference_profiles():

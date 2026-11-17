@@ -11,16 +11,17 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, send_file, url_for
 
 from . import __version__
 from .jobs.manager import JobManager
-from .jobs.models import JobSpec, JobState, JobStatus
+from .jobs.models import JobSource, JobSpec, JobState, JobStatus, JobType
 from .jobs.runner import JobRunner
 from .jobs.tasks import execute_task
 from .oauth_helper import OAuthManager
@@ -29,8 +30,23 @@ from .storage_db import Database, prepare_schema
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
+from .web.auth_sessions import (
+    AUTH_EXPIRY_KEY,
+    AUTH_SESSION_KEY,
+    BROWSER_SESSION_SECONDS,
+    REMEMBER_SESSION_SECONDS,
+    AbsoluteAuthSessionInterface,
+    credential_version,
+    hash_session_id,
+    safe_next_path,
+    session_record_is_current,
+)
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
+from .web.managers import scheduler_task_priority
+from .work_analysis.coordinator import WorkAnalysisCoordinator
+from .work_analysis.contracts import WorkAnalysisError
+from .work_analysis.executor import WorkAnalysisExecutor
 from .web.utils import (
     _oauth_task_public_payload,
     _settings_to_dict,
@@ -313,6 +329,8 @@ def _claim_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> bool:
 def _release_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> None:
     with _auto_sync_scheduler_registry_lock:
         current = _auto_sync_scheduler_registry.get(key)
+        if current is not None and current.scheduler is scheduler and scheduler.work_coordinator is not None:
+            return
         if current is not None and current.scheduler is scheduler:
             _auto_sync_scheduler_registry.pop(key, None)
 
@@ -487,6 +505,9 @@ def create_app(
     # 加固 cookie：HttpOnly + SameSite=Lax。
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_REFRESH_EACH_REQUEST"] = False
+    app.permanent_session_lifetime = timedelta(seconds=REMEMBER_SESSION_SECONDS)
+    app.session_interface = AbsoluteAuthSessionInterface()
     settings_manager = SettingsManager(config_path)
     # Secure 必须在 load() 之后看环境变量：DASHBOARD_TRUST_PROXY / PIXIV_COOKIE_SECURE
     # 通常只写在 .env 里，create_app 进来时进程环境还没有它们。
@@ -504,18 +525,12 @@ def create_app(
     shared_job_manager = JobManager()
     app.config["job_manager"] = shared_job_manager
 
-    # 应用启动时一次性清理进程重启遗留的 running 任务日志。
-    # 注意：不能放在 init_schema 常规路径（并发 Web 请求会误杀运行中任务）。
+    # Schema only; the attached owner serializes recovery once below.
     try:
-        _startup_db = _open_database(settings_manager.load(env_path=env_path))
-        try:
-            stale_count = _startup_db.fail_stale_task_logs()
-            if stale_count:
-                logger.info("启动时将 %d 条遗留 running 任务日志标记为 failed", stale_count)
-        finally:
-            _startup_db.close()
-    except Exception as exc:
-        logger.warning("启动清理遗留任务日志失败：%s", exc)
+        startup_db = _open_database(settings_manager.load(env_path=env_path))
+        startup_db.close()
+    except Exception:
+        logger.warning("Shared startup schema preparation unavailable")
 
     try:
         startup_settings = settings_manager.load(env_path=env_path)
@@ -525,8 +540,26 @@ def create_app(
     except Exception as exc:
         logger.warning("启动清理回收站失败：%s", exc)
 
+    work_coordinator = None
+    work_ai_factory = None
+    preference_service = None
+    preference_admission = None
+    library_service = None
+
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
+        if task_type == "work_analysis":
+            if work_coordinator is None or work_ai_factory is None:
+                raise RuntimeError("work_admission_unavailable")
+            context = {**context, "work_control_scope": work_coordinator.work_control_scope}
+            return WorkAnalysisExecutor(work_coordinator.db_factory, work_ai_factory).run(
+                context["params"]["run_id"], context,
+            )
+        if task_type == "preference_summarize":
+            if preference_service is None:
+                raise RuntimeError("preference_learning_unavailable")
+            context = {**context, "stop_requested": lambda: shared_job_manager.is_cancel_requested(context["job_id"])}
+            return preference_service.execute(context["params"]["run_id"], context)
         return execute_task(task_type, current_settings, context)
 
     shared_job_runner: JobRunner | None = None
@@ -553,12 +586,9 @@ def create_app(
     def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
 
-    def _run_shared_web_job(job_id: str) -> None:
-        if shared_job_runner is None:
-            raise RuntimeError("shared job runner is not initialized")
-        shared_job_runner.run(job_id)
+    def _persist_shared_job_result(job_id: str) -> None:
         job = shared_job_manager.get_job(job_id)
-        if job is None:
+        if job is None or job.status not in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}:
             return
         log_id = job.progress.get("log_id")
         if not log_id:
@@ -569,22 +599,74 @@ def create_app(
             prepare_schema(db)
             logs = _shared_job_logs_for_db(job)
             if job.status == JobStatus.SUCCEEDED:
-                # 熔断中止/本轮没跑完的任务不能记成 succeeded，否则风控事故在日志里
-                # 显示成绿色「成功」被彻底掩盖
-                db.update_task_log(
-                    log_id,
-                    _task_log_status_for_stats(job.stats),
-                    stats=_prune_stats_for_log(job.stats),
-                    logs=logs,
-                )
+                db.update_task_log(log_id, _task_log_status_for_stats(job.stats),
+                                   stats=_prune_stats_for_log(job.stats), logs=logs)
             elif job.status == JobStatus.FAILED:
                 db.update_task_log(log_id, JobStatus.FAILED.value, error_message=job.error, logs=logs)
-            elif job.status == JobStatus.CANCELLED:
+            else:
                 db.update_task_log(log_id, JobStatus.CANCELLED.value, logs=logs)
-        except Exception as exc:
-            logger.error("更新共享任务日志失败：%s", exc)
+        except Exception:
+            logger.error("Shared task log finalization failed")
         finally:
             db.close()
+
+    def _run_shared_web_job(job_id: str) -> None:
+        if shared_job_runner is None:
+            raise RuntimeError("shared job runner is not initialized")
+        try:
+            shared_job_runner.run(job_id)
+        finally:
+            try:
+                if preference_admission is not None:
+                    preference_admission.finished(job_id)
+                if work_coordinator is not None:
+                    work_coordinator.on_job_finished(job_id)
+            except Exception:
+                logger.warning("Shared work completion reconciliation failed")
+            _persist_shared_job_result(job_id)
+
+    def _launch_shared_web_job(job_id: str) -> None:
+        def run():
+            try:
+                job = shared_job_manager.get_job(job_id)
+                if job is not None and job.spec.job_type in {JobType.WORK_ANALYSIS, JobType.PREFERENCE_SUMMARIZE}:
+                    auto_sync_scheduler._run_and_watch_for_preemption(
+                        settings_manager.load(env_path=env_path), job_id, "work_analysis", _run_shared_web_job,
+                    )
+                else:
+                    _run_shared_web_job(job_id)
+            except Exception:
+                if shared_job_manager.abandon_reserved_start(job_id):
+                    shared_job_manager.mark_failed(job_id, "shared_launch_failed")
+                    _persist_shared_job_result(job_id)
+                logger.warning("Shared work watcher failed")
+
+        thread = threading.Thread(target=run, daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            shared_job_manager.abandon_reserved_start(job_id)
+            shared_job_manager.mark_failed(job_id, "shared_launch_failed")
+            _persist_shared_job_result(job_id)
+            raise RuntimeError("shared_launch_failed") from None
+
+    def _check_shared_admission(spec, work_admission_priority, scheduler_priority):
+        if work_admission_priority is not None:
+            try:
+                shared_job_manager.check_work_waiting_admission(spec, work_admission_priority)
+            except RuntimeError as error:
+                if str(error) == "shared_pending_full":
+                    raise RuntimeError("已有同步任务正在运行，等待队列已满") from None
+                raise RuntimeError("已有同步任务正在运行，请稍后再试") from None
+            return
+        active, waiting = shared_job_manager.shared_admission_snapshot()
+        if scheduler_priority is not None:
+            if spec.source != JobSource.SCHEDULER or type(scheduler_priority) is not int or not 1 <= scheduler_priority <= 3:
+                raise ValueError("invalid_scheduler_admission")
+            if not active and waiting and scheduler_priority < waiting[0].shared_priority:
+                return
+        if active or waiting:
+            raise RuntimeError("已有同步任务正在运行，请稍后再试")
 
     def _submit_shared_job(
         spec: JobSpec,
@@ -595,7 +677,11 @@ def create_app(
         is_auto_sync: bool = False,
         progress: dict[str, Any] | None = None,
         run_async: bool = True,
+        work_admission_priority: int | None = None,
+        scheduler_priority: int | None = None,
     ) -> JobState:
+        if work_admission_priority is not None and run_async:
+            raise ValueError("waiting work jobs require coordinator admission")
         def _mark_log_failed(log_id: int, message: str) -> None:
             db = _open_database(current_settings)
             try:
@@ -606,8 +692,7 @@ def create_app(
         # 已有任务时直接拒绝，不打开数据库。写日志仍放在锁外，
         # 避免迁移或磁盘 IO 挡住 get_job / is_cancel_requested。
         with shared_job_manager._lock:
-            if _has_any_running_web_job():
-                raise RuntimeError("已有同步任务正在运行，请稍后再试")
+            _check_shared_admission(spec, work_admission_priority, scheduler_priority)
 
         db = _open_database(current_settings)
         try:
@@ -622,9 +707,11 @@ def create_app(
         # 写日志的窗口里可能有别的请求入队，提交前再检查一次。
         try:
             with shared_job_manager._lock:
-                if _has_any_running_web_job():
-                    raise RuntimeError("已有同步任务正在运行，请稍后再试")
-                job = shared_job_manager.submit(spec)
+                _check_shared_admission(spec, work_admission_priority, scheduler_priority)
+                if work_admission_priority is None:
+                    job = shared_job_manager.submit(spec)
+                else:
+                    job = shared_job_manager.submit_work_waiting(spec, work_admission_priority)
         except Exception as exc:
             message = str(exc) if "已有同步任务正在运行" in str(exc) else "job submit failed"
             try:
@@ -659,8 +746,7 @@ def create_app(
         if progress:
             shared_job_manager.update_progress(job.job_id, **progress)
         if run_async:
-            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
-            thread.start()
+            _launch_shared_web_job(job.job_id)
         return job
 
     def _submit_scheduler_task(task_settings: Settings, task_name: str) -> JobState | None:
@@ -687,6 +773,7 @@ def create_app(
             display_name,
             is_auto_sync=True,
             run_async=False,
+            scheduler_priority=scheduler_task_priority(task_name),
         )
 
     oauth_manager = OAuthManager(env_path=env_path)
@@ -700,36 +787,63 @@ def create_app(
     should_start_scheduler = (
         auto_start_scheduler if start_scheduler is None else bool(start_scheduler)
     )
-    start_auto_sync_scheduler = False
-    if should_start_scheduler:
-        registry_settings = settings_manager.load(env_path=env_path)
-        registry_key = _scheduler_registry_key(registry_settings.storage.db_path)
-        auto_sync_scheduler, scheduler_created = _get_or_create_scheduler_owner(
-            registry_key,
-            config_path=config_path,
-            env_path=env_path,
-            job_manager=shared_job_manager,
-            submit_task=_submit_scheduler_task,
-            run_task=_run_shared_web_job,
-            get_task=shared_job_manager.get_job,
-            cancel_task=shared_job_manager.request_cancel,
-        )
-        if auto_sync_scheduler.shared_job_manager is not None:
-            shared_job_manager = auto_sync_scheduler.shared_job_manager
-        if scheduler_created or not auto_sync_scheduler.is_running():
-            start_auto_sync_scheduler = True
-    else:
-        auto_sync_scheduler = AutoSyncScheduler(
-            config_path=config_path,
-            env_path=env_path,
-            shared_job_manager=shared_job_manager,
-            submit_task=_submit_scheduler_task,
-            run_task=_run_shared_web_job,
-            get_task=shared_job_manager.get_job,
-            cancel_task=shared_job_manager.request_cancel,
-        )
+    registry_settings = settings_manager.load(env_path=env_path)
+    registry_key = _scheduler_registry_key(registry_settings.storage.db_path)
+    auto_sync_scheduler, scheduler_created = _get_or_create_scheduler_owner(
+        registry_key, config_path=config_path, env_path=env_path,
+        job_manager=shared_job_manager, submit_task=_submit_scheduler_task,
+        run_task=_run_shared_web_job, get_task=shared_job_manager.get_job,
+        cancel_task=shared_job_manager.request_cancel,
+    )
+    shared_job_manager = auto_sync_scheduler.shared_job_manager
+    start_auto_sync_scheduler = should_start_scheduler and (
+        scheduler_created or not auto_sync_scheduler.is_running()
+    )
 
     shared_job_runner = JobRunner(shared_job_manager, run_web_task)
+    app.config["work_config_path"] = config_path
+    app.config["work_env_path"] = env_path
+
+    def work_database():
+        current = settings_manager.load(env_path=env_path)
+        if _scheduler_registry_key(current.storage.db_path) != registry_key or not current.storage.db_path.is_file():
+            raise WorkAnalysisError("storage_unavailable", 503)
+        return Database(current.storage.db_path)
+
+    with _auto_sync_scheduler_registry_lock:
+        work_coordinator = auto_sync_scheduler.work_coordinator
+        new_work_owner = work_coordinator is None
+        if new_work_owner:
+            work_coordinator = WorkAnalysisCoordinator(
+                shared_job_manager, _submit_shared_job, _launch_shared_web_job,
+                lambda: settings_manager.load(env_path=env_path),
+                db_factory=work_database, scheduler=auto_sync_scheduler,
+            )
+            auto_sync_scheduler.work_coordinator = work_coordinator
+            auto_sync_scheduler.cancel_task = work_coordinator.cancel_shared_job
+    app.extensions["work_analysis_coordinator"] = work_coordinator
+
+    try:
+        work_coordinator.startup_recover()
+    except Exception:
+        # The coordinator remains closed to admission until an explicit
+        # startup retry succeeds; other dashboard features stay available.
+        logger.warning("Work analysis startup recovery unavailable")
+
+    def close_work_analysis_owner():
+        # Application/process teardown only, never an HTTP auto-sync action.
+        # Call after request serving stops and existing workers have drained.
+        work_coordinator.close()
+        auto_sync_scheduler.stop()
+        thread = auto_sync_scheduler._thread
+        if thread is not None and thread.is_alive():
+            raise RuntimeError("shared_owner_still_active")
+        with _auto_sync_scheduler_registry_lock:
+            if auto_sync_scheduler.work_coordinator is work_coordinator:
+                auto_sync_scheduler.work_coordinator = None
+        _release_scheduler_owner(registry_key, auto_sync_scheduler)
+
+    app.extensions["close_work_analysis_owner"] = close_work_analysis_owner
     app.config["job_manager"] = shared_job_manager
     app.config["run_shared_job"] = _run_shared_web_job
     app.config["submit_shared_web_job"] = _submit_shared_job
@@ -776,23 +890,36 @@ def create_app(
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     _login_failures = _LoginFailureTracker()
     app.config["login_failure_tracker"] = _login_failures
-    _SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
-    def _authenticated_session_fresh() -> bool:
-        if not session.get("authenticated"):
+    def _authenticated_session_fresh(current_settings: Settings) -> bool:
+        token_hash = hash_session_id(session.get(AUTH_SESSION_KEY))
+        if token_hash is None:
+            if any(key in session for key in (AUTH_SESSION_KEY, "authenticated", "authenticated_at")):
+                session.clear()
             return False
-        started = session.get("authenticated_at")
-        if isinstance(started, (int, float)) and started > 10**12:
-            age = (time.time_ns() - float(started)) / 1_000_000_000
-        elif isinstance(started, (int, float)):
-            age = time.time() - float(started)
-        else:
+        # Do not clear/modify the cookie until verification has completed. A
+        # transient connection/read error must fail closed but remain retryable.
+        db = _open_database(current_settings)
+        try:
+            record = db.get_web_auth_session(token_hash)
+        finally:
+            db.close()
+        version = credential_version(app.secret_key, str(current_settings.dashboard_token))
+        if not session_record_is_current(record, version, time.time()):
             session.clear()
             return False
-        if age > _SESSION_MAX_AGE_SECONDS:
-            session.clear()
-            return False
+        # Adult access tokens need sub-second reauthentication identity. Only
+        # expose it after the common revocable session has passed verification.
+        started_ns = session.get("auth_session_started_at_ns")
+        g.dashboard_authenticated_at_ns = (
+            started_ns if type(started_ns) is int and started_ns > 0
+            else int(record["created_at"] * 1_000_000_000)
+        )
         return True
+
+    def _auth_storage_unavailable(exc: Exception):
+        logger.warning("Dashboard authentication storage unavailable (%s)", type(exc).__name__)
+        return jsonify({"error": "authentication temporarily unavailable; please retry"}), 503
 
     def _get_csrf_token() -> str:
         token = session.get("csrf_token")
@@ -874,9 +1001,15 @@ def create_app(
     @app.before_request
     def _check_auth():
         path = request.path
+        if request.blueprint == "remote_worker":
+            # Every worker endpoint installs its own mandatory bearer-only hook.
+            return None
+        if request.blueprint == "remote_dashboard" and request.content_length and request.content_length > 16 * 1024:
+            return jsonify({"error": "request_too_large"}), 413
         if path.startswith("/api/rescue/v1/"):
             return
-        token = settings_manager.load(env_path=env_path).dashboard_token
+        current_settings = settings_manager.load(env_path=env_path)
+        token = current_settings.dashboard_token
         if not token:
             # 安全加固：未配置 token 时仅允许真正的本机访问。
             # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
@@ -896,7 +1029,11 @@ def create_app(
             return
         if path.startswith("/static/"):
             return
-        if _authenticated_session_fresh():
+        try:
+            authenticated = _authenticated_session_fresh(current_settings)
+        except Exception as exc:
+            return _auth_storage_unavailable(exc)
+        if authenticated:
             blocked = _csrf_blocked(path)
             if blocked is not None:
                 return blocked
@@ -918,7 +1055,20 @@ def create_app(
             return jsonify({"error": "forbidden"}), 403
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
-        return redirect("/api/auth/login")
+        next_path = request.full_path if request.query_string else request.path
+        return redirect(url_for("auth_login", next=safe_next_path(next_path)))
+
+    def _csp_nonce() -> str:
+        """本次请求的 CSP nonce；模板里每个内联 <script> 都带 nonce="{[ csp_nonce() ]}"。"""
+        nonce = getattr(g, "csp_nonce", None)
+        if nonce is None:
+            nonce = secrets.token_urlsafe(18)
+            g.csp_nonce = nonce
+        return nonce
+
+    @app.context_processor
+    def _inject_csp_nonce():
+        return {"csp_nonce": _csp_nonce}
 
     @app.after_request
     def _add_security_headers(response):
@@ -927,9 +1077,38 @@ def create_app(
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         if response.mimetype == "text/html":
+            # 内联脚本靠每次请求的 nonce 放行，不开 'unsafe-inline'，注入进页面的 <script> 不会执行。
+            # Vue 全局版在浏览器里编译模板（new Function），必须 'unsafe-eval'。
+            # 样式：模板里有 style="" 与 Vue 的 :style 绑定，只能放开 'unsafe-inline'。
+            # 图片：封面走同源 /proxy/image，阅读器导出 EPUB 用 blob:，SVG 图标用 data:。
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "; ".join(
+                    (
+                        "default-src 'self'",
+                        f"script-src 'self' 'nonce-{_csp_nonce()}' 'unsafe-eval' https://unpkg.com",
+                        "style-src 'self' 'unsafe-inline'",
+                        "img-src 'self' data: blob:",
+                        "font-src 'self' data:",
+                        "connect-src 'self'",
+                        "object-src 'none'",
+                        "frame-ancestors 'none'",
+                        "base-uri 'self'",
+                        "form-action 'self'",
+                    )
+                ),
+            )
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+        return response
+
+    @app.after_request
+    def _cache_versioned_static(response):
+        # base.html 引用 /static/css/tailwind.css?v=<内容哈希>，CSS 一变 URL 就变，可以长缓存。
+        # Flask 默认给静态文件 no-cache，每次翻页都要为这个阻塞渲染的样式表多等一个往返。
+        if request.endpoint == "static" and request.args.get("v") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
     # 启动期安全提示：未配置 dashboard_token 时给出明确告警。
@@ -944,6 +1123,63 @@ def create_app(
 
     from .ai_web import register_ai_routes
     register_ai_routes(app, current_settings_for_routes)
+    from .work_analysis.service import WorkAnalysisService
+    from .work_analysis_web import register_work_analysis_routes
+
+    register_work_analysis_routes(app, WorkAnalysisService(
+        work_coordinator.db_factory,
+        lambda: app.extensions["pixiv_novel_sync.ai_service"],
+        app.extensions["work_analysis_coordinator"],
+    ))
+    app.extensions["pixiv_novel_sync.work_ai_factory"] = lambda: app.extensions["pixiv_novel_sync.ai_service"]
+    work_ai_factory = lambda: app.extensions["pixiv_novel_sync.work_ai_factory"]()
+
+    from .preference_learning.admission import PreferenceLearningAdmission
+    from .preference_learning.library import LibraryAnalysisService
+    from .preference_learning.profiles import PreferenceLearningService
+    from .preference_learning_web import register_preference_learning_routes
+
+    with _auto_sync_scheduler_registry_lock:
+        preference_service = auto_sync_scheduler.preference_learning_service
+        library_service = auto_sync_scheduler.library_analysis_service
+        preference_admission = auto_sync_scheduler.preference_learning_admission
+        new_learning_owner = preference_service is None
+        if new_learning_owner:
+            preference_service = PreferenceLearningService(work_database, work_ai_factory)
+            library_service = LibraryAnalysisService(work_database, work_ai_factory, work_coordinator)
+            preference_admission = PreferenceLearningAdmission(
+                preference_service, work_coordinator, _submit_shared_job,
+                lambda: settings_manager.load(env_path=env_path),
+            )
+            auto_sync_scheduler.preference_learning_service = preference_service
+            auto_sync_scheduler.library_analysis_service = library_service
+            auto_sync_scheduler.preference_learning_admission = preference_admission
+
+    if new_learning_owner:
+        try:
+            preference_service.startup_recover()
+            library_service.startup_recover()
+            preference_admission.ready = True
+        except Exception:
+            logger.warning("Preference learning startup recovery unavailable")
+
+        def discover_learning(reason=None):
+            preference_admission.tick()
+            library_service.tick(reason)
+
+        if preference_admission.ready:
+            work_coordinator.set_discovery_hook(discover_learning)
+
+    def ensure_learning_scheduler():
+        auto_sync_scheduler.start()
+        work_coordinator.wake("created")
+
+    register_preference_learning_routes(
+        app, preference_service, library_service, ensure_scheduler=ensure_learning_scheduler,
+        profile_control=preference_admission.control,
+        admission_available=lambda: (preference_admission.ready and work_coordinator._recovered
+                                    and not work_coordinator._closed),
+    )
 
     from .preference_web import register_preference_routes
     register_preference_routes(app, current_settings_for_routes)
@@ -951,46 +1187,73 @@ def create_app(
     from .rescue_web import register_rescue_routes
     register_rescue_routes(app, current_settings_for_routes, _client_addr)
 
+    from .remote.web import register_remote_routes
+    register_remote_routes(app, current_settings_for_routes)
+
     if start_auto_sync_scheduler:
         auto_sync_scheduler.start()
 
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
-        token = settings_manager.load(env_path=env_path).dashboard_token
+        current_settings = settings_manager.load(env_path=env_path)
+        token = current_settings.dashboard_token
         if not token:
             return redirect("/")
-        if request.method == "GET":
+        next_path = safe_next_path(request.form.get("next", request.args.get("next")))
+        remember_device = request.method == "POST" and request.form.get("remember_device") == "1"
+
+        def login_page(error: str | None = None, status: int = 200):
             return Response(
-                '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>Login</title>'
-                '<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5}'
-                'form{background:white;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}'
-                'input{display:block;margin:1rem 0;padding:0.5rem;width:250px}'
-                'button{padding:0.5rem 1.5rem;background:#4a90d9;color:white;border:none;border-radius:4px;cursor:pointer}</style></head>'
-                '<body><form method="POST"><h2>Pixiv Novel Sync</h2>'
-                '<input name="token" type="password" placeholder="访问密码" autofocus>'
-                '<button type="submit">登录</button></form></body></html>',
+                render_template(
+                    "login.html", error=error, next_path=next_path, remember_device=remember_device,
+                ),
+                status=status,
                 content_type="text/html; charset=utf-8",
             )
+
+        if request.method == "GET":
+            return login_page()
         import hmac as _hmac
         now = time.time()
         client = _client_addr()
         if _login_failures.is_blocked(client, now):
-            return jsonify({"error": "too many login attempts"}), 429
+            response = login_page("尝试次数过多，请稍后再试。", 429)
+            response.headers["Retry-After"] = str(int(_login_failures.window_seconds))
+            return response
         input_token = request.form.get("token", "")
         # compare_digest 两边编码成 bytes：DASHBOARD_TOKEN 含中文等非 ASCII 时，
         # str 版本会直接抛 TypeError 变成 500，而不是按「密码错」计一次 401。
         if _hmac.compare_digest(input_token.encode("utf-8"), str(token).encode("utf-8")):
+            session_id = secrets.token_urlsafe(32)
+            lifetime = REMEMBER_SESSION_SECONDS if remember_device else BROWSER_SESSION_SECONDS
+            expires_at = now + lifetime
+            try:
+                db = _open_database(current_settings)
+                try:
+                    db.replace_web_auth_session(
+                        token_hash=hash_session_id(session_id),
+                        credential_version=credential_version(app.secret_key, str(token)),
+                        created_at=now,
+                        expires_at=expires_at,
+                        persistent=remember_device,
+                        previous_token_hash=hash_session_id(session.get(AUTH_SESSION_KEY)),
+                    )
+                finally:
+                    db.close()
+            except Exception as exc:
+                logger.warning("Dashboard login storage unavailable (%s)", type(exc).__name__)
+                return login_page("登录服务暂时不可用，请稍后重试。", 503)
+            # Only replace the browser cookie after the insert AND revoke commit.
             _login_failures.clear(client)
             session.clear()
-            session["authenticated"] = True
-            # 纳秒整数：成人 owner 校验（ai/adult_auth.py:require_adult_owner）要求
-            # int 类型，并与 access token 的 iat（time_ns）同单位比较。
-            # _authenticated_session_fresh 对秒/纳秒两种量级都兼容。
-            session["authenticated_at"] = time.time_ns()
+            session.permanent = remember_device
+            session[AUTH_SESSION_KEY] = session_id
+            session[AUTH_EXPIRY_KEY] = expires_at
+            session["auth_session_started_at_ns"] = time.time_ns()
             _get_csrf_token()
-            return redirect("/")
+            return redirect(next_path)
         _login_failures.record_failure(client, now)
-        return Response("密码错误", status=401, content_type="text/plain; charset=utf-8")
+        return login_page("密码错误，请重试。", 401)
 
     @app.get("/api/csrf-token")
     def csrf_token():
@@ -998,8 +1261,17 @@ def create_app(
 
     @app.route("/api/auth/logout", methods=["POST"])
     def auth_logout():
-        session.pop("authenticated", None)
-        session.pop("authenticated_at", None)
+        token_hash = hash_session_id(session.get(AUTH_SESSION_KEY))
+        if token_hash is not None:
+            try:
+                db = _open_database(settings_manager.load(env_path=env_path))
+                try:
+                    db.revoke_web_auth_session(token_hash)
+                finally:
+                    db.close()
+            except Exception as exc:
+                return _auth_storage_unavailable(exc)
+        session.clear()
         return jsonify({"ok": True})
 
     @app.get("/proxy/image")
@@ -1258,6 +1530,17 @@ def create_app(
             db.close()
         return jsonify(payload)
 
+    def _utf8_json(payload: Any) -> Response:
+        """不把汉字转成 \\uXXXX 的 JSON 响应，给正文/日志这类以中文为主的大响应用。
+
+        Flask 默认 ensure_ascii：20 万字正文 0.61 MB 会变成 1.22 MB，手机端
+        JSON.parse 也慢一个数量级。其余字段与 jsonify 一致（同一个 provider）。
+        """
+        return Response(
+            app.json.dumps(payload, ensure_ascii=False),
+            mimetype="application/json",
+        )
+
     @app.get("/api/dashboard/novels/<int:novel_id>")
     def dashboard_novel_detail(novel_id: int):
         current_settings = settings_manager.load(env_path=env_path)
@@ -1270,44 +1553,15 @@ def create_app(
             db.close()
         if payload is None:
             return jsonify({"error": "novel not found"}), 404
-        return jsonify(payload)
+        # text_markdown = 标题/作者/简介 + 同一份正文；阅读页只在 text_raw 为空时才用它，
+        # 两份都发等于把整本书传两遍（审查 2026-10-28 性能 P3）
+        if payload.get("text_raw"):
+            payload["text_markdown"] = None
+        return _utf8_json(payload)
 
-    @app.get("/api/dashboard/novels/<int:novel_id>/progress")
-    def get_novel_progress(novel_id: int):
-        current_settings = settings_manager.load(env_path=env_path)
-        db = _open_database(current_settings)
-        try:
-            progress = db.get_reading_progress(novel_id)
-        finally:
-            db.close()
-        if progress is None:
-            return jsonify({"novel_id": novel_id, "progress": 0, "status": "unread"})
-        return jsonify(progress)
-
-    @app.post("/api/dashboard/novels/<int:novel_id>/progress")
-    def update_novel_progress(novel_id: int):
-        data = request.get_json() or {}
-        progress = max(0, min(100, _safe_int(data.get("progress", 0), 0)))
-        status = str(data.get("status", "reading") or "reading").strip()
-        if status not in {"unread", "reading", "completed"}:
-            return jsonify({"error": "invalid status"}), 400
-        current_settings = settings_manager.load(env_path=env_path)
-        db = _open_database(current_settings)
-        try:
-            db.upsert_reading_progress(novel_id, progress, status)
-        finally:
-            db.close()
-        return jsonify({"success": True})
-
-    @app.delete("/api/dashboard/novels/<int:novel_id>/progress")
-    def delete_novel_progress(novel_id: int):
-        current_settings = settings_manager.load(env_path=env_path)
-        db = _open_database(current_settings)
-        try:
-            db.delete_reading_progress(novel_id)
-        finally:
-            db.close()
-        return jsonify({"success": True})
+    from .web.reading_progress import register_reading_progress_routes
+    register_reading_progress_routes(
+        app, lambda: _open_database(settings_manager.load(env_path=env_path)))
 
     @app.post("/api/dashboard/novels/export-epub")
     def export_novels_to_epub():
@@ -1352,9 +1606,14 @@ def create_app(
             else:
                 # 多本小说打包为ZIP
                 zip_buffer = io.BytesIO()
+                exported: set[int] = set()
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for novel_id in novel_ids[:50]:  # 限制最多50本
                         novel_id = int(novel_id)
+                        # 同一 ID 重复出现只导一次，否则 zip 里会有两个同名条目
+                        if novel_id in exported:
+                            continue
+                        exported.add(novel_id)
                         novel_data = db.get_novel_detail(novel_id)
                         if not novel_data or not novel_data.get("text_raw"):
                             continue
@@ -1364,8 +1623,10 @@ def create_app(
                             cover_path = storage.get_novel_cover_path(novel_data)
 
                         epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
-                        filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
-                        zf.writestr(filename, epub_bytes)
+                        # 文件名带 _{novel_id}：同名作品（同一系列的「番外」、不同作者的同题作）不再互相覆盖
+                        title = str(novel_data.get("title") or "").strip()
+                        stem = f"{safe_name(title, str(novel_id))}_{novel_id}" if title else str(novel_id)
+                        zf.writestr(f"{stem}.epub", epub_bytes)
 
                 zip_buffer.seek(0)
                 return send_file(
@@ -1464,12 +1725,10 @@ def create_app(
     @app.post("/api/dashboard/users/<int:user_id>/sync")
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
-        if _has_active_shared_jobs():
-            return _api_error("已有同步任务正在运行，请稍后再试", 409)
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([f"user_backup:{user_id}"])
-            job = _submit_shared_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
+            job = work_coordinator.request_sync(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
             return _submit_failure(exc, 500)
         return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
@@ -1604,7 +1863,11 @@ def create_app(
             job_id = latest.job_id if latest is not None else ""
         if not job_id:
             return _api_error("没有可取消的任务", 404)
-        if not shared_job_manager.request_cancel(job_id):
+        try:
+            accepted = work_coordinator.cancel_shared_job(job_id)
+        except WorkAnalysisError as error:
+            return _api_error(error.code, error.status)
+        if not accepted:
             return _api_error("任务不存在、已结束，或正在收尾", 409)
         return jsonify({"ok": True, "job_id": job_id, "message": "已请求取消"})
 
@@ -1614,7 +1877,7 @@ def create_app(
         spec = _build_web_sync_job_spec(current_settings)
 
         try:
-            job = _submit_shared_job(spec, current_settings, "manual", "全量手动同步")
+            job = work_coordinator.request_sync(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
             return _submit_failure(exc)
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
@@ -1661,10 +1924,11 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([internal_type])
-            job = _submit_shared_job(spec, current_settings, internal_type, task_name)
+            job = work_coordinator.request_sync(spec, current_settings, internal_type, task_name)
         except Exception as exc:
             return _submit_failure(exc)
-        return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
+        message = "任务已排队，等待共享执行槽" if job.shared_waiting else "任务已启动"
+        return jsonify({"ok": True, "message": message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/subscribed-series")
     def dashboard_sync_subscribed_series():
@@ -1676,16 +1940,14 @@ def create_app(
 
         try:
             spec = _web_job_spec(["subscribed_series"], params={"limit": limit})
-            job = _submit_shared_job(
-                spec,
-                current_settings,
-                "subscribed_series",
-                "同步追更系列",
+            job = work_coordinator.request_sync(
+                spec, current_settings, "subscribed_series", "同步追更系列",
                 progress={"series_limit": limit},
             )
         except Exception as exc:
             return _submit_failure(exc)
-        return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
+        message = "任务已排队，等待共享执行槽" if job.shared_waiting else "任务已启动"
+        return jsonify({"ok": True, "message": message, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")
     def auto_sync_status():
@@ -1812,6 +2074,10 @@ def create_app(
 
         if enabled:
             auto_sync_scheduler.start()
+        elif library_service is not None and library_service.enabled():
+            # The same scheduler also admits explicitly enabled library analysis.
+            # Its loop checks auto_sync_enabled before considering any sync task.
+            auto_sync_scheduler.start()
         else:
             auto_sync_scheduler.stop()
 
@@ -1879,7 +2145,7 @@ def create_app(
                         item.setdefault("category", "sync")
             finally:
                 db.close()
-            return jsonify(result)
+            return _utf8_json(result)
         except Exception as e:
             logger.error("获取日志失败：%s", e)
             return jsonify({"error": str(e)}), 500
@@ -1896,7 +2162,7 @@ def create_app(
                 db.close()
             if not item:
                 return jsonify({"error": "log not found"}), 404
-            return jsonify(item)
+            return _utf8_json(item)
         except Exception as e:
             logger.error("获取日志详情失败：%s", e)
             return jsonify({"error": str(e)}), 500
@@ -2030,10 +2296,11 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec(["pending_deletion_detection"])
-            job = _submit_shared_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
+            job = work_coordinator.request_sync(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
         except Exception as exc:
             return _submit_failure(exc)
-        return jsonify({"ok": True, "message": "检测任务已启动", "job": _shared_job_to_dict(job)})
+        message = "检测任务已排队，等待共享执行槽" if job.shared_waiting else "检测任务已启动"
+        return jsonify({"ok": True, "message": message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
     def confirm_pending_deletion(deletion_id: int):

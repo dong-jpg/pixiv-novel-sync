@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -15,12 +16,24 @@ class FakeDB:
     def __init__(self, agents: list[dict]):
         self._agents = agents
         self.closed = False
+        self.job = {"status": "running", "validation_status": "not_requested", "attempts": []}
 
     def list_ai_agents(self):
         return self._agents
 
     def close(self):
         self.closed = True
+
+    def get_ai_job(self, _job_id):
+        return self.job
+
+    def list_ai_job_model_attempts(self, _job_id):
+        return []
+
+    def get_ai_job_usage_summary(self, _job_id):
+        return {"known_input_tokens": None, "known_output_tokens": None,
+                "known_total_tokens": None, "reported_requests": 0,
+                "unreported_requests": 0, "complete": False}
 
 
 @pytest.fixture
@@ -57,6 +70,8 @@ def _wire(
     )
     route_context = SimpleNamespace(
         job_id="keyword-job",
+        owner_token="owner",
+        retention_policy="keyword_compat",
         prompt_budget=PromptBudget(
             effective_context_window=8000,
             input_budget=6200,
@@ -66,10 +81,15 @@ def _wire(
             estimator="utf8_bytes",
         ),
     )
-    calls = {"start": [], "route": [], "finish": []}
+    calls = {"start": [], "route": [], "finish": [], "agent_ids": []}
 
     monkeypatch.setattr(service, "_db", lambda: fake_db)
-    monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
+    def load_agent(_db, selected_id):
+        calls["agent_ids"].append(selected_id)
+        row = next(row for row in fake_db._agents if row["id"] == selected_id)
+        return replace(agent, id=selected_id, task_type=row["task_type"])
+
+    monkeypatch.setattr(service, "_load_agent_config", load_agent)
 
     def start_route_job(db, task_type, selected_agent, input_data, **options):
         calls["start"].append((db, task_type, selected_agent, input_data, options))
@@ -94,6 +114,7 @@ def _wire(
         output_text,
         output_json=None,
         error_message=None,
+        validation_status=None,
     ):
         calls["finish"].append(
             {
@@ -103,8 +124,11 @@ def _wire(
                 "output_text": output_text,
                 "output_json": output_json,
                 "error_message": error_message,
+                "validation_status": validation_status,
             }
         )
+        fake_db.job.update(status=status, output_text=output_text, validation_status=validation_status,
+                           error_message=error_message)
         return True
 
     monkeypatch.setattr(service, "_start_route_job", start_route_job)
@@ -123,9 +147,11 @@ def test_clean_keywords_parses_fenced_json(monkeypatch, service):
     assert result["keywords"] == ["NTR", "校园", "百合"]
     assert "她的" in result["dropped_sample"]
     assert calls["start"][0][1] == "keyword_clean"
+    assert calls["start"][0][4]["retention_policy"] == "keyword_compat"
     assert calls["route"][0][2]["temperature"] == 0.2
     assert calls["finish"][-1]["status"] == "succeeded"
     assert calls["finish"][-1]["output_json"] == result
+    assert calls["finish"][-1]["validation_status"] == "passed"
     assert fake_db.closed is True
 
 
@@ -157,7 +183,8 @@ def test_clean_keywords_degrades_on_bad_json(monkeypatch, service):
     result = service.clean_keywords(["她的", "NTR"])
     assert result is None
     assert calls["finish"][-1]["status"] == "failed"
-    assert "JSON" in calls["finish"][-1]["error_message"]
+    assert calls["finish"][-1]["error_message"] == "validation_failed"
+    assert calls["finish"][-1]["validation_status"] == "failed"
 
 
 def test_clean_keywords_empty_input_returns_none(monkeypatch, service):
@@ -197,4 +224,32 @@ def test_clean_keywords_degrades_on_empty_output(monkeypatch, service):
 
     assert service.clean_keywords(["噪声", "关键词"]) is None
     assert calls["finish"][-1]["status"] == "failed"
-    assert "空结果" in calls["finish"][-1]["error_message"]
+    assert calls["finish"][-1]["error_message"] == "validation_failed"
+    assert calls["finish"][-1]["validation_status"] == "failed"
+
+
+@pytest.mark.parametrize("body", ['[]', '{"keywords":"word"}', '{"keywords":[1]}',
+                                  '{"keywords":["ok"],"dropped_sample":"bad"}'])
+def test_keyword_validator_rejects_non_object_or_non_string_lists(monkeypatch, service, body):
+    calls = _wire(monkeypatch, service, FakeDB([_agent_row()]), body)
+    assert service.clean_keywords(["input"]) is None
+    assert calls["finish"][-1]["validation_status"] == "failed"
+
+
+@pytest.mark.parametrize("requested", [0, 2, 999])
+def test_keyword_explicit_missing_or_disabled_agent_never_falls_back(monkeypatch, service, requested):
+    fake = FakeDB([_agent_row(), _agent_row(2, enabled=False)])
+    calls = _wire(monkeypatch, service, fake, '{"keywords":["ok"]}')
+    assert service.clean_keywords(["input"], agent_id=requested) is None
+    assert calls["start"] == [] and calls["agent_ids"] == []
+
+
+@pytest.mark.parametrize("types, selected", [(["other", "general", "keyword_clean"], 3),
+                                            (["other", "general"], 2), (["other"], 1)])
+def test_keyword_preference_keeps_private_keyword_business_type(monkeypatch, service, types, selected):
+    fake = FakeDB([_agent_row(i + 1, task_type=kind) for i, kind in enumerate(types)])
+    calls = _wire(monkeypatch, service, fake, '{"keywords":[" ok ",""],"dropped_sample":[" x "]}')
+    assert service.clean_keywords(["input"]) == {"keywords": ["ok"], "dropped_sample": ["x"]}
+    assert calls["agent_ids"] == [selected]
+    assert calls["start"][0][1] == "keyword_clean"
+    assert calls["start"][0][4]["retention_policy"] == "keyword_compat"

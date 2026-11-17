@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
 import threading
 import time
@@ -12,7 +13,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file
 
 from .settings import Settings
 from .storage.rescue import CatalogNotReadyError
@@ -83,6 +84,23 @@ def _safe_page(value: Any, default: int, maximum: int | None = None) -> int:
     return parsed
 
 
+def _series_card_fields(card: dict[str, Any] | None) -> dict[str, Any]:
+    """系列卡片字段（0.12.0「拯救系列」tab 与追更列表填空照搬 Pixiv 系列卡用）。
+
+    来自 db.get_rescue_series_cards；系列行缺失时给出安全的空值，字段集合保持不变。
+    """
+    card = card or {}
+    return {
+        "user_id": card.get("user_id"),
+        "chapter_count": card.get("chapter_count", 0),
+        "last_create_date": card.get("last_create_date"),
+        "latest_novel_id": card.get("latest_novel_id"),
+        "x_restrict": card.get("x_restrict", 0),
+        "has_cover": bool(card.get("has_cover", False)),
+        "author_avatar_url": card.get("author_avatar_url"),
+    }
+
+
 def _safe_item_type(item_type: str) -> str:
     normalized = str(item_type or "").strip().lower()
     if normalized not in {"novel", "series"}:
@@ -144,8 +162,16 @@ def register_rescue_routes(
     settings: Callable[[], Settings],
     client_addr: Callable[[], str],
 ) -> None:
-    limiter = RescueRateLimiter()
+    # 三个互不影响的限流桶（U5 的服务端部分）：
+    # - 没带 Token / Token 错误：陌生人刷满它只会挡住其他没 Token 的请求，持正确 Token 的油猴不受影响；
+    # - Token 正确的正文 / 目录 / lookup；
+    # - Token 正确的封面：120 话的系列滑到底几秒内就有上百张封面，单独给更高的额度。
+    limiter_unauthenticated = RescueRateLimiter(limit=120, window_seconds=60)
+    limiter = RescueRateLimiter(limit=120, window_seconds=60)
+    limiter_cover = RescueRateLimiter(limit=600, window_seconds=60)
+    app.extensions["rescue_rate_limiter_unauthenticated"] = limiter_unauthenticated
     app.extensions["rescue_rate_limiter"] = limiter
+    app.extensions["rescue_rate_limiter_cover"] = limiter_cover
 
     def current_settings() -> Settings:
         return settings()
@@ -185,27 +211,43 @@ def register_rescue_routes(
             str(record.get("token_prefix") or ""),
         )
 
-    def public_auth(view):
+    def _public_auth(view, authed_limiter: RescueRateLimiter):
         @wraps(view)
         def wrapped(*args, **kwargs):
             try:
                 address = client_addr() or request.remote_addr or "unknown"
-                if not limiter.allow(address):
-                    return _public_error("救援 API 请求过于频繁", 429)
                 candidate = _bearer_token()
+                cached = _load_token_cache() if candidate is not None else None
+                valid = bool(
+                    candidate is not None
+                    and cached
+                    and secrets.compare_digest(cached[0], _token_digest(candidate))
+                )
+                # 先判定 Token 再选桶：无效请求只消耗「未认证」桶。限流仍在返回 401 之前，
+                # 猜 Token 的请求超过额度后一律 429，拿不到「Token 无效」的确认。
+                bucket = authed_limiter if valid else limiter_unauthenticated
+                if not bucket.allow(address):
+                    return _public_error("救援 API 请求过于频繁", 429)
                 if candidate is None:
                     return _public_error("需要救援 Token", 401)
-                cached = _load_token_cache()
-                if not cached or not secrets.compare_digest(
-                    cached[0], _token_digest(candidate)
-                ):
+                if not valid:
                     return _public_error("救援 Token 无效", 401)
                 return view(*args, **kwargs)
+            except CatalogNotReadyError:
+                # 与 dashboard 端点同一契约：目录首建完成前公开端点也回 503 而非 500，
+                # 让用户脚本把「还没准备好」和「服务出错」区分开
+                return _public_error("救援目录尚未生成", 503)
             except Exception:
                 logger.exception("救援 API 读取失败：%s", request.path)
                 return _public_error("救援内容读取失败", 500)
 
         return wrapped
+
+    def public_auth(view):
+        return _public_auth(view, limiter)
+
+    def public_cover_auth(view):
+        return _public_auth(view, limiter_cover)
 
     def dashboard_safe(view):
         @wraps(view)
@@ -370,6 +412,11 @@ def register_rescue_routes(
         db = open_db()
         try:
             item = db.get_rescue_novel(novel_id)
+            extras = (
+                db.get_rescue_novel_extras(novel_id, item.get("series_id"))
+                if item is not None
+                else {}
+            )
         finally:
             db.close()
         if item is None:
@@ -393,10 +440,87 @@ def register_rescue_routes(
             "complete_count",
             "last_checked_at",
             "updated_at",
+            "personal_hold",
         }
         data = {key: item.get(key) for key in fields}
+        # 收藏/浏览是同步时的快照；series_nav 只在所属系列可救援时有值
+        for key in ("total_bookmarks", "total_views", "x_restrict", "is_original", "ai_type", "series_nav"):
+            data[key] = extras.get(key)
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": data})
+
+    def _cover_response(asset: dict | None):
+        """把 assets 记录解析成本地文件并返回 send_file 响应。
+
+        assets.local_path 记录的是下载时 str(target)——相对当时的工作目录
+        （生产即项目根），不是相对 public_dir。先按 cwd 解析；失败再按库根
+        解析兜底，两者做同一套「解析后仍在预期根内」的穿越校验。
+        """
+        if asset is None:
+            return _public_error("该备份没有封面", 404)
+        rel = asset["local_path"]
+        if not rel:
+            return _public_error("该备份没有封面", 404)
+        current = current_settings()
+        library_root = (
+            current.storage.private_dir
+            if asset["restrict_value"] == "private"
+            else current.storage.public_dir
+        )
+        candidate: Path | None = None
+        for base in (Path.cwd(), Path(library_root).resolve()):
+            try:
+                resolved_base = base.resolve()
+                resolved = (resolved_base / rel).resolve()
+            except (OSError, ValueError):
+                continue
+            if not str(resolved).startswith(str(resolved_base) + os.sep):
+                continue
+            if resolved.is_file():
+                candidate = resolved
+                break
+        if candidate is None:
+            return _public_error("封面文件不存在", 404)
+        response = send_file(
+            candidate,
+            conditional=True,
+            max_age=86400,
+        )
+        response.headers["Cache-Control"] = "private, max-age=86400"
+        return response
+
+    @app.route(
+        "/api/rescue/v1/novels/<int:novel_id>/cover",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_cover_auth
+    def rescue_novel_cover(novel_id: int):
+        """返回本地归档的封面图，供油猴脚本把失效卡片重建为正常卡片样式。
+
+        Pixiv 原封面 URL 对已删除作品通常已失效，只有本地备份可用。
+        """
+        db = open_db()
+        try:
+            asset = db.get_rescue_cover_asset(novel_id)
+        finally:
+            db.close()
+        return _cover_response(asset)
+
+    @app.route(
+        "/api/rescue/v1/series/<int:series_id>/cover",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_cover_auth
+    def rescue_series_cover(series_id: int):
+        """系列封面：系列本身不下载封面，用系列下第一篇有本地封面的小说替代。"""
+        db = open_db()
+        try:
+            asset = db.get_rescue_series_cover_asset(series_id)
+        finally:
+            db.close()
+        return _cover_response(asset)
 
     @app.route(
         "/api/rescue/v1/series/<int:series_id>",
@@ -427,6 +551,7 @@ def register_rescue_routes(
             "complete_count",
             "last_checked_at",
             "updated_at",
+            "personal_hold",
         }
         data = {key: item.get(key) for key in fields}
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
@@ -452,3 +577,139 @@ def register_rescue_routes(
             return _public_error("救援内容不存在", 404)
         payload["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": payload})
+
+    @app.route(
+        "/api/rescue/v1/lookup",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_auth
+    def rescue_lookup():
+        """按 ID 批量查收藏/追更列表页上的条目有没有备份。
+
+        油猴脚本在收藏页/追更页抓到 Pixiv 渲染的空白/失效卡片后，拿卡片里的
+        novel_id / series_id 来这里问「备份里有没有、标题是什么」。一次最多 40 个，
+        刻意不返回正文——列表页只需要认出「这是哪部作品」，点进去才走明细接口。
+        """
+        raw_ids = str(request.args.get("novel_ids", "") or "")
+        raw_series_ids = str(request.args.get("series_ids", "") or "")
+        novel_ids: list[int] = []
+        series_ids: list[int] = []
+        # 去重要按 int 比较：拿字符串 chunk 去比 list[int] 永远不命中，重复 ID 会
+        # 挤占 40 个的配额，返回里也会出现重复条目
+        for chunk in raw_ids.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit() and len(chunk) < 12 and int(chunk) not in novel_ids:
+                novel_ids.append(int(chunk))
+        for chunk in raw_series_ids.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit() and len(chunk) < 12 and int(chunk) not in series_ids:
+                series_ids.append(int(chunk))
+        if len(novel_ids) + len(series_ids) > 40:
+            return _public_error("一次最多查询 40 个 ID", 400)
+        if not novel_ids and not series_ids:
+            return _public_error("需要提供 novel_ids 或 series_ids", 400)
+
+        db = open_db()
+        try:
+            # 批量取：单条版在 40 ID 时要跑 40~80 次聚合查询（每本小说还会为
+            # 父系列再评一次），这里按批合并为行查询 + 批量 hold/pending 判定
+            batch = db.get_rescue_items_batch(novel_ids, series_ids)
+            # 本地封面可用性：油猴据此决定是否把失效卡重建为带封面的正常卡片
+            cover_flags = {value: db.has_rescue_cover(value) for value in novel_ids}
+            # 系列卡片字段（含 has_cover，与 has_rescue_series_cover 同口径）：追更列表填空用
+            series_cards = db.get_rescue_series_cards(series_ids) if series_ids else {}
+        finally:
+            db.close()
+        slim_novels = [
+            {
+                "novel_id": item["novel_id"],
+                "title": item.get("title"),
+                "author_name": item.get("author_name"),
+                "cover_url": item.get("cover_url"),
+                "series_id": item.get("series_id"),
+                "rescue_state": item.get("rescue_state"),
+                "personal_hold": bool(item.get("personal_hold")),
+                "has_cover": bool(cover_flags.get(item["novel_id"], False)),
+            }
+            for item in (batch.get(f"novel:{value}") for value in novel_ids)
+            if item is not None
+        ]
+        slim_series = [
+            {
+                "series_id": item["series_id"],
+                "title": item.get("title"),
+                "author_name": item.get("author_name"),
+                "cover_url": item.get("cover_url"),
+                "rescue_state": item.get("rescue_state"),
+                "personal_hold": bool(item.get("personal_hold")),
+                # 「12话（备份11话）」要用 Pixiv 上的总话数
+                "expected_count": item.get("expected_count"),
+                **_series_card_fields(series_cards.get(item["series_id"])),
+            }
+            for item in (batch.get(f"series:{value}") for value in series_ids)
+            if item is not None
+        ]
+        return jsonify(
+            {
+                "ok": True,
+                "data": {"novels": slim_novels, "series": slim_series},
+            }
+        )
+
+    @app.route(
+        "/api/rescue/v1/series",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_auth
+    def rescue_series_list():
+        """分页列出救援目录里的系列，供油猴脚本渲染「拯救系列」tab。
+
+        0.12.0 起这个 tab 接管 Pixiv 新作页的「好P友新作」。目录里 series 条目天然就是
+        「系列本体不可用」的系列；state/personal_hold 照常带出，另附卡片字段（已备份话数、
+        最新一话、R-18、封面、作者头像），照搬 Pixiv 追更列表的系列卡。
+        """
+        db = open_db()
+        try:
+            payload = db.list_rescues(
+                page=_safe_page(request.args.get("page"), 1),
+                page_size=_safe_page(request.args.get("page_size"), 24, 100),
+                state=str(request.args.get("state", "all")),
+                item_type="series",
+                search=str(request.args.get("search", "")),
+                sort=str(request.args.get("sort", "checked_desc")),
+            )
+            series_ids = [item["item_id"] for item in payload.get("items", [])]
+            cards = db.get_rescue_series_cards(series_ids) if series_ids else {}
+        except ValueError as exc:
+            return _public_error(str(exc), 400)
+        finally:
+            db.close()
+        items = [
+            {
+                "series_id": item["item_id"],
+                "title": item.get("title"),
+                "author_name": item.get("author_name"),
+                "cover_url": item.get("cover_url"),
+                "rescue_state": item.get("rescue_state"),
+                "expected_count": item.get("expected_count"),
+                "local_count": item.get("local_count"),
+                "complete_count": item.get("complete_count"),
+                "personal_hold": bool(item.get("personal_hold")),
+                "last_checked_at": item.get("last_checked_at"),
+                **_series_card_fields(cards.get(item["item_id"])),
+            }
+            for item in payload.get("items", [])
+        ]
+        return jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "items": items,
+                    "page": payload.get("page"),
+                    "total": payload.get("total"),
+                    "total_pages": payload.get("total_pages"),
+                },
+            }
+        )

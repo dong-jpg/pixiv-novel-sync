@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import math
 from collections.abc import Callable
 from typing import Any
@@ -13,8 +14,12 @@ from .settings import Settings
 from .storage_db import Database
 from .sync.utils import retry_on_pixiv_error
 
+logger = logging.getLogger(__name__)
+
 # 单个系列拉取章节时的安全翻页上限，避免异常或循环的 next_url 造成无限翻页
 _SERIES_PAGE_SAFETY_LIMIT = 50
+# 推荐条目保留最近这么多轮（之前的、仍是 new 且没有任何反馈的才清，见 prune_recommendation_items）
+RECOMMENDATION_KEEP_RUNS = 30
 _GENERIC_OVERLAP_TAGS = {"原创", "R-18", "R-18G", "小说"}
 
 
@@ -30,9 +35,16 @@ class RecommendationService:
         self.settings = settings
         self.api = api
         self.stop_requested = stop_requested
+        self._run_learning = None
         # Phase 3.4: 统一限速器
         delay = float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0)
         self.rate_limiter = RateLimiter(default_delay=delay)
+
+    def _learning(self):
+        if self._run_learning is not None:
+            return self._run_learning
+        getter = getattr(self.db, "get_preference_learning_signals", None)
+        return getter() if callable(getter) else {"weights": {}, "references": {}, "active_run_id": None}
 
     def build_search_plan(self, profile: dict[str, Any], filters: dict[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -40,6 +52,15 @@ class RecommendationService:
         strategy = profile_data.get("search_strategy") or {}
         queries: list[dict[str, Any]] = []
         seen: set[str] = set()
+        learning = self._learning()
+        for label, weight in sorted(learning["weights"].items(), key=lambda item: (-item[1], item[0])):
+            if weight <= 0 or label in _GENERIC_OVERLAP_TAGS:
+                continue
+            seen.add(label)
+            queries.append({"query": label, "type": "keyword", "expected_reason": "依据明确读后评价和已验证作品特征",
+                            "limit": int(filters.get("per_query_limit") or 30)})
+            if len(queries) >= 12:
+                break
         for query_type, key in (("tag", "primary_tags"), ("keyword", "broad_queries"), ("combined", "precise_queries"), ("experimental", "experimental_queries")):
             for query in strategy.get(key) or []:
                 query = str(query).strip()
@@ -94,6 +115,8 @@ class RecommendationService:
         profile = self.db.get_preference_profile(profile_id) if profile_id else self.db.get_default_preference_profile()
         if not profile:
             raise RuntimeError("需要先生成默认偏好画像")
+        self._run_learning = None
+        self._run_learning = self._learning()
         plan = (
             self._normalize_client_search_plan(search_plan)
             if search_plan
@@ -115,7 +138,7 @@ class RecommendationService:
 
             queries = plan.get("queries") or []
             for query in queries:
-                _emit("phase", {"phase": f"搜索 [{stats['searched'] + 1}/{len(queries)}]: {query.get('query', '')}"})
+                _emit("phase", {"phase": f"搜索 [{stats['searched'] + 1}/{len(queries)}]"})
                 stats["searched"] += 1
                 try:
                     novels = self._search_novels(
@@ -173,9 +196,21 @@ class RecommendationService:
                 raise RuntimeError("推荐搜索全部失败")
             # 单事务发布：全部 upsert + run 终态一起提交，失败则整体回滚
             with self.db.transaction():
+                getter = getattr(self.db, "get_preference_learning_signals", None)
+                if callable(getter):
+                    current_learning = getter()
+                    if any(current_learning.get(key) != self._run_learning.get(key)
+                           for key in ("source_fingerprint", "active_run_id")):
+                        raise RuntimeError("阅读评价或当前画像已改变，请重新生成推荐")
                 for item in pending_items:
                     self.db.upsert_recommendation_item(item)
                 self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
+            try:
+                pruned = self.db.prune_recommendation_items(keep_runs=RECOMMENDATION_KEEP_RUNS)
+                if pruned:
+                    stats["pruned_items"] = pruned
+            except Exception as exc:  # 清理失败不影响本轮已发布的结果
+                logger.warning("清理旧推荐条目失败: %s", exc)
             return {"run_id": run_id, "stats": stats}
         except InterruptedError:
             # 用户取消：不写任何 item，仅把 run 标记为 cancelled
@@ -184,6 +219,8 @@ class RecommendationService:
         except Exception as exc:
             self.db.update_recommendation_run(run_id, "failed", stats=stats, error_message=str(exc))
             raise
+        finally:
+            self._run_learning = None
 
     def _login_api(self) -> AppPixivAPI:
         auth = PixivAuthManager(self.settings.pixiv)
@@ -380,6 +417,14 @@ class RecommendationService:
             reason_parts.append("命中标签：" + "、".join(matched_tags[:6]))
         if matched_keywords:
             reason_parts.append("命中关键词：" + "、".join(matched_keywords[:6]))
+        learning_matches = matched.get("reading_feedback") or []
+        if learning_matches:
+            liked = [item["label"] for item in learning_matches if item["weight"] > 0]
+            disliked = [item["label"] for item in learning_matches if item["weight"] < 0]
+            if liked:
+                reason_parts.append("与明确喜欢作品的特征相近：" + "、".join(liked[:6]))
+            if disliked:
+                risk_notes.append("与明确不喜欢作品的特征相近：" + "、".join(disliked[:6]))
         if item_type == "series":
             reason_parts.append(f"系列总字数约 {series_total_text_length} 字")
         else:
@@ -448,7 +493,18 @@ class RecommendationService:
         length = series_total_text_length or int(getattr(novel, "text_length", 0) or 0)
         if length > 0:
             score += min(10, math.log1p(length / preferred_min) * 4)
-        return round(score, 2), {"tags": matched_tags, "keywords": matched_keywords, "negative_tags": negative_tags, "negative_keywords": negative_keywords}
+        matched = {"tags": matched_tags, "keywords": matched_keywords, "negative_tags": negative_tags, "negative_keywords": negative_keywords}
+        learning = self._learning()
+        explicit = [{"label": label, "weight": weight,
+                     "sources": learning["references"].get(label, [])}
+                    for label, weight in learning["weights"].items()
+                    if label not in _GENERIC_OVERLAP_TAGS and (label in tags or label in text)]
+        if explicit:
+            score += max(-40, min(40, sum(item["weight"] * 8 for item in explicit)))
+            matched["reading_feedback"] = explicit
+            matched["preference_summary_id"] = learning["active_run_id"]
+            matched["feedback_fingerprint"] = learning["source_fingerprint"]
+        return round(score, 2), matched
 
     def _series_has_archived_novel(self, series_id: int) -> bool:
         row = self.db.conn.execute(

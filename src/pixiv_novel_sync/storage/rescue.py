@@ -4,12 +4,31 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
 
 def _sqlite_casefold(value: Any) -> str:
     return str(value or "").casefold()
+
+
+def _work_flags(raw_json: Any) -> dict[str, Any]:
+    """从同步时存下的 app API 原始数据取「原创」「AI 生成」标记（救援卡片/正文页的标签行用）。
+
+    原始 JSON 本身绝不外传（其中有上游的其他字段），只摘这两个布尔/整数。
+    """
+    try:
+        raw = json.loads(str(raw_json or "{}"))
+    except (TypeError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        ai_type = int(raw.get("novel_ai_type") or 0)
+    except (TypeError, ValueError):
+        ai_type = 0
+    return {"is_original": bool(raw.get("is_original")), "ai_type": ai_type}
 
 
 class CatalogNotReadyError(RuntimeError):
@@ -46,6 +65,103 @@ class RescueMixin:
     # 「本人主动关联」的来源：收藏与追更。following_user_scan / user_backup 是批量
     # 扫来的，本人未必在乎——生产实测 365 条拯救成功里 bookmark 来源为 0，全是这两类。
     _PERSONAL_SOURCE_KINDS = frozenset({"bookmark", "subscribed_series"})
+    # 「本人现在是否还持有这件东西」的判据：
+    #   小说 = 本地还有 bookmark_ 来源行且没进待确认删除；
+    #   系列 = 还标着 is_subscribed 且没进待确认删除。
+    # 之所以不把「用户自己取消收藏」当拯救，是因为那等于承认「我一松手它就成了我的
+    # 战利品」——取消收藏/追更只写 pending_deletions 并等用户点「确认移除」，这段
+    # 窗口里条目若同时被 Pixiv 下架，就会既进拯救目录、又挂待确认删除，用户读到的是
+    # 「我取消的东西被算成拯救」。pending 存在即视为「本人已放手」，两边都以它为准。
+    # 变量 ?item_id 由调用方以参数形式提供（单条查询与列表批查两种入口共用）。
+    _PERSONAL_HOLD_SQL = {
+        "novel": (
+            "EXISTS (SELECT 1 FROM sources s "
+            "WHERE s.novel_id = ?item_id AND s.source_type LIKE 'bookmark_%') "
+            "AND NOT EXISTS (SELECT 1 FROM pending_deletions pd "
+            "WHERE pd.item_type = 'novel' AND pd.item_id = ?item_id "
+            "AND pd.status = 'pending')"
+        ),
+        "series": (
+            "EXISTS (SELECT 1 FROM series se WHERE se.series_id = ?item_id "
+            "AND se.is_subscribed = 1) "
+            "AND NOT EXISTS (SELECT 1 FROM pending_deletions pd "
+            "WHERE pd.item_type = 'series' AND pd.item_id = ?item_id "
+            "AND pd.status = 'pending')"
+        ),
+    }
+
+    def _personal_hold_sql(self, item_type: str) -> str:
+        normalized_type = self._validate_rescue_item_type(item_type)
+        return self._PERSONAL_HOLD_SQL[normalized_type]
+
+    def _personal_holds_item(self, item_type: str, item_id: int) -> bool:
+        normalized_id = int(item_id)
+        sql = self._personal_hold_sql(item_type)
+        placeholders = (normalized_id,) * sql.count("?item_id")
+        row = self.conn.execute(
+            "SELECT " + sql.replace("?item_id", "?"),
+            placeholders,
+        ).fetchone()
+        return bool(row and row[0])
+
+    def _personal_hold_batch(self, keys: set[tuple[str, int]]) -> dict[tuple[str, int], bool]:
+        """对一批 (item_type, item_id) 求 personal_hold。
+
+        单条 `_personal_hold_sql` 的 EXISTS 已经很快，但拯救列表一页最多 100 条，
+        逐条查询就是 100 次往返；这里把 id 收拢成两个 `IN (...)` 一次问完。
+        """
+        held: dict[tuple[str, int], bool] = {}
+        novel_ids = sorted(novel_id for item_type, novel_id in keys if item_type == "novel")
+        series_ids = sorted(
+            series_id for item_type, series_id in keys if item_type == "series"
+        )
+        # 两条 UNION ALL 拼成一条语句：查询条数不随页里 series/novel 的构成变化
+        # （拯救列表的性能契约断言「翻页与数据量都不改变 SELECT 条数」，分两条发
+        # 会在「本页恰好只有小说/只有系列」时条数漂移）。
+        union_parts: list[str] = []
+        union_params: list[Any] = []
+        if novel_ids:
+            placeholders = ", ".join("?" for _ in novel_ids)
+            union_parts.append(
+                f"""
+                SELECT 'novel' AS item_type, n.novel_id AS item_id,
+                       EXISTS (SELECT 1 FROM sources s
+                               WHERE s.novel_id = n.novel_id
+                                 AND s.source_type LIKE 'bookmark_%') AS has_hold,
+                       EXISTS (SELECT 1 FROM pending_deletions pd
+                               WHERE pd.item_type = 'novel'
+                                 AND pd.item_id = n.novel_id
+                                 AND pd.status = 'pending') AS is_pending
+                FROM novels n
+                WHERE n.novel_id IN ({placeholders})
+                """
+            )
+            union_params.extend(novel_ids)
+        if series_ids:
+            placeholders = ", ".join("?" for _ in series_ids)
+            union_parts.append(
+                f"""
+                SELECT 'series' AS item_type, se.series_id AS item_id,
+                       COALESCE(se.is_subscribed, 0) AS has_hold,
+                       EXISTS (SELECT 1 FROM pending_deletions pd
+                               WHERE pd.item_type = 'series'
+                                 AND pd.item_id = se.series_id
+                                 AND pd.status = 'pending') AS is_pending
+                FROM series se
+                WHERE se.series_id IN ({placeholders})
+                """
+            )
+            union_params.extend(series_ids)
+        if union_parts:
+            rows = self.conn.execute(
+                " UNION ALL ".join(union_parts),
+                tuple(union_params),
+            ).fetchall()
+            for row in rows:
+                held[(str(row["item_type"]), int(row["item_id"]))] = bool(
+                    row["has_hold"] and not row["is_pending"]
+                )
+        return held
 
     @classmethod
     def _validate_rescue_item_type(cls, item_type: str) -> str:
@@ -138,9 +254,26 @@ class RescueMixin:
     def _catalog_timestamp() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+    # P13：全量重建时先用索引筛出可能入目录的 ID，再进聚合查询。远端没删、也没有人工
+    # include 的条目在后面的 Python 判定里必然被丢掉，提前排除结果逐条不变。
+    _CATALOG_SERIES_CANDIDATES_SQL = """se.series_id IN (
+                SELECT series_id FROM series WHERE status = 'deleted'
+                UNION
+                SELECT item_id FROM rescue_overrides
+                WHERE item_type = 'series' AND action = 'include'
+            )"""
+    _CATALOG_NOVEL_CANDIDATES_SQL = """AND n.novel_id IN (
+                SELECT novel_id FROM novels WHERE status IN ('deleted', 'restricted')
+                UNION
+                SELECT item_id FROM rescue_overrides
+                WHERE item_type = 'novel' AND action = 'include'
+            )"""
+
     def _catalog_series_rows(
         self,
         series_ids: set[int] | None = None,
+        *,
+        candidates_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Return eligible series snapshots using only body completeness flags."""
         normalized_ids = sorted({int(value) for value in series_ids or set()})
@@ -164,6 +297,8 @@ class RescueMixin:
             placeholders = ", ".join("?" for _ in normalized_ids)
             where_clauses.append(f"se.series_id IN ({placeholders})")
             params = tuple(normalized_ids)
+        if candidates_only:
+            where_clauses.append(self._CATALOG_SERIES_CANDIDATES_SQL)
         where_sql = "WHERE " + " AND ".join(where_clauses)
         rows = self.conn.execute(
             f"""
@@ -253,6 +388,8 @@ class RescueMixin:
         self,
         rescue_series_ids: set[int],
         novel_ids: set[int] | None = None,
+        *,
+        candidates_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Return eligible standalone/chapter snapshots in one set query."""
         normalized_ids = sorted({int(value) for value in novel_ids or set()})
@@ -264,6 +401,8 @@ class RescueMixin:
             placeholders = ", ".join("?" for _ in normalized_ids)
             filter_sql = f"AND n.novel_id IN ({placeholders})"
             params = tuple(normalized_ids)
+        if candidates_only:
+            filter_sql = f"{filter_sql} {self._CATALOG_NOVEL_CANDIDATES_SQL}"
         rows = self.conn.execute(
             f"""
             SELECT
@@ -299,6 +438,24 @@ class RescueMixin:
                         WHERE pd.item_type = 'novel'
                           AND pd.item_id = n.novel_id
                           AND pd.status = 'pending'
+                    )
+              )
+              -- 父系列进了「待确认删除」（本人取消追更）时，它的章节同样不进目录：系列条目
+              -- 已被上面的系列查询排除，章节若照常放行，会以「系列单章」带着「我的追更」
+              -- 来源挂进拯救页。章节自己还有收藏来源（本人单独收藏过）时保留。
+              AND (
+                    ro.action = 'include'
+                    OR n.series_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1 FROM pending_deletions pd
+                        WHERE pd.item_type = 'series'
+                          AND pd.item_id = n.series_id
+                          AND pd.status = 'pending'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM sources s
+                        WHERE s.novel_id = n.novel_id
+                          AND s.source_type LIKE 'bookmark_%'
                     )
               )
               {filter_sql}
@@ -682,9 +839,13 @@ class RescueMixin:
         started = time.perf_counter()
         refreshed_at = self._catalog_timestamp()
         with self.transaction():
-            series_rows = self._catalog_series_rows()
+            # P13：先在同一事务里筛出可能入目录的 ID，再交给原来的查询，结果逐条不变。
+            # 只有远端标了 deleted / restricted 或有人工 include 的条目才可能入目录；
+            # 以前两条查询扫全部 novels（status 在 raw_json 之后，要读溢出页）、聚合全部
+            # 系列章节，再在 Python 里丢掉九成。这仍是同一事务内的全量重建，不是增量化。
+            series_rows = self._catalog_series_rows(candidates_only=True)
             rescue_series_ids = {int(row["series_id"]) for row in series_rows}
-            novel_rows = self._catalog_novel_rows(rescue_series_ids)
+            novel_rows = self._catalog_novel_rows(rescue_series_ids, candidates_only=True)
 
             # Sources have a foreign key to the catalog; clear both explicitly so
             # this remains correct even for databases created before the FK pragma.
@@ -911,12 +1072,11 @@ class RescueMixin:
                 ) AS cover_url,
                 COALESCE(se.total_novels, 0) AS expected_count,
                 COUNT(n.novel_id) AS local_count,
-                COALESCE(SUM(
-                    CASE
-                        WHEN TRIM(COALESCE(nt.text_raw, '')) != '' THEN 1
-                        ELSE 0
-                    END
-                ), 0) AS complete_count,
+                -- 用写入时算好的 has_content，与目录同一判据：TRIM(text_raw) 既要把每章
+                -- 正文整段读出来（lookup 40 个 ID 读盘上百 MB），又只剥空格、不剥换行与
+                -- 全角空格，同一个系列在目录里是 partial、在读接口里却是 success
+                COALESCE(SUM(CASE WHEN COALESCE(nt.has_content, 0) = 1 THEN 1 ELSE 0 END), 0)
+                    AS complete_count,
                 se.status AS remote_status,
                 se.last_checked_at,
                 se.last_seen_at AS updated_at,
@@ -998,7 +1158,93 @@ class RescueMixin:
         payload = self.evaluate_rescue_series(int(series_id))
         if payload is None or payload["rescue_state"] is None:
             return None
+        # 与 get_rescue_novel 同理：读接口不受 pending 排除约束，但要把「本人是否
+        # 还在追更」带出去，供油猴脚本判断要不要渲染救援面板。
+        payload["personal_hold"] = self._personal_holds_item("series", int(series_id))
         return payload
+
+    def get_rescue_series_cards(self, series_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """批量读系列卡片字段（追更列表/拯救系列 tab 需要）：章节数、最新章节日期/ID、
+        R-18 标记、封面、作者头像。单次查询，避免 N+1。
+
+        章节数与最新一话只算已备份章节（has_content = 1），排序与
+        list_rescue_series_chapters 同一口径，卡片上的「N话」「阅读最新话」与系列页对得上。
+        """
+        if not series_ids:
+            return {}
+        ids_tuple = tuple(int(sid) for sid in series_ids)
+        placeholders = ", ".join("?" for _ in ids_tuple)
+        # 每个系列取：已备份章节数、最晚一章的创建日期+ID、所有章节最高 x_restrict、
+        # 有封面的章节数（>0 即为真，与 has_rescue_series_cover 同口径）、作者头像（users.raw_json）
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                se.series_id,
+                se.user_id,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM novels n2
+                    JOIN novel_texts nt2 ON nt2.novel_id = n2.novel_id
+                    WHERE n2.series_id = se.series_id AND nt2.has_content = 1
+                ), 0) AS chapter_count,
+                (
+                    SELECT n3.create_date
+                    FROM novels n3
+                    JOIN novel_texts nt3 ON nt3.novel_id = n3.novel_id
+                    WHERE n3.series_id = se.series_id AND nt3.has_content = 1
+                    ORDER BY n3.create_date DESC, n3.novel_id DESC
+                    LIMIT 1
+                ) AS last_create_date,
+                (
+                    SELECT n4.novel_id
+                    FROM novels n4
+                    JOIN novel_texts nt4 ON nt4.novel_id = n4.novel_id
+                    WHERE n4.series_id = se.series_id AND nt4.has_content = 1
+                    ORDER BY n4.create_date DESC, n4.novel_id DESC
+                    LIMIT 1
+                ) AS latest_novel_id,
+                COALESCE((
+                    SELECT MAX(n5.x_restrict)
+                    FROM novels n5
+                    WHERE n5.series_id = se.series_id
+                ), 0) AS x_restrict,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM novels n6
+                    JOIN assets a ON a.novel_id = n6.novel_id AND a.asset_type = 'cover'
+                    WHERE n6.series_id = se.series_id
+                ), 0) AS cover_count,
+                u.raw_json AS user_raw_json
+            FROM series se
+            LEFT JOIN users u ON u.user_id = se.user_id
+            WHERE se.series_id IN ({placeholders})
+            """,
+            ids_tuple,
+        ).fetchall()
+        result: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            series_id = int(row["series_id"])
+            author_avatar_url: str | None = None
+            try:
+                user_data = json.loads(str(row["user_raw_json"] or "{}"))
+                if isinstance(user_data, dict):
+                    urls = user_data.get("profile_image_urls")
+                    if isinstance(urls, dict):
+                        medium = str(urls.get("medium") or "")
+                        if medium.startswith("https://i.pximg.net/"):
+                            author_avatar_url = medium
+            except (TypeError, ValueError):
+                pass
+            result[series_id] = {
+                "user_id": int(row["user_id"] or 0),
+                "chapter_count": int(row["chapter_count"] or 0),
+                "last_create_date": row["last_create_date"],
+                "latest_novel_id": int(row["latest_novel_id"]) if row["latest_novel_id"] else None,
+                "x_restrict": int(row["x_restrict"] or 0),
+                "has_cover": bool(int(row["cover_count"] or 0) > 0),
+                "author_avatar_url": author_avatar_url,
+            }
+        return result
 
     @staticmethod
     def _decode_tags(value: Any) -> list[Any]:
@@ -1008,9 +1254,12 @@ class RescueMixin:
             return []
         return parsed if isinstance(parsed, list) else []
 
-    def _novel_rescue_row(self, novel_id: int) -> dict[str, Any] | None:
+    def _novel_rescue_row(self, novel_id: int, include_text: bool = True) -> dict[str, Any] | None:
+        # 只有按 ID 取正文（get_rescue_novel）需要 text_raw；评估与 lookup 只看 has_content，
+        # 不要为了判断「有没有正文」把整本正文读出来再丢掉
+        text_column = "nt.text_raw" if include_text else "'' AS text_raw"
         row = self.conn.execute(
-            """
+            f"""
             SELECT
                 n.novel_id,
                 n.title,
@@ -1024,7 +1273,7 @@ class RescueMixin:
                 n.status AS remote_status,
                 n.last_checked_at,
                 n.last_seen_at AS updated_at,
-                nt.text_raw,
+                {text_column},
                 COALESCE(nt.has_content, 0) AS has_content,
                 ro.action AS override_action,
                 ro.note AS override_note
@@ -1039,7 +1288,11 @@ class RescueMixin:
         ).fetchone()
         return dict(row) if row else None
 
-    def _novel_evaluation_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _novel_evaluation_payload(
+        self,
+        data: dict[str, Any],
+        parent_lookup: Callable[[int], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]:
         text_raw = str(data.get("text_raw") or "")
         if data.get("has_content") is None:
             body_complete = bool(text_raw.strip())
@@ -1061,7 +1314,13 @@ class RescueMixin:
         elif body_complete:
             series_id = data.get("series_id")
             if series_id is not None:
-                parent = self.get_rescue_series(int(series_id))
+                # 批量路径传入 parent_lookup（父系列已一次性评好）；单条路径
+                # 保持原行为，惰性按需评估
+                parent = (
+                    parent_lookup(int(series_id))
+                    if parent_lookup is not None
+                    else self.get_rescue_series(int(series_id))
+                )
                 if parent is not None:
                     eligibility_reason = "parent_series_unavailable"
                     rescue_state = str(parent["rescue_state"])
@@ -1095,7 +1354,7 @@ class RescueMixin:
         }
 
     def evaluate_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
-        data = self._novel_rescue_row(int(novel_id))
+        data = self._novel_rescue_row(int(novel_id), include_text=False)
         if data is None:
             return None
         payload = self._novel_evaluation_payload(data)
@@ -1112,7 +1371,190 @@ class RescueMixin:
         payload = self._novel_evaluation_payload(data)
         if payload["rescue_state"] is None:
             return None
+        # 读接口不受 pending 排除约束（目录决定「能浏览什么」，接口只负责按 ID 取回备份），
+        # 但要把「本人是否还持有」如实带出去，让油猴脚本能自己决定要不要渲染救援面板。
+        payload["personal_hold"] = self._personal_holds_item("novel", int(novel_id))
         return payload
+
+    def get_rescue_novel_extras(self, novel_id: int, series_id: int | None) -> dict[str, Any]:
+        """救援正文页额外展示的数据：同步时的收藏/浏览快照、原创/AI 标记、系列导航。
+
+        系列导航（第几话、上一话/下一话）只在所属系列本身可救援时给出；章节序号
+        与 list_rescue_series_chapters 同一口径（已备份章节按发布时间排序），
+        这样系列页的「#N」与正文页的「上一话 #N-1」永远对得上。
+        """
+        row = self.conn.execute(
+            "SELECT total_bookmarks, total_views, x_restrict, raw_json FROM novels WHERE novel_id = ?",
+            (int(novel_id),),
+        ).fetchone()
+        extras: dict[str, Any] = {"series_nav": None}
+        if row is None:
+            return extras
+        extras["total_bookmarks"] = row["total_bookmarks"]
+        extras["total_views"] = row["total_views"]
+        extras["x_restrict"] = row["x_restrict"]
+        extras.update(_work_flags(row["raw_json"]))
+        if series_id is None:
+            return extras
+        series = self.get_rescue_series(int(series_id))
+        if series is None:
+            return extras
+        chapters = self.conn.execute(
+            """
+            SELECT n.novel_id, n.title
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ? AND nt.has_content = 1
+            ORDER BY n.create_date ASC, n.novel_id ASC
+            """,
+            (int(series_id),),
+        ).fetchall()
+        ids = [int(chapter["novel_id"]) for chapter in chapters]
+        if int(novel_id) not in ids:
+            return extras
+        index = ids.index(int(novel_id))
+
+        def neighbor(at: int) -> dict[str, Any] | None:
+            if at < 0 or at >= len(chapters):
+                return None
+            return {"novel_id": ids[at], "title": chapters[at]["title"], "chapter_number": at + 1}
+
+        extras["series_nav"] = {
+            "series_id": int(series_id),
+            "series_title": series.get("title"),
+            "chapter_number": index + 1,
+            "chapter_total": len(ids),
+            "prev": neighbor(index - 1),
+            "next": neighbor(index + 1),
+        }
+        return extras
+
+    def get_rescue_cover_asset(self, novel_id: int) -> dict[str, Any] | None:
+        """取某篇小说的本地封面资产（救援列表卡片重建用）。
+
+        返回 {"local_path": 相对库根路径, "restrict_value": public|private}；
+        没有封面记录时返回 None。文件是否真实存在由调用方校验。
+        """
+        row = self.conn.execute(
+            """
+            SELECT a.local_path, n.restrict_value
+            FROM assets a
+            JOIN novels n ON n.novel_id = a.novel_id
+            WHERE a.novel_id = ? AND a.asset_type = 'cover'
+            ORDER BY a.downloaded_at DESC
+            LIMIT 1
+            """,
+            (int(novel_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "local_path": str(row["local_path"] or ""),
+            "restrict_value": str(row["restrict_value"] or "public"),
+        }
+
+    def has_rescue_cover(self, novel_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM assets WHERE novel_id = ? AND asset_type = 'cover' LIMIT 1",
+            (int(novel_id),),
+        ).fetchone()
+        return row is not None
+
+    def get_rescue_series_cover_asset(self, series_id: int) -> dict[str, Any] | None:
+        """系列没有独立封面资产，退而用系列下第一篇有本地封面的小说。
+
+        返回结构与 get_rescue_cover_asset 相同；没有可用封面时返回 None。
+        """
+        row = self.conn.execute(
+            """
+            SELECT a.local_path, n.restrict_value
+            FROM novels n
+            JOIN assets a ON a.novel_id = n.novel_id AND a.asset_type = 'cover'
+            WHERE n.series_id = ?
+            ORDER BY n.create_date ASC, n.novel_id ASC
+            LIMIT 1
+            """,
+            (int(series_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "local_path": str(row["local_path"] or ""),
+            "restrict_value": str(row["restrict_value"] or "public"),
+        }
+
+    def has_rescue_series_cover(self, series_id: int) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM novels n
+            JOIN assets a ON a.novel_id = n.novel_id AND a.asset_type = 'cover'
+            WHERE n.series_id = ? LIMIT 1
+            """,
+            (int(series_id),),
+        ).fetchone()
+        return row is not None
+
+    def get_rescue_items_batch(
+        self,
+        novel_ids: list[int],
+        series_ids: list[int],
+    ) -> dict[str, dict[str, Any]]:
+        """批量版的「按 ID 取备份」，供 /api/rescue/v1/lookup 一次请求查 ≤40 个 ID。
+
+        逐个 get_rescue_novel/get_rescue_series 在 40 ID 时要跑 40~80 次聚合
+        （小说评估还会为父系列各再查一次）。这里把行查询、父系列评估、
+        personal_hold、pending_removal 全部合并成按批的 IN (...) 查询；
+        语义与单条版一致：无备份/无救援状态 → 不出现在返回 map 里。
+        """
+        novels = {}
+        series = {}
+        with self.read_transaction():
+            for novel_id in novel_ids:
+                data = self._novel_rescue_row(int(novel_id), include_text=False)
+                if data is None:
+                    continue
+                novels[int(novel_id)] = data
+            for series_id in series_ids:
+                payload = self.evaluate_rescue_series(int(series_id))
+                if payload is not None and payload.get("rescue_state") is not None:
+                    series[int(series_id)] = payload
+
+            # 父系列评估批量化：小说的 rescue_state 可能继承自父系列
+            parent_ids = sorted({
+                int(data["series_id"])
+                for data in novels.values()
+                if data.get("series_id") is not None
+                and int(data["series_id"]) not in series
+            })
+            parent_map: dict[int, dict[str, Any]] = {}
+            for parent_id in parent_ids:
+                payload = self.evaluate_rescue_series(parent_id)
+                if payload is not None and payload.get("rescue_state") is not None:
+                    parent_map[parent_id] = payload
+
+            # personal_hold / pending_removal 批量化
+            hold_keys: set[tuple[str, int]] = set()
+            for novel_id in novels:
+                hold_keys.add(("novel", novel_id))
+                data = novels[novel_id]
+                if data.get("series_id") is not None:
+                    pass  # 父系列 hold 不进小说 payload，与单条版语义一致
+            for series_id in series:
+                hold_keys.add(("series", series_id))
+            hold_map = self._personal_hold_batch(hold_keys)
+
+            results: dict[str, dict[str, Any]] = {}
+            for novel_id, data in novels.items():
+                payload = self._novel_evaluation_payload(data, parent_lookup=parent_map.get)
+                if payload["rescue_state"] is None:
+                    continue
+                payload["personal_hold"] = hold_map.get(("novel", novel_id), False)
+                results[f"novel:{novel_id}"] = payload
+            for series_id, payload in series.items():
+                payload = dict(payload)
+                payload["personal_hold"] = hold_map.get(("series", series_id), False)
+                results[f"series:{series_id}"] = payload
+            return results
 
     def list_rescues(
         self,
@@ -1324,6 +1766,13 @@ class RescueMixin:
             if item_type_value == "novel":
                 item["novel_id"] = item_id_value
 
+        hold_map = self._personal_hold_batch(
+            {(str(item["item_type"]), int(item["item_id"])) for item in items}
+        ) if items else {}
+        for item in items:
+            key = (str(item["item_type"]), int(item["item_id"]))
+            item["personal_hold"] = bool(hold_map.get(key, False))
+
         return {
             "items": items,
             "page": normalized_page,
@@ -1350,7 +1799,7 @@ class RescueMixin:
             SELECT COUNT(*)
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
-            WHERE n.series_id = ? AND TRIM(COALESCE(nt.text_raw, '')) != ''
+            WHERE n.series_id = ? AND nt.has_content = 1
             """,
             (int(series_id),),
         ).fetchone()
@@ -1367,13 +1816,22 @@ class RescueMixin:
                     n.create_date,
                     n.status AS remote_status,
                     n.text_length,
+                    n.x_restrict,
+                    n.total_bookmarks,
+                    n.total_views,
+                    n.tags_json,
+                    n.raw_json,
+                    EXISTS (
+                        SELECT 1 FROM assets a
+                        WHERE a.novel_id = n.novel_id AND a.asset_type = 'cover'
+                    ) AS has_cover,
                     ROW_NUMBER() OVER (
                         ORDER BY n.create_date ASC, n.novel_id ASC
                     ) AS chapter_number
                 FROM novels n
                 JOIN novel_texts nt ON nt.novel_id = n.novel_id
                 WHERE n.series_id = ?
-                  AND TRIM(COALESCE(nt.text_raw, '')) != ''
+                  AND nt.has_content = 1
             )
             SELECT * FROM available
             ORDER BY chapter_number ASC
@@ -1384,14 +1842,30 @@ class RescueMixin:
         items = []
         for row in rows:
             item = dict(row)
+            # 卡片照 Pixiv 系列页：标签行（R-18/原创/标签）、字数·时长·收藏数
+            item["tags"] = self._decode_tags(item.pop("tags_json"))
+            item.update(_work_flags(item.pop("raw_json")))
+            item["has_cover"] = bool(item["has_cover"])
             item["api_path"] = f"/api/rescue/v1/novels/{item['novel_id']}"
             items.append(item)
+        # 系列头部「共N话 · 某日更新 · 总字数 · 总阅读时长」按全部已备份章节算，不只本页
+        totals = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(n.text_length), 0), MAX(n.create_date)
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ? AND nt.has_content = 1
+            """,
+            (int(series_id),),
+        ).fetchone()
         return {
             "items": items,
             "page": normalized_page,
             "page_size": normalized_size,
             "total": total,
             "total_pages": total_pages,
+            "total_text_length": int(totals[0] or 0) if totals else 0,
+            "last_create_date": totals[1] if totals else None,
             "rescue_state": series["rescue_state"],
             "expected_count": series["expected_count"],
             "local_count": series["local_count"],

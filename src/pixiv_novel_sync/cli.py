@@ -99,7 +99,9 @@ def main() -> None:
         from .jobs.quick_sync import run_bookmark_sync
 
         stats = run_bookmark_sync(settings)
-        if stats.get("truncated"):
+        # S13：收藏同步失败（fetch_failed / 其他 incomplete / truncated）应当退出 1，
+        # 供遗留定时器识别；webapp 的状态判定逻辑在 _task_log_status_for_stats。
+        if stats.get("incomplete") or stats.get("truncated") or stats.get("aborted_reason"):
             raise SystemExit(1)
     elif args.command == "db-stats":
         from .storage_db import Database, prepare_schema

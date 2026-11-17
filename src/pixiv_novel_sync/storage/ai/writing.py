@@ -214,8 +214,8 @@ class AiWritingMixin:
 
     def patch_ai_chapter_metadata(self, chapter_id: int, patch: dict[str, Any]) -> dict[str, Any]:
         """对 chapter.metadata_json 做浅合并 patch。返回合并后的完整 metadata 字典。"""
-        with self._lock:
-            row = self.conn.execute("SELECT metadata_json FROM ai_chapters WHERE id = ?", (chapter_id,)).fetchone()
+        with self.transaction() as conn:
+            row = conn.execute("SELECT metadata_json FROM ai_chapters WHERE id = ?", (chapter_id,)).fetchone()
             current: dict[str, Any] = {}
             if row and row[0]:
                 try:
@@ -223,7 +223,7 @@ class AiWritingMixin:
                 except (TypeError, ValueError):
                     current = {}
             current.update(patch or {})
-            self.conn.execute(
+            conn.execute(
                 """
                 UPDATE ai_chapters
                 SET metadata_json = ?,
@@ -233,20 +233,19 @@ class AiWritingMixin:
                 """,
                 (json.dumps(current, ensure_ascii=False), chapter_id),
             )
-            self._commit_if_needed()
             return current
 
     def update_ai_chapters_outlines_and_metadata(self, updates: list[dict[str, Any]]) -> None:
         if not updates:
             return
-        with self._lock:
+        with self.transaction() as conn:
             for item in updates:
                 chapter_id = int(item.get("id") or item.get("chapter_id") or 0)
                 if not chapter_id:
                     continue
                 outline = item.get("outline")
                 metadata = item.get("metadata") or {}
-                self.conn.execute(
+                conn.execute(
                     """
                     UPDATE ai_chapters
                     SET outline = ?, metadata_json = ?,
@@ -256,7 +255,6 @@ class AiWritingMixin:
                     """,
                     (outline, json.dumps(metadata, ensure_ascii=False), chapter_id),
                 )
-            self._commit_if_needed()
 
     def delete_ai_chapter(self, chapter_id: int) -> None:
         with self._lock:
@@ -473,8 +471,8 @@ class AiWritingMixin:
 
     def patch_ai_chat_session_metadata(self, session_id: int, patch: dict[str, Any]) -> dict[str, Any]:
         """对 session.metadata_json 做浅合并 patch。返回合并后字典。"""
-        with self._lock:
-            row = self.conn.execute("SELECT metadata_json FROM ai_chat_sessions WHERE id = ?", (session_id,)).fetchone()
+        with self.transaction() as conn:
+            row = conn.execute("SELECT metadata_json FROM ai_chat_sessions WHERE id = ?", (session_id,)).fetchone()
             current: dict[str, Any] = {}
             if row and row[0]:
                 try:
@@ -482,18 +480,16 @@ class AiWritingMixin:
                 except (TypeError, ValueError):
                     current = {}
             current.update(patch or {})
-            self.conn.execute(
+            conn.execute(
                 "UPDATE ai_chat_sessions SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (json.dumps(current, ensure_ascii=False), session_id),
             )
-            self._commit_if_needed()
             return current
 
     def delete_ai_chat_session(self, session_id: int) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM ai_chat_messages WHERE session_id = ?", (session_id,))
-            self.conn.execute("DELETE FROM ai_chat_sessions WHERE id = ?", (session_id,))
-            self._commit_if_needed()
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM ai_chat_messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM ai_chat_sessions WHERE id = ?", (session_id,))
 
     def list_ai_chat_messages(self, session_id: int, limit: int | None = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM ai_chat_messages WHERE session_id = ? ORDER BY id ASC"
@@ -510,14 +506,13 @@ class AiWritingMixin:
         return results
 
     def append_ai_chat_message(self, session_id: int, role: str, content: str, metadata: dict[str, Any] | None = None) -> int:
-        with self._lock:
-            cursor = self.conn.execute(
+        with self.transaction() as conn:
+            cursor = conn.execute(
                 """INSERT INTO ai_chat_messages (session_id, role, content, metadata_json)
                    VALUES (?, ?, ?, ?)""",
                 (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
             )
-            self.conn.execute("UPDATE ai_chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
-            self._commit_if_needed()
+            conn.execute("UPDATE ai_chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
             return int(cursor.lastrowid)
 
     @staticmethod

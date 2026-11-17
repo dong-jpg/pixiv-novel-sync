@@ -9,6 +9,8 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -21,19 +23,34 @@ from ..storage_files import FileStorage
 
 logger = logging.getLogger(__name__)
 
+# 配置文件读-改-写串行锁：save_sync_settings / set_auto_sync_enabled 两条路径
+# 并发时会互相丢更新（都先读旧 YAML 再整体回写）。进程内锁即可——本应用约定
+# 单进程部署（多 worker 会破坏单活动任务不变量，见 CLAUDE.md）。
+_yaml_write_lock = threading.Lock()
+
 
 def _atomic_write_yaml(path: Path, data: Any) -> None:
     """Write YAML to ``path`` atomically (temp file in the same dir + os.replace).
 
     Avoids truncating/corrupting config.yaml if the process crashes mid-write, and
-    keeps a single serialization style across every config writer.
+    keeps a single serialization style across every config writer. The temp file
+    uses a random suffix so concurrent writers can never clobber each other's
+    tmp file (mirrors utils_env.secure_atomic_write); the module-level lock
+    serializes the read-modify-write callers share.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as file:
-        yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    with _yaml_write_lock:
+        try:
+            with tmp.open("w", encoding="utf-8") as file:
+                yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
+            os.replace(tmp, path)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _oauth_task_public_payload(task: Any, mode: str) -> dict[str, Any]:
@@ -517,6 +534,9 @@ def _check_pixiv_user_status(api: Any, user_id: int) -> str:
             if total_novels == 0:
                 return "no_novels"
         return "normal"
+    except InterruptedError:
+        # 任务取消：重试补丁在退避中抛出，必须交给 JobRunner 转 CANCELLED，不能吞成 unknown
+        raise
     except Exception as e:
         logger.warning("检查用户 %s 状态失败: %s", user_id, e)
         return "unknown"
@@ -541,6 +561,8 @@ def _check_novel_status(api: Any, novel_id: int) -> str:
         if not visible:
             return "restricted"
         return "normal"
+    except InterruptedError:
+        raise
     except Exception as e:
         logger.warning("检查小说 %s 状态失败: %s", novel_id, e)
         return "unknown"
@@ -560,6 +582,8 @@ def _check_series_status(api: Any, series_id: int) -> str:
             _log_unknown_status("系列", series_id, result)
             return "unknown"
         return "normal"
+    except InterruptedError:
+        raise
     except Exception as e:
         logger.warning("检查系列 %s 状态失败: %s", series_id, e)
         return "unknown"

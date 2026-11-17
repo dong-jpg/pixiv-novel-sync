@@ -84,7 +84,9 @@ def _trace_catalog_page(
         payload = db.list_rescues(page=page, page_size=25)
     finally:
         db.conn.set_trace_callback(None)
-        db.conn.set_authorizer(None)
+        # Python 3.10 cannot disable authorizers with None; it leaves later SQL
+        # denied on SQLite 3.37. Restore a neutral callback instead.
+        db.conn.set_authorizer(lambda *_args: sqlite3.SQLITE_OK)
     selects = [
         statement
         for statement in statements
@@ -101,6 +103,18 @@ def _freeze_payload(value):
     if isinstance(value, list):
         return tuple(_freeze_payload(item) for item in value)
     return value
+
+
+def test_catalog_trace_cleanup_allows_subsequent_write(tmp_path: Path) -> None:
+    db = Database(tmp_path / "trace-cleanup.db")
+    try:
+        db.init_schema()
+        db.rebuild_rescue_catalog()
+        _trace_catalog_page(db)
+        _insert_rescue_novels(db, 1, 2)
+        assert db.conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0] == 1
+    finally:
+        db.close()
 
 
 def _catalog_signature(payload: dict) -> tuple:
@@ -266,9 +280,10 @@ def test_catalog_list_query_count_is_constant_and_uses_sql_pagination(
     normalized_second_sql = [
         " ".join(statement.upper().split()) for statement in second_selects
     ]
+    # personal_hold 批查固定 2 条（novels / series 各一），翻页与数据量都无关
     assert len(small_selects) == len(selects)
-    assert len(small_selects) <= 4
-    assert len(second_selects) <= 4
+    assert len(small_selects) <= 6
+    assert len(second_selects) <= 6
     assert small_payload["total"] == 20
     assert payload["total"] == 200
     assert len(payload["items"]) == 25
@@ -288,6 +303,12 @@ def test_catalog_list_query_count_is_constant_and_uses_sql_pagination(
         "rescue_catalog",
         "rescue_catalog_sources",
         "rescue_catalog_meta",
+        # personal_hold 批查：小说看 sources 的 bookmark_ 行、系列看 series.is_subscribed，
+        # 都要以 pending_deletions 排除「本人已取消」的条目。这是目录列表的固定开销。
+        "novels",
+        "series",
+        "sources",
+        "pending_deletions",
     }
     assert {table for table, _column in small_reads | reads | second_reads} <= allowed_tables
 
@@ -333,3 +354,115 @@ def test_empty_initialized_catalog_skips_source_query(tmp_path: Path) -> None:
         "rescue_catalog",
         "rescue_catalog_meta",
     }
+
+
+def test_public_rescue_endpoints_return_503_before_catalog_ready(tmp_path: Path) -> None:
+    """P2-1：目录首建完成前，公开端点回 503 而非 500（与 dashboard 端点同一契约）。"""
+    from flask import Flask
+
+    from pixiv_novel_sync.rescue_web import register_rescue_routes
+    from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
+
+    db = Database(tmp_path / "rescue503.db")
+    try:
+        db.init_schema()
+        # token_hash 是 SHA-256 hex（rescue_web._token_digest 的同构值）
+        import hashlib
+        db.save_rescue_token_record(hashlib.sha256(b"rsq_test").hexdigest(), "rsq_test")
+    finally:
+        db.close()
+
+    settings = Settings(
+        pixiv=PixivSettings(refresh_token="", access_token=None, proxy=None,
+                            timeout=30, verify_ssl=True, user_id=1),
+        sync=SyncSettings(enabled=False, initial_manual_only=True, download_assets=False,
+                          write_markdown=False, write_raw_text=False, bookmark_restricts=["public"],
+                          max_items_per_run=None, max_pages_per_run=None,
+                          delay_seconds_between_items=0, delay_seconds_between_pages=0),
+        storage=StorageSettings(public_dir=tmp_path / "p", private_dir=tmp_path / "v",
+                                db_path=tmp_path / "rescue503.db"),
+    )
+
+    app = Flask(__name__)
+    register_rescue_routes(app, lambda: settings, lambda: "127.0.0.1")
+    client = app.test_client()
+
+    # 空目录（rescue_catalog_meta 为空）：列表端点回 503「尚未生成」。
+    # lookup/明细端点按设计不做目录门控（CLAUDE.md：目录决定能浏览什么，
+    # 明细接口服务已知 ID 的备份），未知 ID 回空集/404，不算目录未就绪。
+    response = client.get("/api/rescue/v1/series", headers={"Authorization": "Bearer rsq_test"})
+    assert response.status_code == 503, (response.status_code, response.get_json())
+    assert "尚未生成" in response.get_json()["error"]
+
+
+def test_rescue_cover_endpoints_serve_local_assets(tmp_path: Path, monkeypatch) -> None:
+    """封面端点：novel 直取本地资产，series 回退首章封面，缺失/穿越均 404。"""
+    import hashlib as _hashlib
+
+    from flask import Flask
+
+    from pixiv_novel_sync.rescue_web import register_rescue_routes
+    from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
+
+    db_path = tmp_path / "cover.db"
+    public_dir = tmp_path / "library"
+    cover_dir = public_dir / "authors" / "1_a" / "novels" / "900_x" / "assets" / "cover"
+    cover_dir.mkdir(parents=True)
+    cover_file = cover_dir / "900_cover.jpg"
+    payload = b"\xff\xd8\xff\xe0" + b"x" * 32
+    cover_file.write_bytes(payload)
+
+    db = Database(db_path)
+    try:
+        db.init_schema()
+        db.save_rescue_token_record(_hashlib.sha256(b"rsq_test").hexdigest(), "rsq_test")
+        db.conn.execute(
+            "INSERT INTO users(user_id, name, raw_json) VALUES(1, '作者', '{}')"
+        )
+        db.conn.execute(
+            "INSERT INTO series(series_id, title, user_id, is_subscribed) VALUES(500, '系列', 1, 1)"
+        )
+        db.conn.execute(
+            "INSERT INTO novels(novel_id, user_id, series_id, title, visible, restrict_value, "
+            "x_restrict, text_length, total_bookmarks, total_views, tags_json, raw_json, meta_hash, status) "
+            "VALUES(900, 1, 500, '首章', 1, 'public', 0, 10, 0, 0, '[]', '{}', 'h', 'deleted')"
+        )
+        db.conn.execute(
+            "INSERT INTO novel_texts(novel_id, text_raw, has_content, text_hash) VALUES(900, '正文', 1, 't')"
+        )
+        # local_path 存的是相对 cwd 的路径（与生产一致），monkeypatch cwd 到 tmp_path
+        db.conn.execute(
+            "INSERT INTO assets(novel_id, asset_type, remote_url, local_path, file_hash) "
+            "VALUES(900, 'cover', 'https://i.pximg.net/x.jpg', ?, 'h')",
+            (str(cover_file.relative_to(tmp_path)),),
+        )
+        db.conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(
+        pixiv=PixivSettings(refresh_token="", access_token=None, proxy=None,
+                            timeout=30, verify_ssl=True, user_id=1),
+        sync=SyncSettings(enabled=False, initial_manual_only=True, download_assets=True,
+                          write_markdown=False, write_raw_text=False, bookmark_restricts=["public"],
+                          max_items_per_run=None, max_pages_per_run=None,
+                          delay_seconds_between_items=0, delay_seconds_between_pages=0),
+        storage=StorageSettings(public_dir=public_dir, private_dir=tmp_path / "private", db_path=db_path),
+    )
+    app = Flask(__name__)
+    register_rescue_routes(app, lambda: settings, lambda: "127.0.0.1")
+    client = app.test_client()
+    headers = {"Authorization": "Bearer rsq_test"}
+
+    # novel 封面命中
+    response = client.get("/api/rescue/v1/novels/900/cover", headers=headers)
+    assert response.status_code == 200
+    assert response.data == payload
+    # series 回退到首章封面
+    response = client.get("/api/rescue/v1/series/500/cover", headers=headers)
+    assert response.status_code == 200
+    assert response.data == payload
+    # 不存在
+    assert client.get("/api/rescue/v1/novels/999/cover", headers=headers).status_code == 404
+    assert client.get("/api/rescue/v1/series/999/cover", headers=headers).status_code == 404

@@ -23,6 +23,16 @@ _DEFAULT_HEADERS = {
 }
 
 
+def _flush_to_disk(fh: Any) -> None:
+    """os.replace 之前把临时文件刷到磁盘。
+
+    不 fsync 的话，掉电或内核崩溃后 rename 可能先于数据落盘，留下截断甚至为空的
+    文件；而 assets 表照样记着「已下载」，此后不会再重下（S9）。
+    """
+    fh.flush()
+    os.fsync(fh.fileno())
+
+
 class FileStorage:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -66,22 +76,26 @@ class FileStorage:
         return self.novel_dir(restrict, user_id, user_name, novel_id, title)
 
     def write_text(self, path: Path, content: str) -> None:
-        """原子写文本文件：tmp + os.replace。"""
+        """原子写文本文件：tmp + fsync + os.replace。"""
         ensure_parent(path)
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
-            tmp.write_text(content, encoding="utf-8")
+            with tmp.open("w", encoding="utf-8") as fh:
+                fh.write(content)
+                _flush_to_disk(fh)
             os.replace(tmp, path)
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
 
     def write_bytes(self, path: Path, content: bytes) -> str:
-        """原子写二进制文件：tmp + os.replace。"""
+        """原子写二进制文件：tmp + fsync + os.replace。"""
         ensure_parent(path)
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
-            tmp.write_bytes(content)
+            with tmp.open("wb") as fh:
+                fh.write(content)
+                _flush_to_disk(fh)
             os.replace(tmp, path)
         except Exception:
             tmp.unlink(missing_ok=True)
@@ -121,6 +135,7 @@ class FileStorage:
                                     continue
                                 fh.write(chunk)
                                 hasher.update(chunk)
+                            _flush_to_disk(fh)
                         os.replace(tmp, target)
                     except Exception:
                         tmp.unlink(missing_ok=True)
@@ -143,6 +158,14 @@ class FileStorage:
                     cancellable_sleep(backoff, stop_requested)
         logger.warning("Failed to download asset %s after %s attempts: %s", url, max_retries, last_exc)
         return None
+
+    @staticmethod
+    def asset_file_present(path: Path) -> bool:
+        """资源文件确实在磁盘上且非空。assets 表只说明「下载成功过」（S9）。"""
+        try:
+            return Path(path).stat().st_size > 0
+        except OSError:
+            return False
 
     def asset_path(self, novel_dir: Path, asset_type: str, filename: str) -> Path:
         # 防止路径穿越：filename 取 basename，asset_type 也需消毒

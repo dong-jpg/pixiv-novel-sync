@@ -79,7 +79,7 @@ class TFIDFRetriever(BaseRetriever):
         self.conn.commit()
 
     def index_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             # 删除旧条目
             self.conn.execute(
                 "DELETE FROM retrieval_entries WHERE project_id = ? AND chapter_number = ?",
@@ -186,7 +186,7 @@ class TFIDFRetriever(BaseRetriever):
         return top_results
 
     def delete_project(self, project_id: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute("DELETE FROM retrieval_entries WHERE project_id = ?", (project_id,))
             self.conn.commit()
             self._cache_generation += 1
@@ -196,7 +196,7 @@ class TFIDFRetriever(BaseRetriever):
                 del self._search_cache[k]
 
     def delete_chapter(self, project_id: int, chapter_number: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM retrieval_entries WHERE project_id = ? AND chapter_number = ?",
                 (project_id, chapter_number),
@@ -273,7 +273,7 @@ class EmbeddingRetriever(BaseRetriever):
         contents = [t[0] for t in texts]
         embeddings = self.model.encode(contents, normalize_embeddings=True) if contents else []
 
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM retrieval_vectors WHERE project_id = ? AND chapter_number = ?",
                 (project_id, chapter_number),
@@ -317,12 +317,12 @@ class EmbeddingRetriever(BaseRetriever):
         return results[:top_k]
 
     def delete_project(self, project_id: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute("DELETE FROM retrieval_vectors WHERE project_id = ?", (project_id,))
             self.conn.commit()
 
     def delete_chapter(self, project_id: int, chapter_number: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM retrieval_vectors WHERE project_id = ? AND chapter_number = ?",
                 (project_id, chapter_number),
@@ -368,17 +368,25 @@ class OpenAICompatibleEmbeddingClient:
         )
         response.raise_for_status()
         payload = response.json()
-        data = payload.get("data")
+        data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             raise RuntimeError("Embedding API response missing data list")
-        ordered = sorted(data, key=lambda item: int(item.get("index", 0)) if isinstance(item, dict) else 0)
+        if len(data) != len(texts):
+            raise RuntimeError(f"Embedding API returned {len(data)} vectors for {len(texts)} inputs")
+        if (any(not isinstance(item, dict) or type(item.get("index")) is not int for item in data)
+                or {item["index"] for item in data} != set(range(len(texts)))):
+            raise RuntimeError("Embedding API response contains invalid embedding indices")
+        ordered = sorted(data, key=lambda item: item["index"])
         vectors: list[list[float]] = []
         for item in ordered:
-            if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
+            if not isinstance(item.get("embedding"), list) or not item["embedding"]:
                 raise RuntimeError("Embedding API response contains invalid embedding item")
-            vectors.append([float(value) for value in item["embedding"]])
-        if len(vectors) != len(texts):
-            raise RuntimeError(f"Embedding API returned {len(vectors)} vectors for {len(texts)} inputs")
+            if any(type(value) not in (int, float) or not math.isfinite(value) for value in item["embedding"]):
+                raise RuntimeError("Embedding API response contains invalid embedding values")
+            vector = [float(value) for value in item["embedding"]]
+            if vectors and len(vector) != len(vectors[0]):
+                raise RuntimeError("Embedding API response contains inconsistent embedding dimensions")
+            vectors.append(vector)
         return vectors
 
 
@@ -451,7 +459,7 @@ class APIEmbeddingRetriever(BaseRetriever):
             return
 
         embeddings = self.client.embed([content for content, _entry_type in texts]) if texts else []
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM retrieval_api_vectors WHERE project_id = ? AND chapter_number = ? AND model = ?",
                 (project_id, chapter_number, self.model_name),
@@ -508,12 +516,12 @@ class APIEmbeddingRetriever(BaseRetriever):
         return results[:top_k]
 
     def delete_project(self, project_id: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute("DELETE FROM retrieval_api_vectors WHERE project_id = ?", (project_id,))
             self.conn.commit()
 
     def delete_chapter(self, project_id: int, chapter_number: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM retrieval_api_vectors WHERE project_id = ? AND chapter_number = ?",
                 (project_id, chapter_number),

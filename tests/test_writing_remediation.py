@@ -27,6 +27,24 @@ def test_chapter_cas_rejects_stale_writer(writing):
     assert db.get_ai_chapter(cid)["content"] == "人工修改"
 
 
+@pytest.mark.parametrize("method", [
+    "stream_chapter_continue", "stream_update_project_state", "stream_extract_chapter_summary",
+    "stream_auto_resolve_foreshadows", "stream_polish",
+])
+def test_invalid_stream_identifier_does_not_open_a_database(tmp_path, monkeypatch, method):
+    from types import SimpleNamespace
+
+    service = AIWritingService(tmp_path / "unused.db")
+    opened = []
+    monkeypatch.setattr(service, "_db", lambda: opened.append(True) or SimpleNamespace(close=lambda: None))
+    try:
+        with pytest.raises(AIServiceError, match="agent_id"):
+            next(getattr(service, method)({"agent_id": "invalid", "polish_type": "dialogue"}))
+        assert opened == []
+    finally:
+        service.close()
+
+
 def test_pipeline_close_terminalizes_metadata(writing):
     db, service, pid, cid = writing
     stream = service.stream_chapter_pipeline({"project_id": pid, "chapter_id": cid, "steps": ["detect"]})

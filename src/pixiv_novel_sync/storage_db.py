@@ -17,6 +17,7 @@ from .storage.pending_and_watermarks import PendingAndWatermarksMixin
 from .storage.reading_progress import ReadingProgressMixin
 from .storage.recommendations import RecommendationsMixin
 from .storage.rescue import RescueMixin
+from .storage.web_auth_sessions import WebAuthSessionsMixin
 from .storage.ai.core import AiCoreMixin
 from .storage.ai.documents import AiDocumentsMixin
 from .storage.ai.writing import AiWritingMixin
@@ -24,6 +25,9 @@ from .storage.ai.catalog import CatalogMixin
 from .storage.ai.model_sync import ModelSyncStorageMixin
 from .storage.ai.pools import PoolsMixin
 from .storage.ai.adult import AdultStorageMixin
+from .storage.work_analysis import WorkAnalysisMixin
+from .storage.preference_learning import PreferenceLearningMixin
+from .storage.library_analysis import LibraryAnalysisMixin
 
 
 def prepare_schema(db: Any) -> Any:
@@ -50,6 +54,7 @@ class Database(
     ReadingProgressMixin,
     RecommendationsMixin,
     RescueMixin,
+    WebAuthSessionsMixin,
     AiCoreMixin,
     AiDocumentsMixin,
     AiWritingMixin,
@@ -57,6 +62,9 @@ class Database(
     ModelSyncStorageMixin,
     PoolsMixin,
     AdultStorageMixin,
+    WorkAnalysisMixin,
+    PreferenceLearningMixin,
+    LibraryAnalysisMixin,
     SchemaMixin,
     DatabaseConnection,
 ):

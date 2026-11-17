@@ -128,6 +128,15 @@ class SchemaMixin:
 
         -- Phase 5性能:高频WHERE条件索引
         CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+
+        CREATE TABLE IF NOT EXISTS web_auth_sessions (
+            token_hash TEXT PRIMARY KEY,
+            credential_version TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            persistent INTEGER NOT NULL CHECK (persistent IN (0, 1))
+        );
+        CREATE INDEX IF NOT EXISTS idx_web_auth_sessions_expiry ON web_auth_sessions(expires_at);
         """
         )
         # 迁移：为旧版 users 表添加 status、last_checked_at、restricted_streak 字段
@@ -165,6 +174,14 @@ class SchemaMixin:
         self._migrate_novel_fts_rowid()
         self._migrate_core_foreign_keys()
         self._migrate_query_indexes()
+        from .work_analysis.schema import migrate_work_analysis
+        from .preference_learning import migrate_preference_learning
+        from .library_analysis import migrate_library_analysis
+
+        with self.transaction() as conn:
+            migrate_work_analysis(conn)
+            migrate_preference_learning(conn)
+            migrate_library_analysis(conn)
         self._commit_if_needed()
 
     def _migrate_query_indexes(self) -> None:
@@ -191,6 +208,22 @@ class SchemaMixin:
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_novels_status ON novels(status)"
+        )
+        # P10：书库「按收藏排序」、追更页、首页推荐分页、删除小说时清推荐，
+        # 以前都是全表扫描或临时 B 树排序（合成 6000 本库 520 / 97 / 236 / 72 ms）。
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_bookmarks ON novels(total_bookmarks DESC, novel_id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_series_subscribed_seen "
+            "ON series(is_subscribed, last_seen_at DESC, series_id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recommendation_items_run_score "
+            "ON recommendation_items(run_id DESC, score DESC, id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recommendation_items_novel_id ON recommendation_items(novel_id)"
         )
 
     def _has_foreign_key(self, table_name: str, column_name: str, target_table: str) -> bool:
@@ -314,11 +347,27 @@ class SchemaMixin:
         # foreign_keys 开关不能放进事务。
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
-            with self.transaction():
+            with self.transaction() as conn:
+                restore_library_triggers = table_name == "novel_texts" and conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('library_analysis_clock','library_analysis_sources')"
+                ).fetchone()[0] == 2
+                if restore_library_triggers:
+                    # SQLite rewrites cross-table trigger references during a
+                    # rename. A restored legacy text table can therefore leave
+                    # this novels trigger pointing at an already removed table,
+                    # preventing ALTER TABLE from validating the schema.
+                    conn.execute("DROP TRIGGER IF EXISTS library_analysis_membership")
                 self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
                 self.conn.execute(create_sql)
                 self.conn.execute(copy_sql)
                 self.conn.execute(f"DROP TABLE {old_name}")
+                if restore_library_triggers:
+                    from .library_analysis import create_library_analysis_source_triggers
+
+                    # Reinstall after copying: migrating unchanged texts must
+                    # not become a stream of newly authorized analysis targets.
+                    create_library_analysis_source_triggers(conn)
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
 
@@ -380,6 +429,20 @@ class SchemaMixin:
         # 负责维护。它给「Pixiv 原站还在不在」提供一个不依赖 status 推断的判定入口。
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN source_url TEXT")
+        if "archive_dir" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
+        # P12：下面两个回填探针以前各全表扫描一次（novels 的 raw_json 在这两列前面，
+        # 要读溢出页；合成 6000 本库每次 init_schema 约 700 ms，CLI 每次调用都付）。
+        # 部分索引只收录还没回填的行，平时是空的，探针变成一次空索引查找；
+        # upsert_novel 总会写这两列，所以索引不会在日常写入时变大。
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_missing_source_url ON novels(novel_id) "
+            "WHERE source_url IS NULL OR source_url = ''"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_missing_archive_dir ON novels(novel_id) "
+            "WHERE archive_dir IS NULL OR archive_dir = ''"
+        )
         missing_url = self.conn.execute(
             "SELECT 1 FROM novels WHERE source_url IS NULL OR source_url = '' LIMIT 1"
         ).fetchone()
@@ -389,8 +452,6 @@ class SchemaMixin:
                 "WHERE source_url IS NULL OR source_url = ''",
                 (PIXIV_NOVEL_URL_PREFIX,),
             )
-        if "archive_dir" not in columns:
-            self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
         self._backfill_novel_archive_dirs()
 
     def _backfill_novel_archive_dirs(self) -> None:
@@ -585,6 +646,8 @@ class SchemaMixin:
 
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_kind_state
                 ON rescue_catalog(content_kind, rescue_state);
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_item_type
+                ON rescue_catalog(item_type, last_checked_at DESC, item_id DESC);
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_checked
                 ON rescue_catalog(last_checked_at DESC, item_id DESC);
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_updated
@@ -715,6 +778,13 @@ class SchemaMixin:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(mute_type, mute_value)
             );
+
+            -- 清理出 recommendation_items 的旧条目只留 ID：「不重复推荐」的去重靠它继续生效
+            CREATE TABLE IF NOT EXISTS recommendation_seen (
+                item_type TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                PRIMARY KEY (item_type, item_id)
+            ) WITHOUT ROWID;
 
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_author_id ON recommendation_feedback(author_id);
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_series_id ON recommendation_feedback(series_id);
@@ -904,6 +974,19 @@ class SchemaMixin:
                 migrate_model_routing_schema(self.conn)
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
+
+        # ai_jobs 的 owner_scope / idempotency_key_hash 由公共迁移确保存在，
+        # 成人迁移保留幂等守卫，main 与 ai-writing 切换时不会丢掉公共查询所需列。
+        # 必须放在 migrate_model_routing_schema 之后：路由迁移在新库上会整表重建
+        # ai_jobs（_create_ai_jobs_table 不含这两列），先加列会被重建抹掉——
+        # 旧顺序正是靠「跑两次 init_schema 才补上」掩盖的。
+        ai_job_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(ai_jobs)").fetchall()
+        }
+        if "owner_scope" not in ai_job_columns:
+            self.conn.execute("ALTER TABLE ai_jobs ADD COLUMN owner_scope TEXT")
+        if "idempotency_key_hash" not in ai_job_columns:
+            self.conn.execute("ALTER TABLE ai_jobs ADD COLUMN idempotency_key_hash TEXT")
 
     def _migrate_pending_deletions_table(self) -> None:
         """创建待确认删除表"""
@@ -1305,3 +1388,13 @@ class SchemaMixin:
 
             """
         )
+        columns = {row[1] for row in self.conn.execute('PRAGMA table_info(reading_progress)')}
+        if 'version' not in columns:
+            self.conn.execute('ALTER TABLE reading_progress ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version>0)')
+        if 'is_reset' not in columns:
+            self.conn.execute('ALTER TABLE reading_progress ADD COLUMN is_reset INTEGER NOT NULL DEFAULT 0 CHECK(is_reset IN (0,1))')
+        self.conn.execute('''CREATE TABLE IF NOT EXISTS reading_progress_mutations (
+            novel_id INTEGER NOT NULL REFERENCES reading_progress(novel_id) ON DELETE CASCADE,
+            mutation_id TEXT NOT NULL, request_hash TEXT NOT NULL CHECK(length(request_hash)=64),
+            applied_version INTEGER NOT NULL CHECK(applied_version>0),
+            PRIMARY KEY(novel_id,mutation_id), UNIQUE(novel_id,applied_version))''')

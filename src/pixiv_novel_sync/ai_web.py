@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import secrets
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -27,6 +28,9 @@ from .ai.service import (
     AIServiceError,
     AIWritingService,
 )
+from .ai.invocation import InvocationValidationError
+from .ai.job_diagnostics import project_main_job_diagnostics
+from .web.request_limits import JSONBodyError, read_bounded_json_object
 from .ai.detection import detect_ai_tells
 from .ai.adult_auth import (
     AdultOwner,
@@ -135,6 +139,9 @@ def _content_disposition(filename: str, disposition: str = "attachment") -> str:
         f"{disposition}; filename=\"{ascii_fallback}\"; "
         f"filename*=UTF-8''{encoded}"
     )
+
+_AI_PREFLIGHT_BODY_LIMIT = 16 * 1024 * 1024
+_AI_PREFLIGHT_MESSAGES_LIMIT = 256
 
 
 def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
@@ -350,7 +357,23 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
 
     def generic_public_job(job: dict[str, Any]) -> dict[str, Any]:
         if job.get("task_type") not in ADULT_AI_TASK_TYPES:
-            return job
+            result = project_main_job_diagnostics(job)
+            from .ai.services.admin import _RESUME_TASK_DISPATCH
+
+            if (job.get("task_type") in _RESUME_TASK_DISPATCH
+                    and job.get("status") in {"succeeded", "failed", "partial", "cancelled"}
+                    and result.get("snapshot_version") == 1):
+                try:
+                    snapshot = service.model_router.candidate_snapshot_from_payload(
+                        job["candidate_snapshot"], job["candidate_snapshot_hash"],
+                    )
+                    service._resume_next_candidate_index(snapshot, job.get("attempts") or [])
+                except (AIConflictError, ModelRouteError):
+                    result["continue_unavailable_reason"] = "候选快照没有可继续的模型"
+                else:
+                    result["can_continue"] = True
+                    result["continue_unavailable_reason"] = None
+            return result
         result = adult_public_job(job)
         result.pop("candidate", None)
         return result
@@ -858,6 +881,18 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.put("/api/dashboard/ai/providers/<int:provider_id>/models/enabled")
+    def update_ai_provider_models_enabled(provider_id: int):
+        try:
+            return ok(
+                service.update_provider_models_enabled(
+                    provider_id,
+                    require_json_object(),
+                )
+            )
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/providers/<int:provider_id>/models")
     def create_ai_provider_model(provider_id: int):
         try:
@@ -965,6 +1000,39 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             return ok(service.preview_agent_candidates(agent_id))
         except Exception as exc:
             return fail(exc)
+
+    @app.post("/api/dashboard/ai/agents/<int:agent_id>/preflight")
+    def preflight_ai_agent(agent_id: int):
+        try:
+            payload = read_bounded_json_object(
+                request,
+                limit_bytes=_AI_PREFLIGHT_BODY_LIMIT,
+            )
+            messages = payload.get("messages")
+            if (
+                not isinstance(messages, list)
+                or not 1 <= len(messages) <= _AI_PREFLIGHT_MESSAGES_LIMIT
+            ):
+                raise JSONBodyError(
+                    "invalid_messages",
+                    "messages 必须包含 1 到 256 条文本消息",
+                )
+            return ok(service.preflight_agent(agent_id, payload))
+        except JSONBodyError as exc:
+            return (
+                jsonify({"ok": False, "error": str(exc), "code": exc.code}),
+                exc.status_code,
+            )
+        except InvocationValidationError as exc:
+            return (
+                jsonify({"ok": False, "error": str(exc), "code": exc.code}),
+                400,
+            )
+        except (AIServiceError, ModelRouteError) as exc:
+            return fail(exc)
+        except Exception:
+            logger.warning("AI preflight failed (%s)", type(sys.exc_info()[1]).__name__)
+            return fail(AIServiceError("输入预检暂时不可用"), 500)
 
     @app.post("/api/dashboard/ai/agents")
     def create_ai_agent():

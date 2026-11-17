@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from pixiv_novel_sync.jobs.manager import JobManager
-from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus
+from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
 
 
 def test_submit_creates_queued_job():
@@ -199,3 +201,64 @@ def test_stale_finalization_abort_cannot_clear_new_claim():
     assert manager.request_cancel(state.job_id) is False
     assert second.abort() is True
     assert manager.request_cancel(state.job_id) is True
+
+
+def test_work_waiters_use_the_same_bounded_manager_collection():
+    manager = JobManager()
+    work = manager.submit(JobSpec(JobSource.WEB, ["work_analysis"], JobType.WORK_ANALYSIS, {"run_id": "a" * 32}))
+    assert manager.mark_running(work.job_id)
+    queued = [manager.submit_work_waiting(JobSpec(JobSource.WEB, ["bookmark"]), 1) for index in range(8)]
+    assert len(manager._jobs) == 9
+    assert manager.shared_admission_snapshot()[0] == [work]
+    assert manager.shared_admission_snapshot()[1] == queued
+    with pytest.raises(RuntimeError, match="shared_pending_full"):
+        manager.submit_work_waiting(JobSpec(JobSource.WEB, ["bookmark"]), 1)
+    assert manager.reserve_shared_start(queued[0].job_id) is False
+    assert all(item.shared_waiting and item.started_at is None for item in queued)
+
+
+def test_work_waiting_does_not_change_non_work_busy_behavior():
+    manager = JobManager()
+    sync = manager.submit(JobSpec(JobSource.WEB, ["bookmark"]))
+    manager.mark_running(sync.job_id)
+    with pytest.raises(RuntimeError, match="shared_busy"):
+        manager.submit_work_waiting(JobSpec(JobSource.WEB, ["subscribed_series"]), 2)
+    assert len(manager._jobs) == 1
+
+
+def test_reserved_slot_is_consumed_once_by_its_named_runner():
+    manager = JobManager()
+    work = manager.submit_work_waiting(
+        JobSpec(JobSource.WEB, ["work_analysis"], JobType.WORK_ANALYSIS, {"run_id": "a" * 32}), 4,
+    )
+    assert manager.reserve_shared_start(work.job_id)
+    assert manager.acquire_run_slot() is False
+    assert manager.acquire_run_slot("different-job") is False
+    assert manager.acquire_run_slot(work.job_id)
+    assert manager.acquire_run_slot(work.job_id) is False
+    manager.release_run_slot()
+    assert manager.acquire_run_slot()
+    manager.release_run_slot()
+
+
+def test_slot_release_callback_runs_without_the_manager_lock():
+    import threading
+
+    manager = JobManager()
+    observed = []
+    join_completed = []
+
+    def callback():
+        def reader():
+            with manager._lock:
+                observed.append("unlocked")
+        reader_thread = threading.Thread(target=reader)
+        reader_thread.start()
+        reader_thread.join(timeout=2)
+        join_completed.append(not reader_thread.is_alive())
+
+    manager.set_slot_released_callback(callback)
+    assert manager.acquire_run_slot()
+    manager.release_run_slot()
+    assert join_completed == [True]
+    assert observed == ["unlocked"]

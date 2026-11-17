@@ -651,7 +651,8 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
     assert sync_service.calls == [
         {
             "novel_id": 2021,
-            "restrict": "public",
+            # 全量备份不知道作品属于哪个收藏列表，传 None 沿用已归档的 restrict（S10）
+            "restrict": None,
             "download_assets": True,
             "write_markdown": True,
             "write_raw_text": False,
@@ -660,7 +661,7 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         },
         {
             "novel_id": 2022,
-            "restrict": "public",
+            "restrict": None,
             "download_assets": True,
             "write_markdown": True,
             "write_raw_text": False,
@@ -673,6 +674,9 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         "user_id": 202,
         "novels": 2,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 4,
         "stopped": False,
         "rescue_catalog_items": 7,
@@ -812,6 +816,42 @@ def test_run_pending_deletion_detection_task_preserves_existing_stopped_flag(set
 
 
 
+def test_pending_detection_lifts_nested_abort_markers_to_the_top_level(settings, service_env, monkeypatch):
+    """回归（审查 2026-10-28 S4）：收藏翻页失败、追更清单拉不到时，中止标记嵌在
+    bookmark / series 子字典里，任务日志的 partial 判定只看顶层，这一轮记成绿色。"""
+    from pixiv_novel_sync.webapp import _task_log_status_for_stats
+
+    original_factory = services.BookmarkNovelSyncService
+
+    def make_sync_service(api, db, storage, settings):
+        sync_service = original_factory(api, db, storage, settings)
+        sync_service.detection_result = {
+            "bookmark": {"new_pending": 0, "truncated": True, "incomplete": True, "aborted_reason": "fetch_failed"},
+            "series": {"new_pending": 0, "skipped_no_remote": 1, "aborted_reason": "watchlist_unavailable"},
+            "new_pending": 0,
+        }
+        return sync_service
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+
+    result = services.run_pending_deletion_detection_task(settings)
+
+    assert result["aborted_reason"] == "fetch_failed"
+    assert result["truncated"] is True
+    assert result["incomplete"] is True
+    assert _task_log_status_for_stats(result) == "partial"
+
+
+def test_pending_detection_without_sub_aborts_stays_green(settings, service_env):
+    from pixiv_novel_sync.webapp import _task_log_status_for_stats
+
+    result = services.run_pending_deletion_detection_task(settings)
+
+    assert "aborted_reason" not in result
+    assert "incomplete" not in result
+    assert _task_log_status_for_stats(result) == "succeeded"
+
+
 def test_run_pending_deletion_detection_task_returns_stopped_when_cancelled_during_detection(
     settings, service_env
 ):
@@ -927,6 +967,11 @@ def test_run_user_backup_task_raises_on_failed_sync_counter_and_closes_db(settin
         return sync_service
 
     monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+    # 失败比例要处理满 USER_BACKUP_FAILURE_MIN_SAMPLE 本才判，所以给够 10 本、全部失败
+    auth = FakeAuthManager(settings.pixiv)
+    auth.api.user_novels_pages = {1: [SimpleNamespace(id=1010 + i) for i in range(10)]}
+    service_env["auth"] = auth
+    monkeypatch.setattr(services, "PixivAuthManager", lambda pixiv_settings: auth)
 
     with pytest.raises(RuntimeError, match="backup aborted.*threshold exceeded"):
         services.run_user_backup_task(settings, user_id=101)
@@ -996,6 +1041,9 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
         "user_id": 101,
         "novels": 2,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 4,
         "stopped": True,
     }
@@ -1015,6 +1063,9 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
         "user_id": 101,
         "novels": 1,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 2,
         "stopped": True,
     }

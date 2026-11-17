@@ -1,7 +1,6 @@
 # Job System 开发者文档
 
-> **2026-09-30 行为更新**：定时备份传播 `truncated/incomplete/aborted_reason`，用户失败显示部分完成，取消不计失败用户。归档暂存在搬移前登记；恢复失败或目标冲突保留双方副本，带 `.recovery-required` 标记的目录不会被启动清扫删除。人工恢复应根据错误日志核对原路径与暂存路径，不要直接清空 `.trash`。这不是完整manifest/自动重放系统。验证见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
-
+> **行为更新（2026-10-08，main）**：定时用户备份传播 `truncated/incomplete/aborted_reason`，用户失败显示部分完成，取消不计失败用户。归档暂存在搬移前登记；恢复目标冲突或回滚失败时保留已有副本，带 `.recovery-required` 标记的目录不会被启动清扫删除。人工恢复应根据错误日志核对原路径与暂存路径，不要直接清空 `.trash`。这是现有事务/回滚的缺陷修复，不是完整 manifest 或启动自动重放系统。最新验证见 [项目现状](STATUS.md)。
 
 > 本文描述同步/后台任务(非 AI 生成)的统一 Job 管线。以源码为准:
 > `src/pixiv_novel_sync/jobs/{models,manager,runner,tasks}.py`、
@@ -28,7 +27,7 @@ task_stats dict → merge_stats() 累加进 JobState.stats
 关键类型(`jobs/models.py`,均为 `slots=True` dataclass 或 `str` Enum):
 
 - `JobSource`:`WEB` / `CLI` / `SCHEDULER` / `SYSTEMD` — 触发来源标记。
-- `JobType`:`SYNC` / `SYNC_CHECK` / `STATUS_CHECK` / `PENDING_DELETION_DETECTION` / `USER_BACKUP` / `PREFERENCE_ANALYZE` / `RECOMMENDATION_RUN`。
+- `JobType`:`SYNC` / `STATUS_CHECK` / `PENDING_DELETION_DETECTION` / `USER_BACKUP` / `PREFERENCE_ANALYZE` / `RECOMMENDATION_RUN` / `WORK_ANALYSIS` / `PREFERENCE_SUMMARIZE`。
 - `JobSpec`:一次提交的静态描述;`task_types` 是**普通字符串列表**(如 `"bookmark"`、`"user_backup:12345"`),不是枚举。
 - `JobState`:运行时状态,内含 `logs`(`JobLogEntry` 列表,上限 `max_logs=500`)、`progress`、`stats`。
 
@@ -45,7 +44,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - 终态集合 `_TERMINAL_STATUSES = {SUCCEEDED, FAILED, CANCELLED}`;终态后 `request_cancel` 返回 False。
 - `mark_running` 在状态已是 `CANCEL_REQUESTED` 时返回 False,runner 据此直接 `mark_cancelled`(取消先于启动的窗口)。
 - **Finalization 协议**:任务收尾通过 `try_begin_finalization(job_id)` 领取一次性 claim(token 校验,防重入),`claim.finish(task_stats, is_last_task=...)` 在锁内合并 stats 并在最后一个任务时置为 `SUCCEEDED`。一旦某个 job 进入 finalization,`request_cancel` 也会拒绝——保证"要么完整收尾,要么取消",不会两者交错。
-- `JobRunner.run` 的每轮循环:先查 `is_cancel_requested` → 执行 executor → 若任务内部没主动 claim 则由 runner 补 claim → claim 失败(说明已被取消)则合并已得 stats 并 `mark_cancelled`。`InterruptedError` 映射为 CANCELLED,其他异常映射为 FAILED(错误写入 job log)。
+- `JobRunner.run` 的每轮循环:先查 `is_cancel_requested` → 执行 executor → 若任务内部没主动 claim 则由 runner 补 claim → claim 失败则合并已得 stats,已请求取消时 `mark_cancelled`,否则 `mark_failed("finalization claim lost")`。`InterruptedError` 映射为 CANCELLED,其他异常映射为 FAILED(错误写入 job log)。
 
 ### 1.3 并发约束(JobManager)
 
@@ -66,16 +65,20 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - app 级共享一个 `shared_job_manager`(`app.config["job_manager"]`)与 `shared_job_runner`(executor 为 `run_web_task`,每次执行前用 `SettingsManager` 重新加载 settings)。
 - 提交入口 `_submit_shared_job`(暴露为 `app.config["submit_shared_web_job"]`):
   1. **单活跃任务约束**:先调 `_has_any_running_web_job()`(实现为 `_has_active_shared_jobs`,检查共享管理器中是否存在 `QUEUED/RUNNING/CANCEL_REQUESTED` 的 job),有则抛 `RuntimeError("已有同步任务正在运行…")`。注意这是提交时的软约束,配合 JobManager 信号量做双保险。
-  2. 写入 **task_logs 镜像**:`db.create_task_log(task_type, task_name, job_id, is_auto_sync)`,并把返回的 `log_id` 存进 `job.progress["log_id"]`。
+  2. 写入 **task_logs 镜像**:先在锁外 `db.create_task_log(task_type, task_name, is_auto_sync=...)`(此时还没有 job_id),再次检查单活跃约束后 `submit`,把返回的 `log_id` 存进 `job.progress["log_id"]`,并把 `job_id` 回填到该行(回填失败会把已入队的 job 标成 failed)。
   3. `run_async=True` 时起 **daemon 线程**执行 `_run_shared_web_job(job_id)`。
 - `_run_shared_web_job`:调用 `shared_job_runner.run(job_id)`,结束后按最终 `JobStatus` 把 stats/logs/error 回写到 `task_logs` 表(`db.update_task_log`)——这就是「任务日志」页的数据来源。内存 JobState 是实时视图,task_logs 是持久化镜像。
 
 ### 2.3 Scheduler(`web/managers.py:AutoSyncScheduler`)
 
+2026-11-12 的 `WORK_ANALYSIS` 与 `PREFERENCE_SUMMARIZE` 是 Web 业务任务，由持久业务意图进入同一个共享槽，优先级为4；同步仍优先。全库自动发现只读取有界元数据并准备原作品父任务，不增加生成队列或 CLI 执行器。画像通用 JobSpec 只携带 run_id，结果日志只含计数/ID；个人画像保存在独立业务表。
+
+自动作品策略与普通同步总开关独立：策略开启时关闭自动同步仍保留原调度线程，循环不提交普通同步任务。进程重启暂停作品/批次、停止遗留画像并保留预算，不自动重发付费调用。等待画像取消后通过窄完成回调立即同步业务终态，即使没有下一次调度 tick 也不会残留 queued。
+
 - `create_app` 里按 `_scheduler_registry_key(db_path)` 的模块级注册表 + Werkzeug reloader 检测(`WERKZEUG_RUN_MAIN`)保证只启动一份。
 - 调度器持有回调:`submit_task=_submit_scheduler_task`(内部走 `_submit_shared_job(..., is_auto_sync=True, run_async=False)`)、`run_task=_run_shared_web_job`、`cancel_task=shared_job_manager.request_cancel`——即定时任务与手动 web 任务**共用同一个 JobManager**,天然互斥。
 - 主循环(`_run_scheduler_loop`,空闲时每 30s 醒一次):每轮重新 `load_settings`;`auto_sync_enabled=False` 则空转;为新任务补 `_task_next_run`,然后 `_collect_due_tasks` 收集所有到点任务、按 `(priority, 逾期最久)` 排序、**只提交第一个**(详见 3.6)。可让位的长任务跑在独立线程上,主线程同时轮询是否有更高优先级任务到点。
-- 附带职责:每小时按 `sync.task_log_retention_days`（默认14天）清理 `task_logs`、AI jobs 和模型同步 operation。调度器显式传入配置天数；直接调用清理函数而不传参数时，函数默认仍是3天。首轮尝试初始化救援目录。
+- 附带职责:每小时按 `sync.task_log_retention_days`（默认 14 天）清理 `task_logs`、AI jobs 和模型同步 operation。调度器显式传入配置天数；直接调用清理函数而不传参数时，函数默认仍是 3 天。首轮尝试初始化救援目录。
 - `stop()` 会取消当前定时任务并停线程;lifecycle claim/release 回调防止多 owner 竞争。
 
 ## 3. 协作式取消协议
@@ -95,7 +98,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 `JobStatus` 只有 `SUCCEEDED/FAILED/CANCELLED` 三个终态,但**持久化到 `task_logs` 的状态多一个 `partial`**。两者不是一一对应:
 
-- `webapp.py:_task_log_status_for_stats(stats)` 在 job 成功收尾时判定写入 `task_logs` 的状态。stats 里带 `aborted_reason`(熔断中止)或 `incomplete`(订阅系列中止、关注作者只覆盖部分、分页触顶)的,一律记 `partial`,前端「任务日志」页显示黄色「部分完成」并展示中止原因。
+- `webapp.py:_task_log_status_for_stats(stats)` 在 job 成功收尾时判定写入 `task_logs` 的状态。stats 里带 `aborted_reason`(熔断中止)或 `truncated`(分页触顶)的,一律记 `partial`;单独出现的 `incomplete`(如订阅系列中止)也记 `partial`,唯一例外是同时带 `rotation_pending`(关注作者按轮转只覆盖部分、撞到单作者配额——跑不完是设计如此),这种轮次记 `succeeded`。前端「任务日志」页把 `partial` 显示为黄色「部分完成」并展示中止原因。
 - **`remaining` / `users_remaining` 不作为判定依据**——分批轮转任务每轮本来就有剩余,否则每轮都会变成 partial。
 
 这个设计来自一次生产事故:状态检查被限流熔断,只检查了 30/800 篇就中止,任务日志却仍是绿色「成功」,看不出这轮几乎什么都没查。
@@ -136,13 +139,15 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 ### 分批轮转与分页上限
 
-- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。
+- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。已确认 `deleted`、最近 `KNOWN_DELETED_RECHECK_DAYS = 7` 天内复查过的作品取批时就排除(名额让给后面的作品,stats 记 `deleted_recheck_deferred`),超过 7 天照常复查;待删检测的收藏候选同样跳过这些作品、不再逐本 `novel_detail`(stats 记 `skipped_known_deleted`)。`confirmed_missing` 与「已知删除不清零 missing 连击」不变。
 - `FOLLOWING_LIST_MAX_PAGES = 50`(`sync_engine.py`):关注列表枚举与作品分页上限解耦,避免 `max_pages_per_run` 把候选集截断。
 - `sync.bookmark_max_pages_per_run`:**收藏列表专用**翻页上限,留空则回落到 `max_pages_per_run`。`max_pages_per_run` 的语义是"关注作者作品列表 / 系列章节的单轮翻页上限",生产配成 2 是为了压体量;收藏复用同一个值会让每轮只看最新约 60 条就标 `truncated/incomplete`,历史收藏永远补不齐——而收藏是优先级最高的数据。解析在 `sync_engine._resolve_bookmark_max_pages`。
+- `sync.max_items_per_run` 在收藏同步里只计**真正发了详情请求、能归档**的条目:已归档跳过的不计,`content_unavailable`(作品已删或不可见,永远归档不了)也不计,但照常按 `delay_seconds_between_items` 间隔。预算只在碰到下一本**未归档**的收藏时才判定触顶,此时置 `truncated` / `incomplete` / `budget_exhausted`(日志黄色);剩下的全是已归档时不算截断。以前失效收藏占预算,攒够上限后排在后面的未归档收藏永远轮不到,而且触顶静默、日志一直绿色(审查 S8)。
+- `user_backup`(`jobs/services.py:run_user_backup_task`)平时只补没归档完整的作品(`_archive_complete_on_disk` 为真的不发请求,只登记来源),每位作者每 `USER_BACKUP_FULL_REFRESH_DAYS = 7` 天全部重抓一次;全部重抓是唯一会重抓已归档正文的路径(作者改正文、错误页覆写成占位数据的修复途径)。上次全部重抓时间按作者记在水位 `user_backup_full_refresh.full_refresh_at`,只有该作者那一轮完整跑完(没停、没失败、没触顶)才更新。发了请求的作品之间按 `delay_seconds_between_items` 可取消地间隔。stats 带 `full_refresh` / `skipped_archived`,定时轮转汇总带 `full_refresh_users` / `skipped_archived`。注意:作者在轮转里两次被轮到的间隔若本来就超过 7 天,每次都是全部重抓,省不下请求。
 - `sync.following_max_novels_per_author`:**单个关注作者**每轮的同步上限,留空 = 不限。`max_items_per_run` 只在切换作者**之前**检查,单个作者内部没有任何上限,于是第一个高产作者就把整轮预算吃光——生产实测 256 个关注作者每轮只覆盖 1 个,轮完一圈要 95 天。撞到配额是跳到下一个作者,不是结束整轮。解析在 `sync_engine._resolve_following_author_quota`;整轮硬顶(`_resolve_following_run_cap`,取 配额×users_limit×1.5)只兜异常。
 - `sync.series_max_pages_per_run`:**系列章节专用**翻页上限,留空则回落到 `max_pages_per_run`。系列章节数远超单个作者的单轮作品体量,共用那个上限会把长系列永久截断,而且每轮都从 watchlist 头部重来、永远在同一页触顶:生产实测每轮 `truncated_series=2`,8 个订阅系列长期缺 76 章,高频重跑也补不齐。解析在 `sync_engine._resolve_series_max_pages`。
-- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。
-- 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。
+- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。`user_last_synced` 只在作者扫描**自然结束**时写(含配额、翻页上限、连续已存在早停);作品列表拉取失败记进同一水位的 `user_fail_streak`,连续 `FOLLOWING_AUTHOR_MAX_FAIL_STREAK = 3` 次照常写入(防止坏作者霸占队首),成功一次清零;被让位或取消的作者不写也不计数。以前扫描一开始就写,出错或被打断的作者也推后整圈。
+- 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。cron 任务同样补偿:`settings.cron_to_prev_run` 求最近一个已过去的槽,上次跑完(`succeeded` / `partial`)早于它就补跑一次(只补一次,不追补每个错过的槽),否则照常等下一个槽;没有历史(首次部署)不补。以前 cron 任务完全不恢复,被重启或 `./update.sh` 打断的那一轮直接丢掉,要等下一个槽。
 
 ## 3.6 任务优先级与让位(`web/managers.py`)
 
@@ -173,6 +178,8 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 让位标记是一次性的(`_consume_preemption_flag`),且只在 `submitted=True` 时消费——否则"反复提交失败"会悄悄把连续让位计数清零绕过护栏。任务完整跑完一轮时同一个方法负责清零计数。
 
+**两道护栏的关系(审查 2026-10-28)**:让位后的续跑排在 600 s 后(`SCHEDULER_PREEMPT_RETRY_SECONDS`),必然落在 6 小时冷却期(`SCHEDULER_PREEMPT_COOLDOWN_SECONDS`)之内,所以续跑那一轮 `_may_preempt` 一定返回 False、一定能跑完,跑完即把连续让位计数清零。日常起作用的是冷却期;`SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS = 2` 只在续跑开始时冷却期已经过去才可能被用到:续跑那一轮本身跑了接近 6 小时以上,或者槽一直被占、续跑拖到 6 小时后才开始。两者都保留,行为不变;改这三个常量时要一起看,`tests/test_preemption_guardrails.py` 钉住了「续跑落在冷却期内」这个前提。
+
 ## 4. 新增 task_type 的步骤
 
 以字符串 `"my_task"` 为例:
@@ -189,6 +196,8 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 6. **测试**:参照 `tests/test_jobs_runner.py` 等,依赖 conftest 的 tmp 路径 fixture;验证正常完成、取消(`stop_requested` 生效)、stats 合并。
 
 ## 5. auto_sync 配置矩阵(interval-hours vs cron)
+
+2026-10-08：当前 main 已移除 `_simple_cron_next_run` 简化 cron 解析器；缺少 croniter 或解析异常时 `cron_to_next_run` 返回 None。调度器原有的 interval 回落仍保留，不能把“移除简单解析器”理解为取消 interval 调度。
 
 规则(见 `web/managers.py:_run_scheduler_loop` 与 `settings.py:cron_to_next_run`):
 
@@ -207,7 +216,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | user_status | 3 | ✓ | True | 6 | "" | 已知受限用户按 `users.restricted_streak` 降频(≥3 轮判不出状态 → 每 7 天才巡检一次) |
 | novel_status | 3 | ✓ | True | 6 | "" | 批大小是代码常量 `NOVEL_STATUS_BATCH_SIZE`（800），不是设置页字段 |
 | series_status | 3 | ✓ | True | 6 | "" | |
-| user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit` |
+| user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit`;`user_backup_max_pages_per_run`(留空跟随 `max_pages_per_run`,再缺省 200;只能写 YAML,设置页没有该字段) |
 | pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | 3 | ✗ | True | 12 | "" | |
 | preference_analyze | 3 | ✓ | False | 12 | `"15 7,19 * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
 | recommendation_run | 3 | ✗ | False | 24 | `"50 8 * * *"` | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |

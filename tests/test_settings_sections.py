@@ -462,3 +462,18 @@ def test_budget_tolerates_empty_history(tmp_path):
     assert entry["last_duration_seconds"] is None
     assert entry["estimated_daily_seconds"] is None
 
+
+
+def test_sync_settings_dirty_banner_watch_runs_synchronously() -> None:
+    """回归（审查 2026-10-28 F2）：「有未保存的修改」一打开页面就出现、保存成功后也消不掉。
+
+    deep watch 默认 flush:'pre'，回调推迟到下一个 tick 才跑，那时 loadSettings / 保存成功
+    已经把 settingsReady 置回 true（或把 dirty 置回 false），于是被判成有改动。
+    """
+    from pathlib import Path
+
+    html = (
+        Path(__file__).parents[1] / "src" / "pixiv_novel_sync" / "templates" / "dashboard_settings_sync.html"
+    ).read_text(encoding="utf-8")
+    watch_line = next(line for line in html.splitlines() if "dirty.value = true" in line and "watch(settings" in line)
+    assert "flush: 'sync'" in watch_line

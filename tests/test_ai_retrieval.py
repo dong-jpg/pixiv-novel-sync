@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import sqlite3
 
 import pytest
 
@@ -184,3 +185,51 @@ def test_create_retriever_falls_back_to_tfidf_when_api_retriever_unavailable(tmp
     )
 
     assert isinstance(retriever, TFIDFRetriever)
+
+
+@pytest.mark.parametrize("kind", ["tfidf", "api"])
+def test_failed_reindex_preserves_previous_chapter_and_releases_transaction(tmp_path, monkeypatch, kind):
+    if kind == "tfidf":
+        retriever = TFIDFRetriever(tmp_path / "main.db")
+        table = "retrieval_entries"
+    else:
+        retriever = APIEmbeddingRetriever(tmp_path / "main.db", "https://api.example.test/v1", "test-key")
+        monkeypatch.setattr(retriever.client, "embed", lambda texts: [[1.0, 0.0] for _ in texts])
+        table = "retrieval_api_vectors"
+    try:
+        retriever.index_chapter(1, 1, "original chapter")
+        retriever.conn.execute(f"""CREATE TRIGGER reject_new BEFORE INSERT ON {table}
+            WHEN NEW.content='replacement' BEGIN SELECT RAISE(ABORT, 'index rejected'); END""")
+        with pytest.raises(sqlite3.IntegrityError, match="index rejected"):
+            retriever.index_chapter(1, 1, "replacement")
+        assert retriever.conn.in_transaction is False
+        # An unrelated later commit must not persist the failed attempt's DELETE.
+        retriever.index_chapter(1, 2, "other chapter")
+        assert retriever.conn.execute(f"SELECT content FROM {table} WHERE chapter_number=1").fetchall() == [
+            ("original chapter",)
+        ]
+    finally:
+        retriever.close()
+
+
+@pytest.mark.parametrize("data", [
+    [{"index": 0, "embedding": [1.0]}, {"index": 0, "embedding": [2.0]}],
+    [{"index": 0, "embedding": [1.0]}, {"index": 2, "embedding": [2.0]}],
+    [{"embedding": [1.0]}, {"index": 1, "embedding": [2.0]}],
+    [{"index": False, "embedding": [1.0]}, {"index": 1, "embedding": [2.0]}],
+    [{"index": 0, "embedding": []}, {"index": 1, "embedding": []}],
+    [{"index": 0, "embedding": [float("nan")]}, {"index": 1, "embedding": [2.0]}],
+    [{"index": 0, "embedding": [1.0]}, {"index": 1, "embedding": [2.0, 3.0]}],
+])
+def test_embedding_response_must_preserve_input_alignment(monkeypatch, data):
+    monkeypatch.setattr(retrieval.http_requests, "post", lambda *args, **kwargs: FakeEmbeddingResponse({"data": data}))
+    client = retrieval.OpenAICompatibleEmbeddingClient("https://api.example.test/v1", "test-key", "embedding")
+    with pytest.raises(RuntimeError, match="Embedding API"):
+        client.embed(["first", "second"])
+
+
+def test_embedding_response_reorders_valid_indices(monkeypatch):
+    data = [{"index": 1, "embedding": [2.0]}, {"index": 0, "embedding": [1.0]}]
+    monkeypatch.setattr(retrieval.http_requests, "post", lambda *args, **kwargs: FakeEmbeddingResponse({"data": data}))
+    client = retrieval.OpenAICompatibleEmbeddingClient("https://api.example.test/v1", "test-key", "embedding")
+    assert client.embed(["first", "second"]) == [[1.0], [2.0]]

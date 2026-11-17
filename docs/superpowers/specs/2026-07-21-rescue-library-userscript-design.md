@@ -30,7 +30,7 @@
 
 模型池作为后续独立规格处理，避免其数据库迁移和故障切换逻辑干扰本功能。后续设计已经拆分为
 [AI 模型目录与模型池设计](2026-07-23-ai-model-catalog-pools-design.md) 和
-[成人描写局部润色 Agent 设计](2026-07-23-adult-polish-agent-design.md)，当前仍未进入实现。
+成人描写局部润色 Agent 设计（ai-writing 分支原路径 `docs/superpowers/specs/2026-07-23-adult-polish-agent-design.md`；main 不收录），当前仍未进入实现。
 
 ## 现有系统约束
 

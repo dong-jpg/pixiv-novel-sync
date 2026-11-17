@@ -48,6 +48,8 @@ Required tokens for tests and future maintainers:
 - `library-sidebar`: fixed desktop sidebar, 260px wide。
 - `library-main`: content region, `margin-left: 260px` on desktop。
 - `mobile-bottom-bar`: mobile navigation, shown under 1024px。
+- 手机最多五项：首页、书库、作者与系列、任务、更多。更多使用共享弹窗；阅读页以 `pns-reader-page` 替换为专用工具条，不能叠放两条底栏。
+- 页面底部留白随实际底栏高度和 `env(safe-area-inset-bottom)` 调整；不能靠隐藏整页横滚掩盖不可达控件。
 
 ### Page
 
@@ -96,10 +98,14 @@ Guideline:
 - Primary sync/save/generate actions use `library-btn library-btn-primary`。
 - Secondary filter/refresh/export actions use `library-btn`。
 - Destructive actions should still use red Tailwind classes or future `library-btn-danger`。
+- Tailwind 是提交进仓库的静态 CSS（`static/css/tailwind.css`），不再运行时生成：模板里新增或改动 Tailwind 类后，运行 `python scripts/build_tailwind_css.py` 重生成并一起提交（`tests/test_tailwind_static_css.py` 会拦下遗漏）。
+- 手机主要按钮、分页与弹窗操作触控范围至少44px；登录主控件至少48px。图标可小，命中区域不能随图标缩小。
 
 ### Forms
 
 Use `library-input` for text/select/textarea when migrating markup.
+
+手机输入文字至少16px；flex/grid 子项使用 `min-width: 0` 与限宽，长 Provider/Agent/模型选项不得撑宽整页。编辑操作应滚动定位并聚焦表单，错误靠近操作且不定时消失。
 
 Focus state:
 
@@ -143,6 +149,10 @@ Global component class includes `library-modal`.
 
 Used for log detail, confirmations, and settings dialogs.
 
+`app-modal` 默认允许遮罩关闭，可用 `:close-on-backdrop="false"` 保护一次性内容。窗口可滚动且 footer 可换行；Tab 留在顶层窗口、Escape 只关闭顶层、关闭后恢复触发点焦点。不要绕开共用背景滚动锁或另写互相冲突的弹窗锁。Token 复制结果必须在弹窗内展示，明确关闭后清空明文。
+
+弹窗内发起的操作必须在当前弹窗内回显结果，不能只调用位于遮罩下的全局 toast。错误持续到用户处理/重试，使用可访问的 alert；很长的结果文本应有可滚动、可聚焦的有限高度区域。
+
 ### Terminal/log blocks
 
 Use `library-terminal` for streaming logs or AI job output.
@@ -160,12 +170,12 @@ Recommended log color mapping:
 
 Visual hierarchy:
 
-1. Running job hero。
-2. Stats cards。
-3. Recent activity。
-4. Auto-sync schedule。
+1. Stats card：标题 + 四项核心统计，底部是运行状态条（定时同步开关、当前任务与进度、「停止当前」）。
+2. 最近推书结果（单列卡片 + 分页）。
 
-Primary action: `开始同步`。
+「最近活动」时间线与「定时任务」列表已移除：任务历史归任务日志页，逐项调度归设置页调度表。手动同步入口在 `/dashboard/settings/sync`，首页没有 `开始同步` 按钮。
+
+Primary action: 运行状态条里的「启用/停用定时同步」。
 
 ### Novels
 
@@ -198,20 +208,17 @@ Use a table or split table/detail layout.
 
 ### Settings
 
-Use two-column layout on desktop:
-
-- left tab navigation。
-- right setting panels。
+设置是四个独立路由（sync / models / agents / system），页顶共用横向导航条 `dashboard_settings_nav.html`（`library-card` 内一排可换行的链接），不再是左侧 tab + 右侧面板的单页双栏。
 
 Each setting group should be a card/panel with explicit save action.
 
 ### Preferences
 
-Use profile list + selected profile detail + recommendation queue.
+推荐结果在前（与首页相同的单列卡片、过滤与分页），画像、增量分析与搜索计划折叠在其后的 `<details>`「画像与搜索设置」里；页面围绕默认画像，不做多画像列表。
 
 ### AI
 
-AI page has the highest interaction risk. Apply Library OS gradually:
+AI 创作页（仅在 `ai-writing` 分支）交互风险最高；main 只有模型 / Agent 两个设置页，同样适用下面的「Do not change」。Apply Library OS gradually:
 
 - outer shell and tabs first。
 - cards/panels second。
@@ -228,8 +235,10 @@ Do not change:
 
 - Desktop: fixed sidebar + content margin。
 - Tablet/mobile: hide sidebar, show bottom nav。
-- Cards collapse to single column under 900-1024px。
+- 推荐结果使用单列阅读卡片；管理表单在手机堆叠。封面书库可保留紧凑双列，不将其与推荐文字卡片混为一种布局。
 - Page padding reduces to 16-22px on mobile。
+- 验收至少覆盖360/390/430px、短横屏与桌面；以实际 DOM 尺寸和交互检查整页溢出，不将 Node/CSS 断言冒充浏览器或真机验收。
+- 宽表仅在局部容器横滚；推荐标题、理由和按钮先换行或分区，不能让固定宽度的附属列挤走正文。
 
 ## Accessibility notes
 

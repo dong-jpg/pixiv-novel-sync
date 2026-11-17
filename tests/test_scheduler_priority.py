@@ -455,3 +455,24 @@ def test_scheduler_tasks_map_to_their_own_job_type() -> None:
 
     for name, job_type in expected.items():
         assert _scheduler_job_spec(name).job_type == job_type, name
+
+
+def test_work_analysis_priority_is_four_but_it_is_never_an_automatic_schedule():
+    assert scheduler_task_priority("work_analysis") == 4
+    assert scheduler_task_is_preemptible("work_analysis") is True
+    assert all(config["name"] != "work_analysis" for config in SCHEDULER_TASK_CONFIGS)
+    scheduler = AutoSyncScheduler(None, None)
+    scheduler._task_preempt_streak["work_analysis"] = 100
+    scheduler._task_preempted_at["work_analysis"] = time.time()
+    assert scheduler._may_preempt("work_analysis", time.time()) is True
+
+
+def test_work_yield_uses_durable_control_adapter_not_generic_memory_cancel():
+    calls = []
+    scheduler = AutoSyncScheduler(None, None,
+        cancel_task=lambda job_id: calls.append(("wrong-generic", job_id)) or True)
+    scheduler.work_coordinator = SimpleNamespace(
+        cancel_shared_job=lambda job_id, action: calls.append((action, job_id)) or True,
+    )
+    assert scheduler._request_yield("work-job", "work_analysis", 1)
+    assert calls == [("sync_yield", "work-job")]

@@ -41,6 +41,8 @@ class QueuedProvider(AIProvider):
         *,
         request_guard=None,
         is_cancelled=None,
+        on_usage=None,
+        deadline=None,
     ) -> Iterator[AIStreamChunk]:
         del messages, temperature, top_p, max_tokens
         if is_cancelled is not None and is_cancelled():
@@ -301,7 +303,7 @@ def test_later_batch_failure_is_partial_without_fallback(
             AIStreamChunk(type="delta", text="半截"),
             AIProviderError(
                 "第二批中断",
-                category="transport_error",
+                category="network",
                 scope="model",
             ),
         ],

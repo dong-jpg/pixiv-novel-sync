@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}小说详情 - Pixiv 小说同步器{% endblock %}
+{% block body_class %}pns-reader-page{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -8,7 +9,7 @@
   body { background: #fff !important; }
   .app-sidebar { display: none !important; }
   .app-main { margin-left: 0 !important; }
-  .mobile-bottom-bar { display: none !important; }
+  .library-reader-page { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
 
   /* ========== Reading Progress Bar ========== */
   .reading-progress-bar {
@@ -62,6 +63,7 @@
     transition: color 0.15s;
     white-space: nowrap;
     flex-shrink: 0;
+    min-height: 44px;
   }
   .nav-back:hover { color: #0096fa; }
   .nav-back svg { width: 16px; height: 16px; }
@@ -70,28 +72,43 @@
     color: #999;
     font-variant-numeric: tabular-nums;
   }
-  .nav-font-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    border: 1px solid #e5e5e5;
-    background: #fff;
-    color: #666;
+  .reader-sync-summary { margin-left: 8px; font-size: 11px; color: #64748b; }
+  .reader-sync-notice {
+    position: fixed;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    z-index: 45;
+    width: auto;
+    max-width: 660px;
+    max-height: 35vh;
+    overflow-y: auto;
+    margin: 0 auto;
+    padding: 12px 14px;
+    border: 1px solid #e2c783;
+    border-radius: 12px;
+    background: #fffaf0;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+    color: #713f12;
     font-size: 13px;
-    font-weight: 600;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .reader-sync-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .reader-sync-options button {
+    flex: 1 1 140px;
+    min-height: 44px;
+    border: 1px solid #d5dce6;
+    border-radius: 8px;
+    background: #fff;
+    color: #1e40af;
+    padding: 8px 10px;
+    font-size: 13px;
     cursor: pointer;
-    transition: all 0.15s;
-    flex-shrink: 0;
-    user-select: none;
   }
-  .nav-font-btn:hover {
-    border-color: #0096fa;
-    color: #0096fa;
-    background: #f0f8ff;
-  }
+  .reader-sync-options button:focus-visible { outline: 2px solid #0096fa; outline-offset: 2px; }
+  .reader-sync-options button:disabled { opacity: 0.5; cursor: default; }
+  .reader-sync-dialog { width: 100%; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 
   /* ========== Novel Header ========== */
   .novel-header {
@@ -99,6 +116,7 @@
     margin: 0 auto;
     padding: 2.5rem 20px 1.5rem;
     text-align: center;
+    overflow-wrap: anywhere;
   }
   .novel-header .novel-title {
     font-size: 1.75rem;
@@ -113,6 +131,10 @@
     margin-bottom: 0.5rem;
   }
   .novel-header .novel-author a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    max-width: 100%;
     color: #0096fa;
     text-decoration: none;
     font-size: 0.875rem;
@@ -185,7 +207,7 @@
   .reader-body-wrapper {
     max-width: 680px;
     margin: 0 auto;
-    padding: 1.5rem 20px 6rem;
+    padding: 1.5rem 20px;
   }
   .reader-body {
     font-family: "BIZ UDMincho", "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
@@ -205,57 +227,139 @@
     text-indent: 0;
   }
 
-  /* ========== Fixed Bottom Chapter Nav ========== */
-  .chapter-bottom-bar {
+  /* ========== Pixiv 正文标记（templates/pixiv_markup.html 渲染） ========== */
+  .reader-body .pns-chapter {
+    margin: 2em 0 1em;
+    font-size: 1.25em;
+    font-weight: 700;
+    line-height: 1.6;
+    color: #1a1a1a;
+  }
+  .reader-body .pns-page-anchor + .pns-chapter { margin-top: 0; }
+  /* 跳页时别让粘性顶栏盖住落点 */
+  .reader-body .pns-page-anchor,
+  .reader-body .pns-page-break { scroll-margin-top: 72px; }
+  .reader-body .pns-page-break {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 2.5em 0;
+    color: #999;
+    font-size: 12px;
+    letter-spacing: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .reader-body .pns-page-break::before,
+  .reader-body .pns-page-break::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid #e5e7eb;
+  }
+  .reader-body ruby rt { font-size: 0.5em; letter-spacing: 0; }
+  .reader-body .pns-link { color: #0096fa; text-decoration: underline; text-underline-offset: 2px; }
+  .reader-body .pns-jump-disabled { color: #999; }
+  .reader-body .pns-emphasis {
+    -webkit-text-emphasis: filled dot;
+    text-emphasis: filled dot;
+    -webkit-text-emphasis-position: under right;
+    text-emphasis-position: under right;
+  }
+  .reader-body .pns-emphasis-sesame {
+    -webkit-text-emphasis-style: filled sesame;
+    text-emphasis-style: filled sesame;
+  }
+  .reader-body .pns-image-missing {
+    margin: 1.5em 0;
+    padding: 12px 16px;
+    border: 1px dashed #d1d5db;
+    border-radius: 8px;
+    background: #f9fafb;
+    color: #6b7280;
+    font-size: 0.875em;
+    line-height: 1.6;
+    text-align: center;
+  }
+
+  /* One reader-owned toolbar for standalone books AND series, not a second global bar. */
+  .reader-toolbar {
     position: fixed;
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 100;
+    z-index: 40;
     background: rgba(255,255,255,0.95);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
     border-top: 1px solid rgba(0,0,0,0.06);
+    padding: 8px max(12px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left));
   }
-  .chapter-bottom-inner {
+  .reader-toolbar-inner {
     max-width: 800px;
     margin: 0 auto;
-    padding: 10px 20px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .reader-tool {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .chapter-nav-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    color: #0096fa;
-    text-decoration: none;
-    padding: 6px 14px;
-    border-radius: 8px;
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .chapter-nav-btn:hover {
-    background: #f0f8ff;
-  }
-  .chapter-nav-btn.disabled {
-    color: #ccc;
-    pointer-events: none;
-  }
-  .chapter-nav-btn svg { width: 16px; height: 16px; }
-  .chapter-info {
-    font-size: 12px;
-    color: #999;
-    text-align: center;
-    flex: 1;
+    justify-content: center;
+    min-height: 44px;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    padding: 6px 4px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    color: #374151;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .reader-tool-primary { background: #0096fa; border-color: #0096fa; color: #fff; }
+  .reader-tool:disabled { opacity: 0.5; cursor: default; }
+  .reader-tool:focus-visible, .chapter-jump:focus-visible {
+    outline: 2px solid #0096fa;
+    outline-offset: 2px;
+  }
+  .reader-action-list { display: flex; flex-direction: column; gap: 8px; }
+  .reader-feedback-dialog .library-modal-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+  }
+  .reader-action-feedback {
+    width: 100%;
+    min-width: 0;
+    max-height: min(8rem, 30vh);
+    max-height: min(8rem, 30dvh);
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .reader-action-list button, .chapter-jump {
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    text-align: left;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+  .chapter-jump { display: flex; align-items: center; color: #0096fa; text-decoration: none; }
+  .chapter-jump[aria-current="page"] { background: #f0f8ff; font-weight: 700; }
+  .reader-action-list button:disabled { opacity: 0.5; }
+  .reader-chapter-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .reader-chapter-nav .chapter-jump { flex: 1; }
+  .reader-chapter-list { display: grid; gap: 8px; }
+  .reader-danger { color: #b91c1c; background: #fff5f5; }
+  .novel-header .series-badge {
+    min-width: 0;
+    min-height: 44px;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   /* ========== States ========== */
@@ -277,10 +381,8 @@
   @media (max-width: 640px) {
     .novel-header { padding: 2rem 16px 1rem; }
     .novel-header .novel-title { font-size: 1.4rem; }
-    .reader-body-wrapper { padding: 1rem 16px 5rem; }
+    .reader-body-wrapper { padding: 1rem 16px; }
     .reader-top-nav-inner { padding: 8px 16px; }
-    .chapter-bottom-inner { padding: 8px 12px; }
-    .chapter-nav-btn { padding: 6px 10px; font-size: 12px; }
     .rescue-control-panel { padding: 0 16px; }
   }
 </style>
@@ -299,12 +401,9 @@
   <div class="reader-top-nav-inner">
     <a :href="backHref" class="nav-back">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-      返回列表
+      返回来源
     </a>
-    <span class="nav-progress" v-if="!loading && !error">{{ progressPercent }}%</span>
-    <button class="nav-font-btn" @click="cycleFontSize" :title="'字号 ' + fontSizeLabel">
-      <span style="font-size:11px;">{{ fontSizeLabel }}</span>
-    </button>
+    <span class="nav-progress" v-if="!loading && !error">{{ progressPercent }}%<span class="reader-sync-summary" role="status" aria-live="polite">{{ progressSyncLabel }}</span></span>
   </div>
 </div>
 
@@ -316,11 +415,24 @@
 
 <!-- Reader -->
 <template v-else>
+  <section v-if="readerEvidence && readerEvidence.active" id="work-analysis-evidence" tabindex="-1" class="library-card max-w-4xl mx-auto space-y-3 scroll-mt-20" aria-label="同版本证据定位">
+    <h2 class="library-section-title">核对同版本正文证据</h2>
+    <p v-if="readerEvidence.loading" role="status">正在认证并重新核验正文 hash…</p>
+    <p v-if="readerEvidence.error" role="alert">{{ readerEvidence.error }}</p>
+    <template v-if="readerEvidence.parts">
+      <p class="text-sm">当前正文 hash 匹配；服务端 code point 区间 [{{ readerEvidence.jump.start }}, {{ readerEvidence.jump.end }})。</p>
+      <pre class="whitespace-pre-wrap break-words"><span>{{ readerEvidence.parts.before }}</span><mark>{{ readerEvidence.parts.quote }}</mark><span>{{ readerEvidence.parts.after }}</span></pre>
+      <p class="text-xs library-muted">这是同版本正文的有界定位片段；没有把原文偏移套到格式化 HTML，也没有用 UTF-16 下标重算全书位置。</p>
+    </template>
+  </section>
   <!-- Novel header -->
   <div class="novel-header">
     <h1 class="novel-title">{{ novel.title || '无标题' }}</h1>
+{% if novel_id is defined %}
+    <a href="/dashboard/preferences?view=work-analysis&amp;source_kind=novel&amp;source_id={[ novel_id ]}" class="library-btn">分析作品</a>
+{% endif %}
     <div class="novel-author">
-      <a v-if="novel.user_id" :href="'/dashboard/users/' + novel.user_id">{{ novel.author_name || '未知' }}</a>
+      <a v-if="novel.user_id" :href="detailHref('/dashboard/users/' + novel.user_id)">{{ novel.author_name || '未知' }}</a>
       <span v-else style="color:#666; font-size:0.875rem;">{{ novel.author_name || '未知' }}</span>
     </div>
     <div class="novel-stats">
@@ -341,18 +453,14 @@
         {{ formatDate(novel.create_date) }}
       </span>
     </div>
-    <div class="flex flex-wrap gap-2 mt-3">
-      <button type="button" @click="exportEpub" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white">导出 EPUB</button>
-      <button type="button" @click="saveServerProgress" :disabled="progressBusy" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-50">记下阅读进度</button>
-      <button type="button" @click="resetServerProgress" :disabled="progressBusy" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-50">重置阅读进度</button>
-      <button type="button" @click="removeLocalBookmark" :disabled="removingBookmark" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50 disabled:opacity-50">移除本地收藏记录</button>
-      <button type="button" @click="deleteThisNovel" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50">删除本地归档</button>
-    </div>
-    <p class="text-[11px] text-gray-400 mt-2">字号分小、中、大三档。救援按钮只改本地是否把这本书算进救援目录，不会向 Pixiv 发请求。</p>
-    <a v-if="novel.series_id && seriesInfo" :href="'/dashboard/series/' + novel.series_id" class="series-badge">
+    <p class="text-xs text-gray-400 mt-2">底部工具可原地保存进度、调整小/中/大/特大字号或切换章节；导出和管理操作在「更多」中。救援纠错只改本地状态，不会向 Pixiv 发请求。</p>
+    <a v-if="novel.series_id && seriesInfo" :href="detailHref('/dashboard/series/' + novel.series_id)" class="series-badge">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       {{ seriesInfo.title || '系列' }} ({{ chapterIndex + 1 }}/{{ seriesInfo.total_novels }})
     </a>
+  </div>
+  <div class="max-w-4xl mx-auto">
+    {% include "preference_feedback.html" %}
   </div>
   <section v-if="novel.rescue" class="rescue-control-panel" aria-label="救援状态与人工纠错">
     <div class="rescue-control-inner">
@@ -395,46 +503,140 @@
 
   <!-- Novel body -->
   <div class="reader-body-wrapper">
-    <div class="reader-body" :class="'fs-' + fontSize" v-html="formattedContent"></div>
+    <div class="reader-body" :class="'fs-' + fontSize" v-html="formattedContent" @click="onBodyClick"></div>
   </div>
 
-  <!-- Fixed bottom chapter nav (series only) -->
-  <div class="chapter-bottom-bar" v-if="novel.series_id && seriesInfo">
-    <div class="chapter-bottom-inner">
-      <a :href="prevNovelId ? ('/dashboard/novels/' + prevNovelId) : null"
-         class="chapter-nav-btn" :class="{ disabled: !prevNovelId }">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-        上一章
-      </a>
-      <span class="chapter-info">第 {{ chapterIndex + 1 }} / {{ seriesInfo.total_novels }} 章</span>
-      <a :href="nextNovelId ? ('/dashboard/novels/' + nextNovelId) : null"
-         class="chapter-nav-btn" :class="{ disabled: !nextNovelId }">
-        下一章
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-      </a>
+  <nav class="reader-toolbar" aria-label="阅读工具">
+    <div class="reader-toolbar-inner">
+      <button type="button" class="reader-tool reader-tool-primary" @click="saveServerProgress" :disabled="progressBusy">{{ progressBusy ? '保存中…' : '保存进度' }}</button>
+      <button type="button" class="reader-tool" @click="cycleFontSize" :aria-label="'切换字号，当前' + fontSizeLabel">字号 · {{ fontSizeLabel }}</button>
+      <button type="button" class="reader-tool" @click="showChapters = true" :disabled="!seriesInfo || !seriesInfo.novels || !seriesInfo.novels.length" aria-haspopup="dialog">章节</button>
+      <button type="button" class="reader-tool" @click="showReaderActions = true" aria-haspopup="dialog">更多</button>
     </div>
-  </div>
+  </nav>
+
+  <aside v-if="progressSyncNeedsAttention && !showReaderActions && !showChapters" class="reader-sync-notice" aria-label="阅读进度同步" role="status" aria-live="polite">
+    <p>{{ progressSyncMessage }}</p>
+    <template v-if="progressSyncState.conflict">
+      <p>服务器 {{ progressSyncState.record.progress }}%{{ progressSyncState.record.is_reset ? '（已重置）' : '' }} · 本机 {{ progressSyncLocal }}%{{ progressSyncState.local && progressSyncState.local.is_reset ? '（待重置）' : '' }}</p>
+      <div class="reader-sync-options">
+        <button type="button" @click="useServerProgress" :disabled="progressBusy">使用服务器进度</button>
+        <button type="button" @click="keepLocalProgress" :disabled="progressBusy">保留本机进度</button>
+      </div>
+    </template>
+    <div v-else class="reader-sync-options"><button type="button" @click="retryProgressSync" :disabled="progressBusy">重试同步</button></div>
+  </aside>
+
+  <app-modal :is-open="showChapters" @close="showChapters = false" title="章节导航" class="reader-feedback-dialog">
+    <template v-if="seriesInfo">
+      <p class="text-sm text-gray-500 mb-3">{{ seriesInfo.title }} · 第 {{ chapterIndex + 1 }} / {{ seriesInfo.total_novels }} 章</p>
+      <nav class="reader-chapter-nav" aria-label="相邻章节">
+        <a v-if="prevNovelId" :href="chapterHref(prevNovelId)" class="chapter-jump">上一章</a>
+        <a v-if="nextNovelId" :href="chapterHref(nextNovelId)" class="chapter-jump">下一章</a>
+        <a :href="detailHref('/dashboard/series/' + novel.series_id)" class="chapter-jump">系列详情</a>
+      </nav>
+      <nav class="reader-chapter-list" aria-label="全部章节">
+        <a v-for="chapter in seriesInfo.novels" :key="chapter.novel_id" :href="chapterHref(chapter.novel_id)"
+           :aria-current="chapter.novel_id === novel.novel_id ? 'page' : null" class="chapter-jump">{{ chapter.title || '未命名章节' }}</a>
+      </nav>
+    </template>
+    <template #footer v-if="readerActionMessage || progressSyncState.conflict">
+      <div id="reader-chapter-action-feedback" class="reader-action-feedback" tabindex="0"
+           :role="readerActionMessageType === 'error' ? 'alert' : 'status'"
+           :aria-live="readerActionMessageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true"
+           :class="readerActionMessageType === 'error' ? 'text-red-700' : 'text-emerald-700'">{{ readerActionMessage }}</div>
+      <div v-if="progressSyncState.conflict" class="reader-sync-dialog">
+        <p>{{ progressSyncMessage }} 服务器 {{ progressSyncState.record.progress }}% · 本机 {{ progressSyncLocal }}%</p>
+        <div class="reader-sync-options">
+          <button type="button" @click="useServerProgress" :disabled="progressBusy">使用服务器进度</button>
+          <button type="button" @click="keepLocalProgress" :disabled="progressBusy">保留本机进度</button>
+        </div>
+      </div>
+    </template>
+  </app-modal>
+
+  <app-modal :is-open="showReaderActions" @close="showReaderActions = false" title="阅读与归档管理" class="reader-feedback-dialog">
+    <p class="text-sm text-gray-500 mb-3">重置、移除或删除均需确认；失败时保留当前正文与进度。</p>
+    <div class="reader-action-list">
+      <button type="button" @click="exportEpub" :disabled="exportingEpub">{{ exportingEpub ? '正在导出 EPUB…' : '导出 EPUB' }}</button>
+      <button type="button" @click="resetServerProgress" :disabled="progressBusy" class="reader-danger">重置阅读进度</button>
+      <button type="button" @click="removeLocalBookmark" :disabled="removingBookmark" class="reader-danger">移除本地收藏记录</button>
+      <button type="button" @click="deleteThisNovel" :disabled="deletingNovel" class="reader-danger">{{ deletingNovel ? '删除中…' : '删除本地归档' }}</button>
+    </div>
+    <template #footer>
+      <div id="reader-action-feedback" class="reader-action-feedback" tabindex="0"
+           :role="readerActionMessageType === 'error' ? 'alert' : 'status'"
+           :aria-live="readerActionMessageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true"
+           :class="!readerActionMessage ? 'text-gray-500' : (readerActionMessageType === 'error' ? 'text-red-700' : 'text-emerald-700')">{{ readerActionMessage || '操作结果会显示在这里。' }}</div>
+      <div v-if="progressSyncState.conflict" class="reader-sync-dialog">
+        <p>{{ progressSyncMessage }} 服务器 {{ progressSyncState.record.progress }}% · 本机 {{ progressSyncLocal }}%</p>
+        <div class="reader-sync-options">
+          <button type="button" @click="useServerProgress" :disabled="progressBusy">使用服务器进度</button>
+          <button type="button" @click="keepLocalProgress" :disabled="progressBusy">保留本机进度</button>
+        </div>
+      </div>
+    </template>
+  </app-modal>
 </template>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
-<script>
+{% include "navigation_helpers.html" %}
+{% include "pixiv_markup.html" %}
+{% include "preference_feedback_scripts.html" %}
+{% if request.args is defined and (request.args.get('analysis_id') or request.args.get('evidence_id')) %}
+<script nonce="{[ csp_nonce() ]}" src="/static/js/work_analysis.js"></script>
+{% endif %}
+<script nonce="{[ csp_nonce() ]}" src="/static/js/reading_progress_sync.js?v=e39733fc2902"></script>
+<script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
       const { ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
       const novelId = Number(location.pathname.split('/').pop() || 0);
       const itemType = 'novel';
+      const feedback = window.PreferenceFeedback ? window.PreferenceFeedback.createController(Vue, itemType, novelId) : null;
       const storageKey = `pixivNovelSync:reading:${novelId}`;
 
       // State
       const novel = ref(null);
+      const readerEvidence = window.WorkAnalysis
+        ? window.WorkAnalysis.useReaderEvidence(Vue, novel, novelId) : null;
       const loading = ref(true);
       const error = ref(null);
       const progressPercent = ref(0);
       const progressBusy = ref(false);
+      let manualProgressRequest = false;
+      const progressSyncState = ref({phase: 'checking', record: null, conflict: null, local: null});
+      const progressSyncLabel = computed(() => ({checking: '核对进度', syncing: '同步中', synced: '已同步',
+        pending: '待同步', offline: '离线保存', auth: '需要登录', unsupported: '暂不可同步',
+        error: '同步待重试', conflict: '进度待选择'})[progressSyncState.value.phase] || '待同步');
+      const progressSyncNeedsAttention = computed(() => !!progressSyncState.value.conflict
+        || progressSyncState.value.persistenceError || ['offline', 'auth', 'unsupported', 'error'].includes(progressSyncState.value.phase));
+      const progressSyncMessage = computed(() => {
+        const current = progressSyncState.value;
+        if (current.persistenceError) return '浏览器未允许保存离线进度，请保持页面打开并重试同步。';
+        if (current.conflict) return current.lastError;
+        if (current.phase === 'auth') return '登录已过期。重新登录后重试，待同步进度会保留在本机。';
+        if (current.phase === 'offline') return '暂时无法连接服务器。进度保留在本机，联网后按原版本重试。';
+        return current.lastError || '正在核对服务器进度。';
+      });
+      const progressSyncLocal = computed(() => progressSyncState.value.local?.progress ?? progressPercent.value);
       const removingBookmark = ref(false);
+      const deletingNovel = ref(false);
+      const showReaderActions = ref(false);
+      const showChapters = ref(false);
+      const exportingEpub = ref(false);
+      const readerActionMessage = ref('');
+      const readerActionMessageType = ref('success');
+      const reportReaderAction = (message, type = 'success') => {
+        readerActionMessage.value = String(message || '');
+        readerActionMessageType.value = type;
+        // The shared body toast is below modal overlays. Keep results in their
+        // live footer until the next action; use the toast only on the plain reader.
+        if (!showReaderActions.value && !showChapters.value) window.toast(message, type);
+      };
       const isScrolled = ref(false);
       const seriesInfo = ref(null);
       const rescueOverride = Vue.reactive({ action: '', note: '' });
@@ -509,21 +711,32 @@
       const fontSizeIdx = ref(savedFontIdx);
       const fontSize = computed(() => fontSizes[fontSizeIdx.value]);
       const fontSizeLabel = computed(() => ['小', '中', '大', '特大'][fontSizeIdx.value] || '中');
-      const backHref = computed(() => {
-        const from = new URLSearchParams(location.search).get('from');
-        if (from && from.startsWith('/')) return from;
-        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
-          return document.referrer.slice(location.origin.length);
-        }
-        return '/dashboard/novels';
-      });
+      const backHref = computed(() => window.safeDashboardReturn(new URLSearchParams(location.search).get('from'), '/dashboard/novels'));
+      const detailHref = (target) => window.withDashboardReturn(target);
+      // Keep the original parent when changing chapters, rather than chaining readers.
+      const chapterHref = (id) => window.withDashboardReturn('/dashboard/novels/' + encodeURIComponent(id), backHref.value);
       const cycleFontSize = () => {
+        suppressProgrammaticScroll();
         fontSizeIdx.value = (fontSizeIdx.value + 1) % fontSizes.length;
         try { localStorage.setItem('pixivNovelSync:fontSize', fontSizes[fontSizeIdx.value]); } catch {}
       };
 
       let restorePending = true;
       let scrollThrottle = null;
+      let programmaticTimer = null;
+      let ignoreProgrammaticScroll = false;
+      let userMotion = false;
+      let userMotionUntil = 0;
+      let interactionSerial = 0;
+      let resetInteraction = null;
+      let latestUserSample = null;
+      const suppressProgrammaticScroll = (untilGesture = false) => {
+        ignoreProgrammaticScroll = true;
+        userMotion = false;
+        userMotionUntil = 0;
+        clearTimeout(programmaticTimer);
+        if (!untilGesture) programmaticTimer = setTimeout(() => { ignoreProgrammaticScroll = false; }, 250);
+      };
 
       // Formatters
       const formatNumber = (val) => Number(val || 0).toLocaleString('zh-CN');
@@ -543,25 +756,29 @@
         } catch { return dateStr; }
       };
 
-      const escapeHtml = (unsafe) => {
-        return (unsafe || '').replace(/[&<"'>]/g, function (match) {
-          const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-          return map[match];
-        });
-      };
-
       // Formatted content
       const formattedContent = computed(() => {
         if (!novel.value) return '';
         const text = novel.value.text_raw || novel.value.text_markdown || '';
-        // Always escape line-by-line. The body is untrusted Pixiv author content;
-        // returning it raw when it happened to contain "<p>" was a stored-XSS sink
-        // (this value is rendered via v-html below).
-        return text.split('\n').map(line => {
-          const t = line.trim();
-          return t ? `<p>${escapeHtml(t)}</p>` : `<p class="empty-line"></p>`;
-        }).join('\n');
+        // The body is untrusted Pixiv author content rendered via v-html below.
+        // pixiv_markup.html emits whitelisted tags only and escapes every text
+        // run and attribute; never return the text itself (stored-XSS sink).
+        return window.pixivMarkup.renderHtml(text);
       });
+
+      // [jump:N] 页内跳转：拦下默认的锚点跳转，不改 location.hash——
+      // 带着 hash 重新打开时，阅读进度恢复会被跳过
+      const onBodyClick = (event) => {
+        const link = event.target && event.target.closest ? event.target.closest('a[data-pns-page]') : null;
+        if (!link) return;
+        event.preventDefault();
+        const target = document.getElementById('pns-page-' + link.getAttribute('data-pns-page'));
+        if (target) {
+          restorePending = false;
+          suppressProgrammaticScroll();
+          target.scrollIntoView({ block: 'start', behavior: 'auto' });
+        }
+      };
 
       // Series chapter navigation
       const chapterIndex = computed(() => {
@@ -580,10 +797,6 @@
       });
 
       // Progress tracking
-      const readSavedProgress = () => {
-        try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch { return null; }
-      };
-
       const getReadingProgress = () => {
         const doc = document.documentElement;
         const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
@@ -593,9 +806,8 @@
         };
       };
 
-      const saveProgress = () => {
+      const writeLocalPosition = (current = getReadingProgress()) => {
         if (!novel.value) return;
-        const current = getReadingProgress();
         progressPercent.value = Math.round(current.progress * 100);
         try {
           localStorage.setItem(storageKey, JSON.stringify({
@@ -604,19 +816,80 @@
             title: novel.value.title || '',
             scrollY: current.scrollY,
             progress: current.progress,
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
+            serverVersion: progressSyncState.value.record?.version ?? null
           }));
         } catch {}
+      };
+
+      const moveToProgress = (record) => {
+        restorePending = false;
+        latestUserSample = null;
+        clearTimeout(scrollThrottle);
+        scrollThrottle = null;
+        suppressProgrammaticScroll();
+        const top = Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * record.progress / 100;
+        window.scrollTo({top, behavior: 'auto'});
+        progressPercent.value = record.progress;
+        if (record.is_reset) {
+          try { localStorage.removeItem(storageKey); } catch {}
+        } else writeLocalPosition();
+      };
+
+      const progressSync = window.ReadingProgressSync.create({
+        novelId, storage: localStorage,
+        legacyProgress: (() => {
+          try {
+            const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            if (saved && typeof saved.progress === 'number' && Number.isFinite(saved.progress)
+              && saved.progress >= 0 && saved.progress <= 1 && !Number.isSafeInteger(saved.serverVersion)) {
+              return Math.round(saved.progress * 100);
+            }
+          } catch {}
+          return undefined;
+        })(),
+        request: (url, options) => options.method === 'GET' ? fetch(url, options) : window.csrfFetch(url, options),
+        errorText: (data, response) => window.errorText(data, response),
+        onChange: state => { progressSyncState.value = state; progressBusy.value = state.busy || manualProgressRequest; },
+        onCommit: result => {
+          if (result.method === 'DELETE' && result.current && !result.hasPending && resetInteraction === interactionSerial) {
+            moveToProgress(result.record);
+          }
+          if (result.method === 'DELETE') resetInteraction = null;
+        },
+      });
+      const sampleUserProgress = () => {
+        if (!latestUserSample || !novel.value) return;
+        const sample = latestUserSample;
+        latestUserSample = null;
+        writeLocalPosition(sample);
+        progressSync.sample(Math.round(sample.progress * 100));
+      };
+      const handleReadingIntent = (event) => {
+        if (event?.type === 'keydown' && !['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) return;
+        if (event?.type === 'pointermove' && !event.buttons) return;
+        restorePending = false;
+        interactionSerial++;
+        if (event?.target?.closest?.('button,a,input,textarea,select,[role="dialog"],.reader-sync-notice')) return;
+        ignoreProgrammaticScroll = false;
+        userMotion = true;
+        userMotionUntil = Date.now() + 2000;
       };
 
       const handleScroll = () => {
         // Any intervening scroll invalidates initial restoration, even a round trip to 0.
         restorePending = false;
         isScrolled.value = window.scrollY > 10;
+        progressPercent.value = Math.round(getReadingProgress().progress * 100);
+        if (!novel.value || ignoreProgrammaticScroll || !userMotion || Date.now() > userMotionUntil) return;
+        latestUserSample = getReadingProgress();
+        // 立即保留样本，以免初始 GET 在 300ms 显示节流前取得错误的新基线。
+        writeLocalPosition(latestUserSample);
+        progressSync.sample(Math.round(latestUserSample.progress * 100));
         if (scrollThrottle) return;
         scrollThrottle = setTimeout(() => {
           scrollThrottle = null;
-          saveProgress();
+          sampleUserProgress();
         }, 300);
       };
 
@@ -639,22 +912,20 @@
 
             // Restore scroll after render
             nextTick(async () => {
-              let saved = readSavedProgress();
               const initialScrollY = window.scrollY;
-              if (!saved) {
-                try {
-                  const progressRes = await fetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress');
-                  if (progressRes.ok) {
-                    const stored = await progressRes.json();
-                    const percent = Math.max(0, Math.min(100, Number(stored?.progress) || 0));
-                    saved = { scrollY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * percent / 100 };
-                  }
-                } catch (e) {}
+              const restored = await progressSync.refresh({initial: true});
+              const local = progressSync.state().local;
+              const target = restored.restore ? restored.record : (local && restored.offline ? {...local, is_reset: false} : null);
+              if (restorePending && target && !window.location.hash && initialScrollY === 0 && window.scrollY === initialScrollY) {
+                moveToProgress(target);
+              } else if (restorePending && restored.record && progressSync.state().conflict
+                && !window.location.hash && initialScrollY === 0 && window.scrollY === 0) {
+                // 旧本机缓存只作为待选择候选；显示服务器位置但不覆写旧缓存。
+                suppressProgrammaticScroll();
+                window.scrollTo({top: Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+                  * restored.record.progress / 100, behavior: 'auto'});
               }
-              if (restorePending && saved && saved.scrollY > 0 && !window.location.hash && window.scrollY === initialScrollY) {
-                window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
-              }
-              saveProgress();
+              progressPercent.value = Math.round(getReadingProgress().progress * 100);
               restorePending = false;
             });
           } else {
@@ -677,101 +948,191 @@
         } catch {}
       };
 
+      const pagehideProgress = () => {
+        sampleUserProgress();
+        if (progressSync.state().hasPending) void progressSync.flush({keepalive: true});
+      };
+      const retryProgressSync = async () => {
+        if (window.ensureCsrfToken) {
+          try { await window.ensureCsrfToken({refresh: true}); }
+          catch { return {queued: true}; }
+        }
+        await progressSync.refresh();
+        return progressSync.flush({explicit: true});
+      };
+      const storageProgressChanged = event => { void progressSync.storageChanged(event); };
+      const visibilityProgress = () => {
+        if (document.hidden) pagehideProgress();
+        else void retryProgressSync();
+      };
+      const pageShowProgress = event => {
+        if (event.persisted) { restorePending = false; suppressProgrammaticScroll(); void retryProgressSync(); }
+      };
+      const hashProgressChanged = () => { restorePending = false; suppressProgrammaticScroll(true); };
+
       onMounted(() => {
         fetchDetail();
+        // 页面仍在前台时准备 CSRF，pagehide 不依赖首次鉴权请求。
+        if (window.ensureCsrfToken) void window.ensureCsrfToken().catch(() => {});
         window.addEventListener('scroll', handleScroll, { passive: true });
-        window.addEventListener('beforeunload', saveProgress);
+        for (const name of ['wheel', 'touchmove', 'pointerdown', 'pointermove', 'keydown']) window.addEventListener(name, handleReadingIntent, {passive: true});
+        window.addEventListener('pagehide', pagehideProgress);
+        window.addEventListener('pageshow', pageShowProgress);
+        window.addEventListener('online', retryProgressSync);
+        window.addEventListener('storage', storageProgressChanged);
+        window.addEventListener('hashchange', hashProgressChanged);
+        document.addEventListener('visibilitychange', visibilityProgress);
       });
 
       onUnmounted(() => {
         window.removeEventListener('scroll', handleScroll);
-        window.removeEventListener('beforeunload', saveProgress);
+        for (const name of ['wheel', 'touchmove', 'pointerdown', 'pointermove', 'keydown']) window.removeEventListener(name, handleReadingIntent);
+        window.removeEventListener('pagehide', pagehideProgress);
+        window.removeEventListener('pageshow', pageShowProgress);
+        window.removeEventListener('online', retryProgressSync);
+        window.removeEventListener('storage', storageProgressChanged);
+        window.removeEventListener('hashchange', hashProgressChanged);
+        document.removeEventListener('visibilitychange', visibilityProgress);
         clearTimeout(scrollThrottle);
+        clearTimeout(programmaticTimer);
+        progressSync.dispose();
       });
+
+      const reportProgressOutcome = (result, successMessage) => {
+        if (result.error || result.conflict) {
+          if (!showReaderActions.value && !showChapters.value
+            && (result.conflict || progressSyncState.value.phase === 'offline')) {
+            // 常驻同步提示已经包含恢复操作，不再用 toast 遮挡阅读工具栏。
+            readerActionMessage.value = progressSyncMessage.value;
+            readerActionMessageType.value = 'error';
+          } else reportReaderAction(result.error || progressSyncMessage.value, 'error');
+        }
+        else {
+          const message = result.queued ? '进度已保留在本机，等待同步。' : successMessage;
+          if (showReaderActions.value || showChapters.value) reportReaderAction(message);
+          else { readerActionMessage.value = message; readerActionMessageType.value = 'success'; }
+        }
+      };
+      const refreshProgressAuthentication = async () => {
+        if (progressSync.state().phase !== 'auth' || !window.ensureCsrfToken) return true;
+        try { await window.ensureCsrfToken({refresh: true}); return true; }
+        catch (error) { reportReaderAction(error.message || '请重新登录后重试同步。', 'error'); return false; }
+      };
 
       const saveServerProgress = async () => {
         if (progressBusy.value) return;
         restorePending = false;
+        readerActionMessage.value = '';
+        writeLocalPosition();
+        manualProgressRequest = true;
         progressBusy.value = true;
         try {
-          saveProgress();
-          const progress = progressPercent.value;
-          const status = progress >= 100 ? 'completed' : (progress > 0 ? 'reading' : 'unread');
-          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ progress, status }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(window.errorText(data, res));
-          restorePending = false;
-          window.toast('阅读进度已记到账号');
-        } catch (e) { window.toast(e.message || '保存阅读进度失败', 'error'); }
-        finally { progressBusy.value = false; }
+          if (progressSync.state().phase === 'auth' && !await refreshProgressAuthentication()) return;
+          const result = await progressSync.save(progressPercent.value);
+          reportProgressOutcome(result, '阅读进度已记到账号');
+        } finally { manualProgressRequest = false; progressBusy.value = progressSync.state().busy; }
       };
       const resetServerProgress = async () => {
         if (progressBusy.value || !confirm('清除账号和本机的阅读进度并回到页首？')) return;
         restorePending = false;
+        readerActionMessage.value = '';
+        resetInteraction = interactionSerial;
+        suppressProgrammaticScroll(true);
+        latestUserSample = null;
+        clearTimeout(scrollThrottle);
+        scrollThrottle = null;
+        manualProgressRequest = true;
         progressBusy.value = true;
         try {
-          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', { method: 'DELETE' });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(window.errorText(data, res));
-          restorePending = false;
-          clearTimeout(scrollThrottle);
-          scrollThrottle = null;
-          try { localStorage.removeItem(storageKey); } catch {}
-          window.scrollTo({top: 0, behavior: 'auto'});
-          progressPercent.value = 0;
-          window.toast('阅读进度已重置');
-        } catch (e) { window.toast(e.message || '重置阅读进度失败', 'error'); }
-        finally { progressBusy.value = false; }
+          if (progressSync.state().phase === 'auth' && !await refreshProgressAuthentication()) return;
+          const result = await progressSync.reset();
+          reportProgressOutcome(result, '阅读进度已重置');
+        } finally { manualProgressRequest = false; progressBusy.value = progressSync.state().busy; }
+      };
+      const useServerProgress = () => {
+        const selected = progressSync.useServer();
+        if (selected) { moveToProgress(selected); reportReaderAction('已使用服务器进度'); }
+      };
+      const keepLocalProgress = async () => {
+        if (progressBusy.value) return;
+        restorePending = false;
+        const selectedAt = interactionSerial;
+        if (progressSync.state().local?.is_reset) resetInteraction = interactionSerial;
+        manualProgressRequest = true;
+        progressBusy.value = true;
+        try {
+          if (progressSync.state().phase === 'auth' && !await refreshProgressAuthentication()) return;
+          const result = await progressSync.keepLocal(progressPercent.value);
+          if (result.ok && !result.queued && selectedAt === interactionSerial && result.record) moveToProgress(result.record);
+          reportProgressOutcome(result, '已保留本机进度并同步到账号');
+        } finally { manualProgressRequest = false; progressBusy.value = progressSync.state().busy; }
       };
       const removeLocalBookmark = async () => {
         if (removingBookmark.value || !confirm('仅移除本地收藏记录？小说归档会保留，不会取消 Pixiv 收藏；下次同步可能重新加入。')) return;
         removingBookmark.value = true;
+        readerActionMessage.value = '';
         try {
           const res = await window.csrfFetch('/api/dashboard/bookmarks/' + encodeURIComponent(novelId), { method: 'DELETE' });
           const data = await res.json().catch(() => ({}));
           if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
-          window.toast('本地收藏记录已移除，归档仍保留');
-        } catch (e) { window.toast(e.message || '移除收藏记录失败', 'error'); }
+          reportReaderAction('本地收藏记录已移除，归档仍保留');
+        } catch (e) { reportReaderAction(e.message || '移除收藏记录失败', 'error'); }
         finally { removingBookmark.value = false; }
       };
       const exportEpub = async () => {
-        const res = await window.csrfFetch('/api/dashboard/novels/export-epub', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ novel_ids: [Number(novelId)] }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          window.toast(window.errorText(data, res), 'error');
-          return;
+        if (exportingEpub.value) return;
+        exportingEpub.value = true;
+        readerActionMessage.value = '';
+        let objectUrl = null;
+        try {
+          const res = await window.csrfFetch('/api/dashboard/novels/export-epub', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ novel_ids: [Number(novelId)] }),
+          });
+          const contentType = String(res.headers?.get('Content-Type') || '').toLowerCase();
+          // A JSON business/auth error must not be downloaded as a fake EPUB.
+          if (!res.ok || contentType.includes('json')) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(window.errorText(data, res));
+          }
+          const blob = await res.blob();
+          objectUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = objectUrl;
+          link.download = (novel.value && novel.value.title ? novel.value.title : novelId) + '.epub';
+          link.click();
+          reportReaderAction('已请求下载 EPUB');
+        } catch (e) { reportReaderAction(e.message || '导出 EPUB 失败', 'error'); }
+        finally {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+          exportingEpub.value = false;
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = (novel.value && novel.value.title ? novel.value.title : novelId) + '.epub';
-        link.click();
-        URL.revokeObjectURL(url);
       };
       const deleteThisNovel = async () => {
-        if (!confirm('删除这本小说的本地归档？此操作不可撤销。')) return;
-        const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId), { method: 'DELETE' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) {
-          window.toast(window.errorText(data, res), 'error');
-          return;
-        }
-        location.href = backHref.value;
+        if (deletingNovel.value || !confirm('删除这本小说的本地归档？此操作不可撤销。')) return;
+        deletingNovel.value = true;
+        readerActionMessage.value = '';
+        try {
+          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId), { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          reportReaderAction('本地归档已删除，正在返回来源');
+          location.href = backHref.value;
+        } catch (e) { reportReaderAction(e.message || '删除本地归档失败', 'error'); }
+        finally { deletingNovel.value = false; }
       };
 
       return {
+        readerEvidence, feedback,
         novel, loading, error, progressPercent, isScrolled, backHref, fontSizeLabel,
+        detailHref, chapterHref, showReaderActions, showChapters, deletingNovel,
+        exportingEpub, readerActionMessage, readerActionMessageType,
         exportEpub, saveServerProgress, resetServerProgress, progressBusy, removeLocalBookmark, removingBookmark, deleteThisNovel,
+        progressSyncState, progressSyncLabel, progressSyncNeedsAttention, progressSyncMessage, progressSyncLocal,
+        useServerProgress, keepLocalProgress, retryProgressSync,
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
-        formattedContent, formatNumber, formatTextLength, formatDate,
+        formattedContent, onBodyClick, formatNumber, formatTextLength, formatDate,
         fontSize, cycleFontSize, rescueOverride, rescueMessage, rescueMessageType,
         savingRescue, saveRescueOverride, clearRescueOverride
       };

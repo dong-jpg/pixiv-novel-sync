@@ -9,9 +9,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from flask import current_app, session
+from flask import current_app, g, session
 
 from ..settings import Settings
+from ..web.auth_sessions import AUTH_SESSION_KEY
 
 
 _ACCESS_TTL_NS = 10 * 60 * 1_000_000_000
@@ -64,9 +65,16 @@ def require_adult_owner(settings: Settings) -> AdultOwner:
     dashboard_token = getattr(settings, "dashboard_token", None)
     if not isinstance(dashboard_token, str) or not dashboard_token:
         raise PermissionError("成人功能要求配置 Dashboard token")
-    if session.get("authenticated") is not True:
-        raise PermissionError("成人功能要求已认证会话")
-    authenticated_at = session.get("authenticated_at")
+    if AUTH_SESSION_KEY in session:
+        # A signed cookie alone is insufficient: the shared gate must validate
+        # its server-side revocation record on this request first.
+        authenticated_at = getattr(g, "dashboard_authenticated_at_ns", None)
+    else:
+        # Standalone route hosts still supply the legacy authenticated context;
+        # the full dashboard gate never accepts these fields as authentication.
+        if session.get("authenticated") is not True:
+            raise PermissionError("成人功能要求已认证会话")
+        authenticated_at = session.get("authenticated_at")
     if (
         isinstance(authenticated_at, bool)
         or not isinstance(authenticated_at, int)

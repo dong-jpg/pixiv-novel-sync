@@ -1,0 +1,262 @@
+{
+  "offline_transport": true,
+  "real_flask_auth_and_cas": true,
+  "browser_errors": [],
+  "external_requests": [],
+  "checks": [
+    "two_devices_restore_current_server_without_writes",
+    "stale_device_conflict_requires_explicit_choice",
+    "offline_reload_retries_identical_mutation_and_respects_reset_tombstone",
+    "explicit_reset_has_versioned_tombstone_and_no_scroll_revival",
+    "legacy_local_cache_preserved_as_explicit_candidate"
+  ],
+  "captures": [
+    {
+      "viewport": 1280,
+      "document": 1280,
+      "controls": [
+        {
+          "label": "保存进度",
+          "width": 194,
+          "height": 44
+        },
+        {
+          "label": "字号 · 中",
+          "width": 194,
+          "height": 44
+        },
+        {
+          "label": "章节",
+          "width": 194,
+          "height": 44
+        },
+        {
+          "label": "更多",
+          "width": 194,
+          "height": 44
+        },
+        {
+          "label": "使用服务器进度",
+          "width": 311,
+          "height": 44
+        },
+        {
+          "label": "保留本机进度",
+          "width": 311,
+          "height": 44
+        }
+      ],
+      "screenshot": "reading-conflict-1280.png"
+    },
+    {
+      "viewport": 390,
+      "document": 390,
+      "controls": [
+        {
+          "label": "保存进度",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "字号 · 中",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "章节",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "更多",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "重试同步",
+          "width": 336,
+          "height": 44
+        }
+      ],
+      "screenshot": "reading-offline-390.png"
+    },
+    {
+      "viewport": 390,
+      "document": 390,
+      "controls": [
+        {
+          "label": "保存进度",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "字号 · 中",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "章节",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "更多",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "使用服务器进度",
+          "width": 164,
+          "height": 44
+        },
+        {
+          "label": "保留本机进度",
+          "width": 164,
+          "height": 44
+        }
+      ],
+      "screenshot": "reading-reset-conflict-390.png"
+    },
+    {
+      "viewport": 390,
+      "document": 390,
+      "controls": [
+        {
+          "label": "保存进度",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "字号 · 中",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "章节",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "更多",
+          "width": 85.5,
+          "height": 44
+        }
+      ],
+      "screenshot": "reading-reset-390.png"
+    },
+    {
+      "viewport": 390,
+      "document": 390,
+      "controls": [
+        {
+          "label": "保存进度",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "字号 · 中",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "章节",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "更多",
+          "width": 85.5,
+          "height": 44
+        },
+        {
+          "label": "使用服务器进度",
+          "width": 164,
+          "height": 44
+        },
+        {
+          "label": "保留本机进度",
+          "width": 164,
+          "height": 44
+        }
+      ],
+      "screenshot": "reading-legacy-conflict-390.png"
+    }
+  ],
+  "writes": [
+    {
+      "device": 390,
+      "method": "POST",
+      "body": {
+        "base_version": 1,
+        "mutation_id": "09dd47d1-231e-40e3-b3bf-3f53eb54a610",
+        "progress": 72,
+        "status": "reading"
+      },
+      "status": 200
+    },
+    {
+      "device": 1280,
+      "method": "POST",
+      "body": {
+        "base_version": 1,
+        "mutation_id": "78efe912-ba28-4bdb-a8de-d1841dade711",
+        "progress": 45,
+        "status": "reading"
+      },
+      "status": 409
+    },
+    {
+      "device": 390,
+      "method": "POST",
+      "body": {
+        "base_version": 2,
+        "mutation_id": "77c57c61-9027-4bf2-9c7c-1abe4e0f3a24",
+        "progress": 81,
+        "status": "reading"
+      },
+      "status": "offline"
+    },
+    {
+      "device": 390,
+      "method": "POST",
+      "body": {
+        "base_version": 2,
+        "mutation_id": "77c57c61-9027-4bf2-9c7c-1abe4e0f3a24",
+        "progress": 81,
+        "status": "reading"
+      },
+      "status": "offline"
+    },
+    {
+      "device": 390,
+      "method": "POST",
+      "body": {
+        "base_version": 2,
+        "mutation_id": "77c57c61-9027-4bf2-9c7c-1abe4e0f3a24",
+        "progress": 81,
+        "status": "reading"
+      },
+      "status": 409
+    },
+    {
+      "device": 390,
+      "method": "POST",
+      "body": {
+        "base_version": 3,
+        "mutation_id": "06b741a6-a47b-43e8-9770-0a0e7abd09b8",
+        "progress": 81,
+        "status": "reading"
+      },
+      "status": 200
+    },
+    {
+      "device": 390,
+      "method": "DELETE",
+      "body": {
+        "base_version": 4,
+        "mutation_id": "765a59ea-3571-49f0-a4e5-54f2287d88c0"
+      },
+      "status": 200
+    }
+  ]
+}

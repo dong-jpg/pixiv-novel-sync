@@ -1,0 +1,9 @@
+[
+  "[newpage]", "[chapter:", "[pixivimage:", "[uploadedimage:", "[[rb:", "[[jumpuri:", "[[emphasismark:", "[jump:",
+  "[b:", "[i:", "]", "]]", "[", " > ", ">", "\n",
+  "\n\n", "\r\n", "\r", "\u3000", " ", "\t", "\u3000\u3000", "12",
+  "3-4", "0", "999999999", "https://e.com/x", "http://e.com/?a=1&b=2", "javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,",
+  "//evil", "\"", "'", "`", "<script>", "</script>", "<img src=x onerror=alert(1)>", "&amp;",
+  "&", "<", "漢字", "かな", "abc", "﹅", "•", "\u200b",
+  "\ufeff", "\u00a0", "\u2028", "\ud83d\ude00", "\u0085", "\u180e", "\u0001", "\u000b"
+]

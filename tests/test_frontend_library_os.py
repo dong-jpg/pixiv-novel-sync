@@ -43,6 +43,8 @@ def test_global_components_use_library_os_classes():
 
     assert "library-nav-link" in html
     assert "library-badge" in html
+    assert "library-modal" in html
+    assert "Library OS" in html
 
 
 def test_app_modal_usages_bind_is_open_prop():
@@ -59,8 +61,6 @@ def test_app_modal_usages_bind_is_open_prop():
             assert ":is-open" in tag, f"{path.name}: {tag}"
             assert ":open=" not in tag, f"{path.name}: {tag}"
             assert "size=" not in tag, f"{path.name}: {tag}"
-    assert "library-modal" in html
-    assert "Library OS" in html
 
 
 def test_dashboard_pages_are_marked_as_library_pages():
@@ -213,8 +213,12 @@ def test_task_logs_template_has_complete_ai_filters_and_details():
     assert "'cancelled': { label: '已取消'" in html
     assert 'v-html="formatResult(log)"' not in html
     assert "selectedLog.output_text" in html
-    assert "formatJson(selectedLog.input)" in html
-    assert "formatJson(selectedLog.output)" in html
+    assert "formatJson(detailInput)" in html
+    assert "formatJson(detailOutput)" in html
+    assert 'v-if="showLegacyAiContent && selectedLog.input"' in html
+    assert 'v-if="showLegacyAiContent && selectedLog.output"' in html
+    assert "formatJson(selectedLog.input)" not in html
+    assert "formatJson(selectedLog.output)" not in html
 
 
 def test_task_logs_template_surfaces_abort_and_incomplete_markers():
@@ -434,7 +438,10 @@ def test_rescue_detail_pages_support_manual_override_with_csrf():
         assert "rescueOverride" in html
         assert "rescueMessage" in html
         assert "window.csrfFetch" in html
-        assert "ensureCsrfToken" not in html
+        # 页面可明确刷新共享令牌，但不能自行复制或实现一套 CSRF 缓存。
+        assert "window.ensureCsrfToken =" not in html
+        assert "let _csrfToken" not in html
+        assert "'/api/csrf-token'" not in html
         assert f"const itemType = '{item_type}'" in html
         assert "/api/dashboard/rescue-overrides/" in html
         assert "saveRescueOverride" in html
@@ -578,15 +585,19 @@ def test_recommendation_cards_link_to_pixiv_original_not_local_detail():
     """
     dashboard = read(TEMPLATES / "dashboard.html")
     preferences = read(TEMPLATES / "dashboard_preferences.html")
+    card = read(TEMPLATES / "recommendation_components.html")
 
-    assert "https://www.pixiv.net/novel/show.php?id=" in dashboard
-    assert "https://www.pixiv.net/novel/series/" in dashboard
-    # 首页不能再用本地详情页当推荐卡片的跳转目标
-    assert "'/dashboard/novels/' +" not in dashboard
-    assert "'/dashboard/series/' +" not in dashboard
-
-    assert "https://www.pixiv.net/novel/show.php?id=" in preferences
-    assert "itemUrl" in preferences
+    # 两页现在实际复用同一卡片，链接断言迁移到它的实现，不再要求复制 URL 逻辑。
+    for html in (dashboard, preferences):
+        assert '{% include "recommendation_components.html" %}' in html
+        assert '<recommendation-card' in html
+    assert "https://www.pixiv.net/novel/show.php?id=" in card
+    assert "https://www.pixiv.net/novel/series/" in card
+    assert ':href="itemUrl"' in card
+    assert 'target="_blank" rel="noopener noreferrer"' in card
+    for html in (dashboard, preferences, card):
+        assert "'/dashboard/novels/' +" not in html
+        assert "'/dashboard/series/' +" not in html
 
 
 def test_dashboard_cards_use_library_os_surface_classes():
@@ -617,8 +628,11 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert "app-pagination" in html
     assert "recommendationPage" in html
     assert "recommendationTotalPages" in html
-    # 分页信封由带 page 参数的请求取回
-    assert "recommendations/items?page=" in html
+    # 分页信封由两页共用的数据层取回，不在页面中重复实现请求。
+    assert "window.useRecommendations()" in html
+    shared = read(TEMPLATES / "recommendation_components.html")
+    assert "recommendations/items?page=" in shared
+    assert "page_size=10" in shared
     # 不再是三列卡片网格
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
@@ -641,7 +655,9 @@ def test_sidebar_logout_and_novel_detail_actions():
     assert "/api/auth/logout" in footer
     detail = read(TEMPLATES / "dashboard_novel_detail.html")
     assert "export-epub" in detail
-    assert "/progress" in detail
+    assert "ReadingProgressSync.create" in detail
+    assert "/progress" in read(TEMPLATES.parent / "static/js/reading_progress_sync.js")
+    assert "saveServerProgress" in detail and "resetServerProgress" in detail
     assert "deleteThisNovel" in detail
 
 
@@ -668,7 +684,13 @@ def test_app_modal_is_a_dialog():
     assert 'role="dialog"' in html
     assert 'aria-modal="true"' in html
     assert 'aria-label="关闭"' in html
-    assert "@keydown.esc" in html
+    # Escape is now owned by the shared modal stack, not each nested dialog.
+    # Executable top-only Escape/focus/unmount coverage lives in the shell VM tests.
+    assert "event.key === 'Escape'" in html
+    assert "const entry = topModal()" in html
+    assert "entry.close()" in html
+    assert "document.addEventListener('keydown', onModalKeydown, true)" in html
+    assert "document.removeEventListener('keydown', onModalKeydown, true)" in html
 
 
 def test_shared_time_and_toast_helpers_exist():
@@ -682,7 +704,12 @@ def test_shared_time_and_toast_helpers_exist():
         "dashboard_follows.html",
         "dashboard_settings_models.html",
     ):
-        assert "formatDbTime(" in read(TEMPLATES / name)
+        page = read(TEMPLATES / name)
+        if name == "dashboard_settings_models.html":
+            include = "{% include 'dashboard_ai_model_catalog.html' %}"
+            assert include in page
+            page = page.replace(include, read(TEMPLATES / "dashboard_ai_model_catalog.html"))
+        assert "formatDbTime(" in page
 
 
 def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
@@ -694,7 +721,11 @@ def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
 
     assert "sticky top-0 z-30 bg-white/80 backdrop-blur-md" not in html
     header = html.split("</header>")[0]
-    assert 'class="library-card"' in header
+    # 允许同一 Library OS 表面附加页内紧凑布局类，但不能退回裸方形横条。
+    header_tag = header.split("<header", 1)[1].split(">", 1)[0]
+    classes = header_tag.split('class="', 1)[1].split('"', 1)[0].split()
+    assert "library-card" in classes
+    assert "dashboard-summary" in classes
 
 
 def test_dashboard_current_task_name_uses_chinese_labels():
@@ -751,7 +782,7 @@ def test_sidebar_expands_settings_into_five_subpages():
     for label, path in (
         ("同步与调度", "/dashboard/settings/sync"),
         ("模型与 Provider", "/dashboard/settings/models"),
-        ("Agent 绑定", "/dashboard/settings/agents"),
+        ("AI 任务", "/dashboard/settings/agents"),
         ("成人润色", "/dashboard/settings/adult"),
         ("系统维护", "/dashboard/settings/system"),
     ):

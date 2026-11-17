@@ -1,0 +1,164 @@
+<div id="work-analysis" class="library-page max-w-7xl mx-auto space-y-4">
+  <header class="library-page-header flex-col sm:flex-row">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold">作品分析</h1>
+      <p class="text-sm library-muted">手动选择当前归档版本，生成可核对的作品报告；不是个人喜好画像。</p>
+    </div>
+    <a href="/dashboard/preferences" class="library-btn">返回本地偏好与推荐</a>
+  </header>
+  <p v-if="wa.notice" role="status" class="library-card text-sm">{{ wa.notice }}</p>
+  <p v-if="wa.writeError" role="alert" class="library-card text-sm text-red-700">{{ wa.writeError }}</p>
+  <section v-if="wa.pending" class="library-card space-y-3" aria-label="待核对写入">
+    <p>{{ wa.pending.phase === 'unknown' ? '写入结果未知，已保留原请求。不要另建重复任务。' : '正在提交；返回前不能确认远端调用已经结束。' }}</p>
+    <button v-if="wa.pending.phase === 'unknown' && wa.pending.kind === 'create'" @click="retryUnknown" class="library-btn" :disabled="wa.pending.sending">重试同一创建</button>
+    <button v-if="wa.pending.phase === 'unknown' && wa.pending.kind !== 'create'" @click="reconcileWrite" class="library-btn" :disabled="wa.busy.reconcile">先核对当前状态</button>
+    <button v-if="wa.pending.phase === 'unknown' && wa.pending.kind !== 'create' && wa.pending.canRetry" @click="retryUnknown" class="library-btn">重试同一 CAS 请求</button>
+    <p v-if="wa.readErrors.reconcile" role="alert">{{ wa.readErrors.reconcile }}</p>
+  </section>
+  <section class="library-card space-y-4" aria-label="选择与预算">
+    <h2 class="library-section-title">1. 选择作品、Agent 与有限预算</h2>
+    <fieldset :disabled="!!wa.pending" class="space-y-4">
+      <div class="grid gap-3 md:grid-cols-2">
+        <label class="block">作品类型
+          <select id="wa-source-kind" v-model="wa.form.source_kind" class="library-input w-full">
+            <option value="novel">单篇小说</option><option value="series">系列当前归档</option>
+          </select>
+        </label>
+        <label class="block" for="wa-source-id">本地作品 ID
+          <input id="wa-source-id" v-model="wa.form.source_id" inputmode="numeric" class="library-input w-full">
+        </label>
+        <label class="block">出版状态（仅记录本次用户声明）
+          <select id="wa-publication" v-model="wa.form.publication_state" class="library-input w-full">
+            <option value="unknown">未知</option><option value="ongoing">连载</option><option value="completed">我声明已完结</option>
+          </select>
+        </label>
+        <label class="block" for="wa-output">单次输出预留（1–1000000 token）
+          <input id="wa-output" v-model="wa.form.output_tokens" inputmode="numeric" class="library-input w-full">
+        </label>
+      </div>
+      <ai-model-picker id="wa-agent" label="分析 Agent" :options="wa.agents" :current="currentAgent" :disabled="!!wa.pending" @select="chooseAgent"></ai-model-picker>
+      <button class="library-btn" @click="reloadAgents" :disabled="wa.busy.agents || !!wa.pending">刷新 Agent</button>
+      <p v-if="wa.readErrors.agents" role="alert">{{ wa.readErrors.agents }}</p>
+      <p class="text-sm library-muted">不自动测试或探测 Provider。模型身份、容量与可能使用的服务以本次零网络预览为准。</p>
+      <div class="grid gap-3 md:grid-cols-3">
+        <label class="block" for="wa-budget-request">整部请求上限（1–512）<input id="wa-budget-request" v-model="wa.form.budget.request_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label class="block" for="wa-budget-token">计划 token 上限（1–100000000）<input id="wa-budget-token" v-model="wa.form.budget.token_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label class="block" for="wa-budget-time">活跃秒数上限（30–14400）<input id="wa-budget-time" v-model="wa.form.budget.active_seconds_limit" inputmode="numeric" class="library-input w-full"></label>
+      </div>
+      <p class="text-sm library-muted">预算没有默认授权值。请求重试、fallback 与显式恢复仍消耗预算；计划 token 不是厂商账单或金额保证。</p>
+      <button id="wa-preview" class="library-btn library-btn-primary" @click="previewWork" :disabled="wa.busy.preview || !!wa.pending">{{ wa.busy.preview ? '正在本地预览…' : '零网络预览' }}</button>
+      <p v-if="wa.readErrors.preview" role="alert">{{ wa.readErrors.preview }}</p>
+    </fieldset>
+  </section>
+  <section v-if="wa.chapters.length" class="library-card space-y-3" aria-label="归档清单与章序">
+    <h2 class="library-section-title">2. 当前归档清单与本次章序</h2>
+    <p class="text-sm library-muted">发表时间仅提供建议顺序；短章不会省略，缺失/空白正文不会假算成已覆盖。重排不能丢章。</p>
+    <ol class="space-y-3">
+      <li v-for="(chapter, index) in wa.chapters" :key="chapter.novel_id" class="border rounded-lg p-3">
+        <p class="break-words">{{ index + 1 }}. {{ chapter.title }} · ID {{ chapter.novel_id }}</p>
+        <p class="text-xs library-muted">{{ chapter.has_text ? chapter.chars + ' code point' : '缺失或空白正文' }} · 获取时间 {{ chapter.fetched_at || '未知' }}</p>
+        <div v-if="wa.form.source_kind === 'series'" class="flex gap-2 mt-2">
+          <button class="library-btn" :disabled="index === 0 || !!wa.pending" @click="moveChapter(index, -1)" :aria-label="'上移第 ' + (index + 1) + ' 章'">上移</button>
+          <button class="library-btn" :disabled="index === wa.chapters.length - 1 || !!wa.pending" @click="moveChapter(index, 1)" :aria-label="'下移第 ' + (index + 1) + ' 章'">下移</button>
+        </div>
+      </li>
+    </ol>
+    <p v-if="!wa.preview" role="status">目标、顺序、Agent、出版状态或预算已变化，旧预览失效，请重新预览。</p>
+  </section>
+  <section v-if="wa.preview" class="library-card space-y-4" aria-label="预览与外发确认">
+    <h2 class="library-section-title">3. {{ wa.preview.manifest.title }} · 当前归档版本预览</h2>
+    <p>方案：{{ wa.preview.plan.strategy === 'whole' ? '整部输入' : '按章或块提取，再分层汇总' }}；确定的原文单元 {{ wa.preview.plan.original_units.length }}；最少请求 {{ wa.preview.plan.minimum_requests }}。</p>
+    <p class="text-sm library-muted">未来汇总大小、重试与实际用量尚未知；最少请求不是精确总调用数。原文单元主区间覆盖全部本次可用正文，不能以开头抽样替代。</p>
+    <p class="text-sm">远端期望章数：{{ wa.preview.manifest.expected_count ?? '未知' }}；本地 {{ wa.preview.manifest.chapters.length }} 章；出版状态 {{ wa.preview.manifest.publication_state }}。没有已核实的远端完整清单，即使数量相同也不证明原作完整。</p>
+    <ul v-if="wa.preview.warnings.length" class="space-y-2"><li v-for="warning in wa.preview.warnings" :key="warning" role="status">{{ warning }}</li></ul>
+    <p v-if="wa.preview.warnings.includes('legacy_repreview_required')" role="status">此配置含旧版 Key 密文。执行可先完成本地加密升级，但配置变化后会停止并要求重新预览，不会静默外发。</p>
+    <h3 class="font-bold">正文可能发送至以下已配置服务</h3>
+    <ul class="space-y-2"><li v-for="target in wa.preview.targets" :key="JSON.stringify([target.provider_id, target.model_key])" class="break-all">{{ target.provider_name }} · <code>{{ target.model_key }}</code></li></ul>
+    <p class="text-sm library-muted">这里的“可用”仅指本地配置/容量检查，不代表远端认证、连通性或实际账单已通过测试。</p>
+    <fieldset :disabled="!!wa.pending" class="space-y-3">
+      <label v-if="wa.preview.confirmation_requirements.order_confirmed" class="block"><input id="wa-confirm-order" type="checkbox" v-model="wa.confirmations.order_confirmed"> 我已核对本次章序，不修改全站系列排序</label>
+      <label v-if="wa.preview.confirmation_requirements.current_archive_only" class="block"><input id="wa-confirm-archive" type="checkbox" v-model="wa.confirmations.current_archive_only"> 仅分析当前可用归档版本；缺章、空白、连载和未知完整性继续保留在报告中</label>
+      <label class="block"><input id="wa-confirm-send" type="checkbox" v-model="wa.confirmations.external_send_confirmed"> 我授权仅此任务的正文发送到上述服务，并在本地保存结构报告与有界短引文</label>
+      <label class="block"><input id="wa-confirm-budget" type="checkbox" v-model="wa.confirmations.budget_confirmed"> 我确认整部上限：{{ wa.preview.budget.request_limit }} 次请求、{{ wa.preview.budget.token_limit }} 计划 token、{{ wa.preview.budget.active_seconds_limit }} 活跃秒</label>
+    </fieldset>
+    <p class="text-xs library-muted">短章的合法引文可能覆盖整章；不保存完整输入重放副本不等于引文永不等于一篇短文。应用层删除不能保证备份、WAL 或介质立即安全擦除。</p>
+    <button id="wa-create" class="library-btn library-btn-primary" :disabled="!canStart" @click="createWork">明确开始本次分析</button>
+  </section>
+  <section class="library-card space-y-3" aria-label="分析记录">
+    <div class="flex flex-wrap items-center gap-3"><h2 class="library-section-title">分析记录</h2><button class="library-btn" @click="loadRuns()" :disabled="wa.busy.list">刷新记录</button></div>
+    <p v-if="wa.readErrors.list" role="alert">{{ wa.readErrors.list }}</p>
+    <ul class="space-y-2"><li v-for="run in wa.runs" :key="run.run_id"><button class="library-btn w-full text-left" :disabled="!!wa.pending" @click="selectRun(run.run_id)" :data-run-id="run.run_id">{{ run.deleted ? '已删除分析' : run.title }} · {{ run.status }}</button></li></ul>
+    <div class="flex gap-3"><button class="library-btn" :disabled="wa.offset === 0 || wa.busy.list" @click="loadRuns(Math.max(0, wa.offset - 20))">上一页记录</button><button class="library-btn" :disabled="wa.offset + 20 >= wa.total || wa.busy.list" @click="loadRuns(wa.offset + 20)">下一页记录</button></div>
+  </section>
+  <section v-if="wa.selectedId" class="library-card space-y-4" aria-label="当前分析">
+    <h2 class="library-section-title">当前分析</h2>
+    <button class="library-btn" @click="refreshRun" :disabled="wa.busy.run">刷新状态</button>
+    <p v-if="wa.readErrors.run" role="alert">{{ wa.readErrors.run }}</p>
+    <template v-if="wa.run">
+      <p id="wa-run-state">{{ wa.run.status }} · {{ wa.run.reason || '无停止原因' }}</p>
+      <p v-if="wa.run.deleted">分析已删除，不能恢复；仅保留必要无正文审计。</p>
+      <template v-else>
+        <p>{{ wa.run.title }} · 版本 {{ wa.run.version }} · 已验证单元 {{ wa.run.unit_counts.succeeded }} / {{ wa.run.unit_counts.total }}</p>
+        <p>{{ coverageText(wa.run.coverage) }}</p>
+        <p>累计发送预留 {{ wa.run.request_count }} / {{ wa.run.budget.request_limit }}；计划 token {{ wa.run.planned_tokens }} / {{ wa.run.budget.token_limit }}；已扣活跃秒 {{ wa.run.active_seconds_debited }} / {{ wa.run.budget.active_seconds_limit }}。</p>
+        <p data-usage>{{ usageText(wa.run.usage_summary) }}</p>
+        <p v-if="['pausing', 'cancelling'].includes(wa.run.status)" role="status">正在等待当前调用真实退出；不保证远端已停止计算，不提前释放共享槽。</p>
+        <p v-if="wa.run.reason === 'sync_yield'">为同步任务让位；同步空闲后可以继续同一已确认任务。</p>
+        <p v-if="wa.run.reason === 'process_interrupted'">进程中断后已暂停，不会自动重发可能已付费请求；恢复保留累计预算。</p>
+        <div class="flex flex-wrap gap-3">
+          <button class="library-btn" :disabled="!controlAllowed('pause')" @click="control('pause')">暂停分析</button>
+          <button class="library-btn" :disabled="!controlAllowed('cancel')" @click="control('cancel')">取消分析</button>
+          <button class="library-btn" :disabled="!controlAllowed('resume')" @click="control('resume')">恢复未完成分析</button>
+        </div>
+        <details class="space-y-3"><summary class="font-bold">明确调整预算（不清零累计计数）</summary>
+          <div class="grid gap-3 md:grid-cols-3">
+            <label for="wa-amend-request">请求上限<input id="wa-amend-request" v-model="wa.amend.request_limit" inputmode="numeric" class="library-input w-full" :disabled="!!wa.pending"></label>
+            <label for="wa-amend-token">计划 token 上限<input id="wa-amend-token" v-model="wa.amend.token_limit" inputmode="numeric" class="library-input w-full" :disabled="!!wa.pending"></label>
+            <label for="wa-amend-time">活跃秒上限<input id="wa-amend-time" v-model="wa.amend.active_seconds_limit" inputmode="numeric" class="library-input w-full" :disabled="!!wa.pending"></label>
+          </div>
+          <label class="block"><input id="wa-confirm-amend" type="checkbox" v-model="wa.amendConfirmed" :disabled="!!wa.pending"> 确认新的有限上限；正文或配置失效不能靠增加预算恢复</label>
+          <button class="library-btn" :disabled="!controlAllowed('budget')" @click="control('budget')">确认调整预算</button>
+        </details>
+        <button class="library-btn" @click="loadUnits(0)" :disabled="wa.busy.units">读取单元诊断</button>
+        <p v-if="wa.readErrors.units" role="alert">{{ wa.readErrors.units }}</p>
+        <ul class="space-y-2"><li v-for="unit in wa.units" :key="unit.unit_id" class="break-words">{{ unit.kind }} · {{ unit.status }} · 尝试 {{ unit.try_no }} · {{ unit.last_error || '无错误' }} · {{ unit.actual_target?.model_key || '尚未调用模型' }} · {{ usageText(unit.usage_summary) }}</li></ul>
+        <div v-if="wa.unitTotal > 20" class="flex gap-3"><button class="library-btn" :disabled="wa.unitOffset === 0 || wa.busy.units" @click="loadUnits(Math.max(0, wa.unitOffset - 20))">上一页单元</button><button class="library-btn" :disabled="wa.unitOffset + 20 >= wa.unitTotal || wa.busy.units" @click="loadUnits(wa.unitOffset + 20)">下一页单元</button></div>
+        <button class="library-btn library-btn-primary" @click="loadReport" :disabled="!wa.run.has_report || wa.busy.report">读取已验证报告</button>
+        <p v-if="wa.readErrors.report" role="alert">{{ wa.readErrors.report }}</p>
+        <details class="space-y-3"><summary class="font-bold">删除本分析</summary>
+          <p class="text-sm">先撤销运行权，再清理结论、引文和恢复引用。应用层删除不保证备份、WAL 或存储介质立即安全擦除。</p>
+          <label class="block"><input id="wa-confirm-delete" type="checkbox" v-model="wa.deleteConfirmed" :disabled="!!wa.pending"> 确认删除本分析的敏感业务产物</label>
+          <button class="library-btn" :disabled="!controlAllowed('delete')" @click="control('delete')">删除分析</button>
+        </details>
+      </template>
+    </template>
+  </section>
+  <section v-if="wa.report && wa.run && !wa.run.deleted" id="wa-report" class="library-card space-y-4" aria-label="已验证作品报告">
+    <h2 class="library-section-title">当前归档版本分析</h2>
+    <p v-if="wa.report.report_stale || wa.run.report_stale" role="status">原文已经更新，这是旧版本报告。短引文保留为历史证据，当前正文定位将重新核验 hash。</p>
+    <p v-if="wa.report.archive_outdated || wa.run.archive_outdated" role="status">归档成员已变化；本报告只覆盖创建时已确认清单，不包含后来新增章节。</p>
+    <p class="text-xs break-all">清单 {{ wa.report.manifest.manifest_fingerprint }}</p>
+    <p>{{ coverageText(wa.report.coverage) }}</p>
+    <p>原作完整性 {{ wa.report.coverage.source_completeness.status }}；出版状态 {{ wa.report.coverage.source_completeness.publication_state }}；声明来源 {{ wa.report.coverage.source_completeness.publication_source }}；汇总 {{ wa.report.synthesis_complete ? '已完成' : '未完成' }}。</p>
+    <p class="whitespace-pre-wrap break-words">{{ wa.report.artifact.summary }}</p>
+    <p v-if="wa.report.artifact.no_findings_reason" class="whitespace-pre-wrap">未找到足够依据：{{ wa.report.artifact.no_findings_reason }}</p>
+    <article v-for="claim in wa.report.artifact.claims" :key="claim.claim_id" class="border rounded-lg p-3 space-y-2">
+      <h3 class="font-bold break-words">{{ claim.label }} · {{ claim.dimension }}</h3>
+      <p>{{ {direct: '直接文本依据', interpretation: '解释性判断', insufficient: '证据不足'}[claim.certainty] }}（不是统计概率）</p>
+      <p class="whitespace-pre-wrap break-words">{{ claim.statement }}</p>
+      <p class="text-xs">支撑章节：{{ Array.from(new Set(claim.evidence_ids.map(id => wa.report.artifact.evidence[id].novel_id))).join('、') }}</p>
+      <details v-for="id in claim.evidence_ids" :key="id" :data-evidence-id="id" class="border rounded-lg p-3 space-y-2">
+        <summary>展开短证据 · 章节 {{ wa.report.artifact.evidence[id].novel_id }}</summary>
+        <blockquote class="whitespace-pre-wrap break-words">{{ wa.report.artifact.evidence[id].quote }}</blockquote>
+        <p class="text-xs">服务端 code point 区间 [{{ wa.report.artifact.evidence[id].start }}, {{ wa.report.artifact.evidence[id].end }})</p>
+        <div class="flex flex-wrap gap-3"><button class="library-btn" :disabled="wa.busy['evidence:' + id]" @click="inspectEvidence(id)">核对当前正文片段</button><a :href="evidenceHref(id)" class="library-btn">到阅读页核对同版本证据</a></div>
+        <p v-if="wa.readErrors['evidence:' + id]" role="alert">{{ wa.readErrors['evidence:' + id] }}</p>
+        <pre v-if="wa.evidence[id]" class="whitespace-pre-wrap break-words"><span>{{ wa.evidence[id].parts.before }}</span><mark>{{ wa.evidence[id].parts.quote }}</mark><span>{{ wa.evidence[id].parts.after }}</span></pre>
+      </details>
+    </article>
+    <section class="space-y-2"><h3 class="font-bold">反例与矛盾</h3><article v-for="(item, index) in wa.report.artifact.counterexamples" :key="index" class="border rounded-lg p-3"><p>{{ item.statement }}</p><details v-for="id in item.evidence_ids" :key="id" :data-evidence-id="id"><summary>展开反例证据 · 章节 {{ wa.report.artifact.evidence[id].novel_id }}</summary><blockquote class="whitespace-pre-wrap break-words">{{ wa.report.artifact.evidence[id].quote }}</blockquote><a :href="evidenceHref(id)" class="library-btn">到阅读页核对同版本证据</a></details></article></section>
+    <section class="space-y-2"><h3 class="font-bold">不确定性</h3><ul><li v-for="(item, index) in wa.report.artifact.uncertainties" :key="index" class="break-words">{{ item }}</li></ul></section>
+    <p>{{ usageText(wa.report.usage_summary) }}</p>
+    <ul><li v-for="unit in wa.report.units" :key="unit.unit_id" class="break-all">{{ unit.kind }} · {{ unit.actual_target?.provider_id }} / {{ unit.actual_target?.model_key || '未报告模型' }} · {{ usageText(unit.usage_summary) }}</li></ul>
+  </section>
+</div>

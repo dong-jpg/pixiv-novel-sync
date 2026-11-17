@@ -967,7 +967,6 @@ class AIProjectsMixin:
 
     def stream_chapter_continue(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """基于项目上下文的章节续写。"""
-        db = self._db()
         output_parts: list[str] = []
         route_context: RouteJobContext | None = None
         route_stream: Any = None
@@ -975,6 +974,7 @@ class AIProjectsMixin:
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
 
+        db = self._db()
         try:
             agent = self._load_agent_config(db, agent_id)
             built = self._build_chapter_continue_inputs(db, payload, agent)
@@ -1165,13 +1165,13 @@ class AIProjectsMixin:
 
         分析新章节内容，更新 character_state / plot_progress / pending_hooks。
         """
-        db = self._db()
         output_parts: list[str] = []
         route_context: RouteJobContext | None = None
         agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
 
+        db = self._db()
         try:
             agent = self._load_agent_config(db, agent_id)
 
@@ -1387,11 +1387,11 @@ class AIProjectsMixin:
 
     def stream_extract_chapter_summary(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """提取章节摘要 + 关键事件，写回 chapter.summary / key_events"""
-        db = self._db()
         output_parts: list[str] = []
         route_context: RouteJobContext | None = None
-        agent_id = int(payload.get("agent_id") or 0)
-        chapter_id = int(payload.get("chapter_id") or 0)
+        agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
+        chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
+        db = self._db()
         try:
             agent = self._load_agent_config(db, agent_id)
             chapter = db.get_ai_chapter(chapter_id)
@@ -1564,12 +1564,12 @@ class AIProjectsMixin:
 
     def stream_auto_resolve_foreshadows(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """扫描章节正文，自动判定哪些 pending 伏笔被回收，更新数据库。"""
-        db = self._db()
         output_parts: list[str] = []
         route_context: RouteJobContext | None = None
         agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
+        db = self._db()
         try:
             agent = self._load_agent_config(db, agent_id)
             chapter = db.get_ai_chapter(chapter_id)
@@ -1680,10 +1680,10 @@ class AIProjectsMixin:
         polish_type = (payload.get("polish_type") or "dialogue").lower()
         if polish_type not in ("dialogue", "psychology"):
             raise AIServiceError("polish_type 必须是 dialogue 或 psychology")
-        db = self._db()
         output_parts: list[str] = []
         route_context: RouteJobContext | None = None
         agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
+        db = self._db()
         try:
             agent = self._load_agent_config(db, agent_id)
             text = (payload.get("text") or "").strip()

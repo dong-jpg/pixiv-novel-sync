@@ -104,6 +104,19 @@ def test_fixed_agent_storage_returns_binding_compatibility_fields(db: Database) 
     assert row["binding_summary"] == "固定：provider / manual-model"
 
 
+@pytest.mark.parametrize("key", ["model", "model ", " vendor/model/v1 ", " "])
+def test_agent_service_create_and_update_preserve_exact_catalog_keys(db, service, key):
+    provider_id = seed_provider(db)
+    for model_key in ("model", "model ", " vendor/model/v1 ", " "):
+        db.create_ai_provider_model({"provider_id": provider_id, "model_key": model_key})
+    agent_id = service.create_agent({"name": "exact key", "task_type": "general",
+        "provider_id": provider_id, "model": key, "system_prompt": "synthetic"})
+    assert db.get_ai_agent(agent_id)["model"] == key
+    service.update_agent(agent_id, {"binding_type": "fixed", "provider_id": provider_id, "model": "other"})
+    service.update_agent(agent_id, {"binding_type": "fixed", "provider_id": provider_id, "model": key})
+    assert db.get_ai_agent(agent_id)["model"] == key
+
+
 def test_pool_agent_cannot_submit_provider_or_model(
     service: AIWritingService,
     db: Database,
