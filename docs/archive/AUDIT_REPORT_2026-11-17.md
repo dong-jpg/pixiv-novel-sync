@@ -118,6 +118,18 @@ main 代码提交 `c3a4385` 在 Python 3.11.3 / Windows、Node 22 和本机 Chro
 
 早先运行分别发现旧备份删除断言、旧登录 fixture 只推进 wall clock、以及 HTTP 测试服务器未消费 POST 请求体导致 Windows 偶发 RST。测试已按当前行为修正，最后完整重跑无失败。`compileall`、`pyflakes`、JS 语法、文档链接检查和相关部署脚本合成仓库验证通过；没有触发真实账户、Provider 费用或生产改动。
 
-ai-writing 最终全量和发布记录在分支收口后补录。不同选择器的重叠测试不相加为总数；浏览器触控模拟不替代手机真机验收。
+ai-writing 提交 `3ca843f` 最终全量回归为 **4065 passed, 17 skipped（728.22 秒）**，环境和跳过原因同上。此前一次完整运行只有写作模板测试的旧脚本提取正则失败：新增 CSP nonce 后不再匹配字面量 `<script>`；调整测试以识别带属性的脚本后，完成这次无失败重跑。不同选择器的重叠测试不相加为总数；浏览器触控模拟不替代手机真机验收。
+
+两分支均通过隔离构建生成 wheel，分别从解包后的安装产物验证 11 项页面 / 静态资源响应。健康、书库、作品分析、偏好学习、远程执行及 CSS / JS 正常；main 的写作 / 向导 / 成人设置路由为 404，ai-writing 对应路由为 200。验证使用独立合成库，不访问私人归档或真实模型。构建后只有文档与测试修正，应用源码及静态资源未再改变。
+
+本机验证原件位于工作区外，不随仓库发布：
+
+- `D:/gitcode/pixiv-novel-sync-main-clean-tests-20261117.log`
+- `D:/gitcode/pixiv-novel-sync-writing-clean-tests-20261117.log`
+- `D:/gitcode/pixiv-novel-sync-audit-artifacts-20261117/`（两分支 wheel 及 `installed-wheel-verification.json`）
+
+2026-11-17 已以 `git push --atomic origin main ai-writing` 一起发布 main `e4d493c` 和 ai-writing `3ca843f`，读回确认远端 SHA 一致。随后删除已完整合入的远端 `claude/audit-followups-fab5ce`；删除使用对应 SHA 的 lease，避免覆盖并发新增提交。GitHub API 与本地分支列表均确认仅保留 **main / ai-writing**；`origin/HEAD` 是默认分支指针，不是第三条分支。此后的交付记录补录只涉及文档，并继续由 ai-writing 合并 main 继承。
+
+本地已删除 15 条临时分支；逐一验证其提交在 main 的祖先历史中。清理前完整 Git 备份 `D:/gitcode/pixiv-novel-sync-before-branch-cleanup-20261117.bundle` 经 `git bundle verify` 确认有效，分支原 SHA 清单位于同目录 `pixiv-novel-sync-branch-inventory-20261117.txt`。原有其他工作树保持分离 HEAD，原 stash 和未跟踪的 `.probe012/`、`docs/codex-for-oss-application.md` 保留在本机，未发布。
 
 合并原则：非写作共享成果先进入 main，ai-writing 以真实 merge 继承 main，再保留项目 / 章节 / 向导 / 检索 / 蒸馏 / 成人润色。删除分支前验证祖先包含关系并保留本地 Git bundle，未提交探针或私人申请草稿不发布。
