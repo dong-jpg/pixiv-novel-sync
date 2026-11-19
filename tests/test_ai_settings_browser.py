@@ -1,6 +1,7 @@
-"""Opt-in, offline real-Vue AI settings regression (never starts the app).
+"""Offline real-Vue AI settings regression (never starts the app).
 
-Set AI_UI_VUE_JS to a pre-existing, SRI-verified Vue 3.4.38 runtime to opt in.
+Uses the shipped, SRI-verified Vue 3.4.38 runtime by default. AI_UI_VUE_JS
+may select another copy of the same bytes; AI_UI_BROWSER may select firefox.
 Saved-current refresh uses actual page reload; live option replacement remains
 separate VM coverage. The fixture rejects every non-whitelisted request.
 The browser's touch emulation is not on-device soft-keyboard acceptance.
@@ -25,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "src" / "pixiv_novel_sync" / "templates"
 STATIC = TEMPLATES.parent / "static"
 ORIGIN = "https://ai-ui.fixture.invalid"
-VUE_URL = "https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"
+VUE_URL = ORIGIN + "/static/vendor/vue-3.4.38.global.prod.js?v=b50eeefe35d4"
 WIDTHS = (375, 768, 1440)
 CSRF = "fixture-csrf-not-a-credential"
 KEY = "fixture-key-not-a-credential"
@@ -92,12 +93,11 @@ def usage(input_tokens, output_tokens, total_tokens, reported, unreported, compl
 
 @pytest.fixture(scope="module")
 def local_vue():
-    configured = os.environ.get("AI_UI_VUE_JS")
-    if not configured or not Path(configured).is_file():
-        pytest.skip("AI_UI_VUE_JS must name an existing offline Vue 3.4.38 runtime")
+    configured = os.environ.get("AI_UI_VUE_JS") or STATIC / "vendor" / "vue-3.4.38.global.prod.js"
+    assert Path(configured).is_file(), "The packaged Vue runtime must exist"
     data = Path(configured).read_bytes()
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
-    sri = re.search(r'vue@3\.4\.38/[^" ]+"\s+integrity="sha384-([^" ]+)"', base)
+    sri = re.search(r'vue-3\.4\.38\.global\.prod\.js\?v=[0-9a-f]{12}"\s+integrity="sha384-([^" ]+)"', base)
     assert sri is not None, "The shipped pinned Vue SRI must remain present"
     assert base64.b64encode(hashlib.sha384(data).digest()).decode("ascii") == sri.group(1)
     return data
@@ -108,9 +108,9 @@ def browser(local_vue):
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as runtime:
         try:
-            instance = runtime.chromium.launch(headless=True)
+            instance = getattr(runtime, os.environ.get("AI_UI_BROWSER", "chromium")).launch(headless=True)
         except playwright.Error as exc:
-            pytest.skip("An existing Chromium installation is required: " + str(exc))
+            pytest.skip("The selected Playwright browser must be installed: " + str(exc))
         yield instance
         instance.close()
 

@@ -172,6 +172,12 @@ def require_owner(conn, lease, *, now=None, states=("running",), deadline=True, 
     return row
 
 
+def summarize_request_usage(snapshots):
+    records = [{"request_ordinal": index, **snapshot} for index, snapshot in enumerate(snapshots, 1)]
+    return {**summarize_usage([{"usage": {"requests": records}}], network_request_count=len(records)),
+            "network_request_count": len(records)}
+
+
 def usage_summary(conn, run_id, unit_id=None):
     sql = "SELECT usage_json FROM work_analysis_requests WHERE run_id=? AND entry_kind='request'"
     params = [run_id]
@@ -179,10 +185,23 @@ def usage_summary(conn, run_id, unit_id=None):
         sql += " AND unit_id=?"
         params.append(unit_id)
     sql += " ORDER BY reserved_at,child_job_id,request_ordinal"
-    rows = conn.execute(sql, params).fetchall()
-    records = [{"request_ordinal": index, **load(row[0])} for index, row in enumerate(rows, 1)]
-    return {**summarize_usage([{"usage": {"requests": records}}], network_request_count=len(rows)),
-            "network_request_count": len(rows)}
+    return summarize_request_usage([load(row[0]) for row in conn.execute(sql, params)])
+
+
+def usage_summaries(conn, run_id, unit_ids):
+    """Read the bounded parent ledger once for its total and all displayed units."""
+    snapshots, by_unit = [], {unit_id: [] for unit_id in unit_ids}
+    for row in conn.execute(
+        "SELECT unit_id,usage_json FROM work_analysis_requests WHERE run_id=? AND entry_kind='request' "
+        "ORDER BY reserved_at,child_job_id,request_ordinal", (run_id,),
+    ):
+        snapshot = load(row["usage_json"])
+        snapshots.append(snapshot)
+        if row["unit_id"] in by_unit:
+            by_unit[row["unit_id"]].append(snapshot)
+    return summarize_request_usage(snapshots), {
+        unit_id: summarize_request_usage(values) for unit_id, values in by_unit.items()
+    }
 
 
 def current_coverage(conn, row):

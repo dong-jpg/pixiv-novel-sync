@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from pathlib import Path
 
@@ -163,8 +164,9 @@ def test_userscript_locks_a14_fixes() -> None:
     # 0.6.2：「尚无此页」留在失效文案表里（列表页卡片识别仍用文案表；
     # 正文页 0.9.0 起改问 Pixiv ajax，不再靠文案或 <main> 判断）
     assert "'尚无此页'" in script
-    # 列表页首屏快速轮询窗口（SPA 分批渲染时避免错过卡片）
-    assert "fastScanUntil" in script
+    # SPA 分批插入和复用节点均由观察器接住，不再叠加 500ms 快速轮询。
+    assert "fastScanUntil" not in script
+    assert "characterData: true" in script
     # 0.6.3：点击意图优先——从救援卡点进来时直接渲染，不依赖页面文案；
     # 另加 1s URL 变化兜底（Pixiv 内部路由可能绕过 history hook）
     assert "consumeRescueIntent" in script
@@ -289,7 +291,7 @@ def rescue_browser():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as runtime:
         try:
-            browser = runtime.chromium.launch(headless=True)
+            browser = getattr(runtime, os.environ.get("RESCUE_TEST_BROWSER", "chromium")).launch(headless=True)
         except Exception as exc:  # pragma: no cover - depends on local browser install
             pytest.skip(f"Playwright 浏览器不可用：{exc}")
         yield browser
@@ -1948,6 +1950,7 @@ def _held_lookup_novel(novel_id: int, title: str) -> dict:
 
 # 应答回来之前卡片变成了什么样（模拟 Vue 翻页复用同一个节点、或整块换掉）
 REUSE_MUTATIONS = {
+    "healed_same_id": """() => { document.querySelector('#list a div div div').textContent = '健康作品标题'; }""",
     # 同一个节点改画另一部失效作品：只改链接
     "relinked": "() => { document.querySelector('#list a').setAttribute('href', '/novel/show.php?id=102'); }",
     # 同一个节点改画一部健康作品：链接与文字都换掉
@@ -1984,11 +1987,11 @@ def test_userscript_fixture_lookup_reply_skips_card_that_changed(rescue_browser,
         # 下一轮扫描按现在的链接重新登记，查到的是 102
         page.locator(".pixiv-rescue-rescued-title", has_text="新作品备份").wait_for(state="visible", timeout=5000)
         assert page.evaluate(lookups, LOOKUP_URL + "102") == 1
-    elif mutation == "healed":
+    elif mutation in {"healed", "healed_same_id"}:
         page.wait_for_timeout(1200)
         assert page.locator(".pixiv-rescue-rescued-card").count() == 0
         assert page.locator("#list [data-pixiv-rescue]").count() == 0
-        assert "健康作品的标题" in page.locator("#list a").inner_text()
+        assert "健康作品" in page.locator("#list a").inner_text()
     else:
         # 摘下来的节点原样不动、也不挂着 pending；放回页面后照常从缓存画出来，不再多查一次
         detached = page.evaluate("""() => ({ text: window.__detached.textContent,
@@ -2107,14 +2110,35 @@ LIST_SCAN_COUNTER = """
 """
 
 
-def test_userscript_fixture_list_fast_scan_ends_15s_after_entering_while_dom_keeps_changing(rescue_browser) -> None:
-    """审查第 2 节：删掉观察器里延长 fastScanUntil 的那一行，500ms 快速轮询只在进入列表页后 15 秒内。
+def test_userscript_healthy_short_card_next_to_broken_card_is_untouched(rescue_browser):
+    page = rescue_browser.new_page()
+    healthy = "<li><div class='works-item'><a href='/novel/show.php?id=102'>正常</a></div></li>"
+    responses = {LOOKUP_URL + "101": _held_lookup_novel(101, "失效作品备份")}
+    _install_list_script(page, "<ul id='list'>" + healthy + _broken_card_html(101) + "</ul>",
+                         responses, {"pixivRescueToken": LIST_TOKEN})
+    page.locator(".pixiv-rescue-rescued-title", has_text="失效作品备份").wait_for()
+    assert page.locator("#list a[href$='id=102']").inner_text() == "正常"
+    assert page.locator("#list li").first.locator("[data-pixiv-rescue]").count() == 0
+    assert not any("novel_ids=102" in item["url"] or "%2C102" in item["url"]
+                   for item in page.evaluate("window.__rescueRequests"))
+    page.close()
 
-    核实（假时钟跑 60 秒数全页扫描）：页面静止时那一行确实不起作用（快速轮询 15 秒后已结束，
-    推后的截止时间没人读）；但页面一直有 DOM 变动（广告、懒加载）时它让 500ms 全页扫描永不停止，
-    0.12.1 在 30–60 秒里扫 85 次，删掉后 25 次（3 秒定时 + 每批变动后一次）。插入的卡片由每批
-    变动后的那一轮扫描接住，不靠快速轮询。
-    """
+
+def test_userscript_observes_existing_card_text_changes_without_fast_polling(rescue_browser):
+    page = rescue_browser.new_page()
+    page.clock.install(time=1_800_000_000_000)
+    html = "<ul id='list'><li><div class='works-item'><a href='/novel/show.php?id=101'>正常</a></div></li></ul>"
+    _install_list_script(page, html, {LOOKUP_URL + "101": _held_lookup_novel(101, "新发现的备份")},
+                         {"pixivRescueToken": LIST_TOKEN})
+    page.clock.run_for(300)
+    page.evaluate("() => { document.querySelector('#list a').firstChild.data = '该作品无法显示'; }")
+    page.clock.run_for(300)
+    assert page.locator(".pixiv-rescue-rescued-title", has_text="新发现的备份").count() == 1
+    page.close()
+
+
+def test_userscript_fixture_list_scan_stays_bounded_while_dom_keeps_changing(rescue_browser) -> None:
+    """DOM 变动由观察器合并，3 秒轮询兜底；进入列表也不启动额外的 500ms 扫描。"""
     page = rescue_browser.new_page()
     page.clock.install(time=1_800_000_000_000)
     page.add_init_script(LIST_SCAN_COUNTER)
@@ -2127,8 +2151,8 @@ def test_userscript_fixture_list_fast_scan_ends_15s_after_entering_while_dom_kee
     scans = page.evaluate("(started) => window.__listScans.map((at) => at - started)", started)
     first = sum(1 for at in scans if at < 15000)
     later = sum(1 for at in scans if 20000 <= at < 45000)
-    assert first > 25, f"前 15 秒只扫了 {first} 次：快速轮询没跑起来，这个计数说明不了什么"
-    assert later < 40, f"20–45 秒还扫了 {later} 次：快速轮询没在进入列表页 15 秒后停下"
+    assert 5 <= first <= 20, f"前 15 秒扫描 {first} 次，观察器未工作或仍有冗余轮询"
+    assert 10 <= later < 40, f"20–45 秒扫描 {later} 次，观察器未工作或扫描失控"
     page.close()
 
 

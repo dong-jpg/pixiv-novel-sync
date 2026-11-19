@@ -5,7 +5,7 @@ import hashlib
 from ...work_analysis.artifacts import report_claim_identity, validate_artifact
 from ...work_analysis.contracts import WorkAnalysisError
 from .common import (
-    assert_not_deleted, budget_from_row, dump, get_row, hex_id, integer, load, usage_summary,
+    assert_not_deleted, budget_from_row, dump, get_row, hex_id, integer, load, usage_summaries, usage_summary,
 )
 
 
@@ -15,9 +15,10 @@ REPORT_RESPONSE_MAX_BYTES = 1024 * 1024 + 64 * 1024
 
 
 class WorkAnalysisQueriesMixin:
-    def _work_unit_view(self, conn, row, *, private=False):
+    def _work_unit_view(self, conn, row, *, private=False, summary=None):
         unit = load(row["unit_json"])
-        summary = usage_summary(conn, row["run_id"], row["unit_id"])
+        if summary is None:
+            summary = usage_summary(conn, row["run_id"], row["unit_id"])
         result = {
             "unit_id": row["unit_id"], "kind": row["kind"], "level": row["level"],
             "is_final": bool(row["is_final"]), "status": row["status"], "try_no": row["try_no"],
@@ -36,6 +37,13 @@ class WorkAnalysisQueriesMixin:
 
     def _work_detail(self, conn, row, *, private=False, include_manifest=True):
         manifest = load(row["manifest_json"])
+        if private:
+            units = conn.execute(
+                "SELECT * FROM work_analysis_units WHERE run_id=? ORDER BY ordinal", (row["run_id"],),
+            ).fetchall()
+            summary, unit_summaries = usage_summaries(conn, row["run_id"], (unit["unit_id"] for unit in units))
+        else:
+            summary = usage_summary(conn, row["run_id"])
         counts = conn.execute(
             "SELECT COUNT(*),COALESCE(SUM(status='succeeded'),0) FROM work_analysis_units WHERE run_id=?",
             (row["run_id"],),
@@ -52,7 +60,7 @@ class WorkAnalysisQueriesMixin:
             "claim_feedback_revision": row["claim_feedback_revision"],
             "budget": budget_from_row(row), "request_count": row["request_count"],
             "planned_tokens": row["planned_tokens"], "active_seconds_debited": row["active_seconds_debited"],
-            "usage_summary": usage_summary(conn, row["run_id"]), "coverage": load(row["coverage_json"]),
+            "usage_summary": summary, "coverage": load(row["coverage_json"]),
             "unit_counts": {"total": counts[0], "succeeded": counts[1]},
             "can_resume": not deleted and row["invalidated_at"] is None and row["status"] in {"paused", "cancelled", "failed"},
             "has_report": not deleted and row["status"] == "succeeded" and row["report_json"] is not None,
@@ -68,9 +76,8 @@ class WorkAnalysisQueriesMixin:
                 heartbeat_at=row["heartbeat_at"], slice_deadline_at=row["slice_deadline_at"],
                 slice_seconds=row["slice_seconds"], slice_settled=bool(row["slice_settled"]),
                 budget_history=load(row["budget_history_json"]), report=load(row["report_json"]),
-                units=[self._work_unit_view(conn, unit, private=True) for unit in conn.execute(
-                    "SELECT * FROM work_analysis_units WHERE run_id=? ORDER BY ordinal", (row["run_id"],)
-                )],
+                units=[self._work_unit_view(conn, unit, private=True, summary=unit_summaries[unit["unit_id"]])
+                       for unit in units],
             )
         return result
 
@@ -109,7 +116,8 @@ class WorkAnalysisQueriesMixin:
             rows = conn.execute(
                 "SELECT * FROM work_analysis_units WHERE run_id=? ORDER BY ordinal LIMIT ? OFFSET ?", (run_id, limit, offset)
             ).fetchall()
-            return {"items": [self._work_unit_view(conn, row) for row in rows],
+            _, summaries = usage_summaries(conn, run_id, (row["unit_id"] for row in rows))
+            return {"items": [self._work_unit_view(conn, row, summary=summaries[row["unit_id"]]) for row in rows],
                     "total": total, "offset": offset, "limit": limit}
 
     def _work_report(self, conn, row):
@@ -131,9 +139,11 @@ class WorkAnalysisQueriesMixin:
                       } for claim in report["artifact"]["claims"]})
         report["report_stale"] = bool(row["report_stale"])
         report["archive_outdated"] = bool(row["archive_outdated"])
-        report["usage_summary"] = usage_summary(conn, row["run_id"])
+        report["usage_summary"], summaries = usage_summaries(
+            conn, row["run_id"], (unit["unit_id"] for unit in report["units"]),
+        )
         for unit in report["units"]:
-            unit["usage_summary"] = usage_summary(conn, row["run_id"], unit["unit_id"])
+            unit["usage_summary"] = summaries[unit["unit_id"]]
         dump(report, REPORT_RESPONSE_MAX_BYTES)
         return report
 

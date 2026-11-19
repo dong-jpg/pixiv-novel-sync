@@ -667,6 +667,35 @@ test('series archive deletion preserves failures and returns to its safe parent 
   assert.equal(m.location.href, from);
 });
 
+test('reader keeps the latest progress while coalescing pixel-cache writes during a scroll burst', async () => {
+  const m = environment('/dashboard/novels/1').mount('dashboard_novel_detail.html');
+  await m.start();
+  let heightReads = 0, pixelWrites = 0;
+  Object.defineProperty(m.document.documentElement, 'scrollHeight', {get() { heightReads++; return 100600; }});
+  const originalSet = m.local.set.bind(m.local);
+  m.local.set = (key, value) => { if (key === 'pixivNovelSync:reading:1') pixelWrites++; return originalSet(key, value); };
+  m.emit('wheel', {type: 'wheel'});
+  for (let i = 0; i < 100; i++) { m.window.scrollY = 10000 + i; m.emit('scroll'); }
+  assert.equal(heightReads, 100, 'sample layout once per scroll event');
+  assert.equal(pixelWrites, 1, 'a scroll burst must not synchronously write the pixel cache on every frame');
+  assert.equal(m.state.progressSyncState.value.local.progress, 10, 'CAS intent remains immediate');
+  m.emit('pagehide');
+  assert.equal(pixelWrites, 2, 'leaving the page must persist the most recent pixel position');
+  assert.equal(JSON.parse(m.local.get('pixivNovelSync:reading:1')).scrollY, 10099);
+  await m.flush();
+  m.dispose();
+});
+
+test('reader still loads when the browser denies access to the localStorage property', async () => {
+  const m = environment('/dashboard/novels/1');
+  Object.defineProperty(m.context, 'localStorage', {get() { throw Error('SecurityError: storage denied'); }});
+  assert.doesNotThrow(() => m.mount('dashboard_novel_detail.html'));
+  await m.start();
+  assert.equal(m.state.novel.value.title, 'fixture book');
+  assert.equal(m.state.loading.value, false);
+  m.dispose();
+});
+
 test('saving from the actual reader toolbar samples live scroll, never moves, and rejects duplicate saves', async () => {
   const m = environment('/dashboard/novels/1').mount('dashboard_novel_detail.html');
   await m.start();

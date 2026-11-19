@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from typing import Any
 
 from ..invocation import normalize_text_invocation
 from ..model_router import RouteResult
-from ..models import AIAgentConfig, AIStreamChunk
+from ..models import AIAgentConfig
 from ..prompts import build_keyword_clean_messages
-from .core import RouteJobContext
 
 
 def _validate_keyword_output(text: str) -> dict[str, list[str]]:
@@ -43,44 +42,6 @@ class AIKeywordCleanMixin:
     main 分支上这是 AIWritingService 唯一保留的生成能力；
     完整写作模块在 ai-writing 分支。
     """
-
-    def _forward_route(
-        self,
-        context: RouteJobContext,
-        messages: list[dict[str, str]],
-        output_parts: list[str],
-        *,
-        stage: str = "main",
-        temperature: float | None = None,
-        top_p: float | None = None,
-        max_tokens: int | None = None,
-        forward_delta: bool = True,
-        is_cancelled: Callable[[], bool] | None = None,
-    ) -> Generator[AIStreamChunk, None, RouteResult]:
-        stream = self._stream_route(
-            context,
-            messages,
-            stage=stage,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            is_cancelled=is_cancelled,
-        )
-        try:
-            while True:
-                try:
-                    chunk = next(stream)
-                except StopIteration as stopped:
-                    return stopped.value
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    if forward_delta:
-                        yield chunk
-                elif chunk.type == "progress":
-                    yield chunk
-        except GeneratorExit:
-            stream.close()
-            raise
 
     @staticmethod
     def _route_result_message(result: RouteResult) -> str:

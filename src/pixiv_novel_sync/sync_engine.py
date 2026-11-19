@@ -1358,10 +1358,22 @@ class BookmarkNovelSyncService:
                                 int(sid),
                                 require_assets=download_assets,
                             )
-                            if remote_total > 0 and local_complete_count == remote_total:
+                            # 章数相同不代表同一份目录：删一章再加一章、或磁盘附件
+                            # 丢失时都必须继续处理。只有首页已经给出完整且无重复的
+                            # 章节身份，并逐本核实文件，才能跳过整部；长系列仍按预算翻页。
+                            first_items = series_data.get("novels", []) if isinstance(series_data, dict) else []
+                            first_ids = [item["id"] for item in first_items
+                                         if isinstance(item, dict) and type(item.get("id")) is int and item["id"] > 0]
+                            complete_inventory = (
+                                isinstance(series_data, dict) and not series_data.get("next_url")
+                                and len(first_ids) == len(first_items) == len(set(first_ids)) == remote_total
+                            )
+                            if (remote_total > 0 and local_complete_count == remote_total and complete_inventory
+                                    and all(self._archive_complete_on_disk(novel_id, download_assets)
+                                            for novel_id in first_ids)):
                                 stats["skipped"] = stats.get("skipped", 0) + remote_total
                                 logger.info(
-                                    "Skip full series %s: local chapters=%d matches remote total=%d",
+                                    "Skip full series %s: verified %d archived chapters against remote total=%d",
                                     sid,
                                     local_complete_count,
                                     remote_total,
@@ -1410,6 +1422,7 @@ class BookmarkNovelSyncService:
                                             if progress_callback:
                                                 progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                         else:
+                                            truncated_series += 1
                                             break
                                     except InterruptedError:
                                         raise
@@ -1469,6 +1482,7 @@ class BookmarkNovelSyncService:
                                     if idx < len(all_novel_items) - 1 and chapter_delay > 0:
                                         _sleep_with_progress_cancel(chapter_delay, progress_callback)
 
+                                stats["skipped"] = stats.get("skipped", 0) + skipped_count
                                 if chapter_count:
                                     logger.info("  Synced %d chapters, skipped %d for series %s", chapter_count, skipped_count, sid)
                                     if progress_callback:

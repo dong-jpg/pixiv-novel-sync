@@ -297,16 +297,12 @@ class SeriesMixin:
             self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
         return affected_chapter_ids
 
-    def get_all_series_ids(self) -> list[int]:
-        rows = self.conn.execute("SELECT series_id FROM series ORDER BY series_id").fetchall()
-        return [row[0] for row in rows]
-
     def get_series_ids_for_status_check(self, limit: int | None = None) -> list[int]:
         """按 last_checked_at 升序返回待状态检查的系列 ID（从未检查过的排最前）。
 
         与 ``get_novel_ids_for_status_check`` / ``get_users_for_status_check`` 同一套
-        轮转语义。``get_all_series_ids`` 按 series_id 固定排序，一旦熔断中止，队尾就
-        永远轮不到——目前系列数少（273 个）每轮都能跑完所以没暴雷，但不能依赖这一点。
+        轮转语义。按 series_id 固定排序会在每轮熔断中止时饿死队尾，
+        因此不能用固定 ID 顺序代替轮转时间。
         """
         sql = (
             "SELECT series_id FROM series "

@@ -117,6 +117,8 @@ class FileStorage:
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
+                if stop_requested is not None and stop_requested():
+                    raise InterruptedError("Task stopped by user")
                 with self.session.get(
                     url,
                     timeout=timeout,
@@ -131,11 +133,15 @@ class FileStorage:
                     try:
                         with tmp.open("wb") as fh:
                             for chunk in response.iter_content(chunk_size=64 * 1024):
+                                if stop_requested is not None and stop_requested():
+                                    raise InterruptedError("Task stopped by user")
                                 if not chunk:
                                     continue
                                 fh.write(chunk)
                                 hasher.update(chunk)
                             _flush_to_disk(fh)
+                        if stop_requested is not None and stop_requested():
+                            raise InterruptedError("Task stopped by user")
                         os.replace(tmp, target)
                     except Exception:
                         tmp.unlink(missing_ok=True)
@@ -296,4 +302,7 @@ class FileStorage:
         except OSError:
             return False
         roots = (self.settings.storage.public_dir.resolve(), self.settings.storage.private_dir.resolve())
-        return any(candidate == root or candidate.is_relative_to(root) for root in roots)
+        # archive_dir 的历史脏值（如 '.'）不能把删除一篇小说升级成删除整个库。
+        # 根目录相互嵌套时，也不能把另一个根或其父目录误认为普通子目录。
+        return (not any(root.is_relative_to(candidate) for root in roots)
+                and any(candidate.is_relative_to(root) for root in roots))

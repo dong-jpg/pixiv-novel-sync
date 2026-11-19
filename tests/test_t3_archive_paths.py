@@ -109,3 +109,36 @@ def test_archive_consumers_reject_symlink_escape(tmp_path, mode):
     assert stats == {"dirs_removed": 0, "files_removed": 0, "missing": 0, "skipped": 2}
     assert keep.read_text(encoding="utf-8") == "keep"
     assert link.is_symlink()
+
+
+@pytest.mark.parametrize("mode", ["remove", "trash"])
+@pytest.mark.parametrize("nested_roots", [False, True])
+def test_archive_consumers_never_remove_storage_root(tmp_path, mode, nested_roots):
+    settings = make_settings(tmp_path)
+    if nested_roots:
+        settings.storage.private_dir = settings.storage.public_dir / "nested" / "private"
+    storage = FileStorage(settings)
+    public_keep = settings.storage.public_dir / "other-novel" / "text.txt"
+    private_keep = settings.storage.private_dir / "other-novel" / "text.txt"
+    storage.write_text(public_keep, "public backup")
+    storage.write_text(private_keep, "private backup")
+    refs = [
+        {"novel_id": 1, "archive_dir": ".", "restrict_value": "public"},
+        {"novel_id": 2, "archive_dir": str(settings.storage.private_dir)},
+        {"novel_id": 3, "archive_dir": "other-novel/..", "restrict_value": "public"},
+    ]
+    if nested_roots:
+        refs.append({"novel_id": 4, "archive_dir": "nested"})
+    if mode == "remove":
+        stats = _remove_archive_files(settings, refs)
+    else:
+        trash = _ArchiveTrash(settings, refs)
+        trash.stage()
+        stats = trash.stats
+        trash.commit()
+
+    # 同一路径的 '.' / '..' 会先去重，嵌套根的父目录则独立拒绝。
+    assert stats == {"dirs_removed": 0, "files_removed": 0, "missing": 0,
+                     "skipped": 3 if nested_roots else 2}
+    assert public_keep.read_text(encoding="utf-8") == "public backup"
+    assert private_keep.read_text(encoding="utf-8") == "private backup"
