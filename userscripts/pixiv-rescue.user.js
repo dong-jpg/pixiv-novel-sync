@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.12.3
+// @version      0.12.4
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；「好P友新作」tab 改为「拯救系列」，追更列表空白框原位替换为备份卡片。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.12.3';
+  const SCRIPT_VERSION = '0.12.4';
   // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
   // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
   const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
@@ -249,8 +249,8 @@
   // Token 探测只做一次：没识别到失效卡片时用一次 lookup 判断 Token 配置，
   // 避免「卡片识别失败」与「脚本没运行」在用户眼里无法区分。
   let tokenProbed = false;
-  // 列表页快速轮询窗口的截止时间戳（见 handleListPage）
-  let fastScanUntil = 0;
+  // 合并列表 DOM 变动的扫描定时器（见 handleListPage）
+  let listScanTimer = null;
   function showRescueNotice(kind) {
     const messages = {
       missing_token: '救援脚本未设置 Token：点 Tampermonkey 菜单「设置或更新救援 Token」后刷新页面',
@@ -1619,7 +1619,9 @@
     // 旧版只查两层导致「该作品无法显示」永远识别不到。
     const targets = [card];
     let node = card;
+    const boundary = card.closest('div.works-item, li');
     for (let i = 0; i < 4 && node && node.parentElement; i += 1) {
+      if (node === boundary) break;
       node = node.parentElement;
       targets.push(node);
     }
@@ -1652,18 +1654,17 @@
   // 那个节点（链接 / data-gtm-value）还在卡片里且 ID 没变。Pixiv 列表是 Vue 渲染的，翻页时可能
   // 复用同一个节点改画另一部作品；0.12.1 及以前不核对，迟到的应答会把上一部的备份画到这张卡上
   function entryStillMatches(entry) {
+    if (!isBookmarksListPage() && !isWatchlistPage()) return false;
     const card = entry.card;
     if (!card.isConnected || card.getAttribute(ROOT_ATTRIBUTE) !== 'card-pending') return false;
     const source = entry.source;
     if (!source || !source.isConnected || !card.contains(source)) return false;
-    if (entry.type === 'unknown') return String(source.getAttribute('data-gtm-value') || '').trim() === entry.id;
+    if (entry.type === 'unknown') return String(source.getAttribute('data-gtm-value') || '').trim() === entry.id && cardIsBroken(card);
     const work = linkWork(source);
-    return Boolean(work) && work.type === entry.type && work.id === entry.id;
+    return Boolean(work) && work.type === entry.type && work.id === entry.id && cardIsBroken(source);
   }
 
   function collectBrokenCards() {
-    const novelIds = new Set();
-    const seriesIds = new Set();
     const broken = [];
 
     // source：从哪个节点读到的 ID（失效卡的链接，或无链接白块上带 data-gtm-value 的节点），回调复核用
@@ -1672,13 +1673,6 @@
       // 下一轮扫描允许重试。A14-03 的根因就是这里先写了永久标记。
       card.setAttribute(ROOT_ATTRIBUTE, 'card-pending');
       broken.push({ type: type, id: id, card: card, source: source });
-      if (type === 'novel') novelIds.add(id);
-      else if (type === 'series') seriesIds.add(id);
-      else {
-        // 无链接的白块拿不到类型：两头都查，命中哪个算哪个
-        novelIds.add(id);
-        seriesIds.add(id);
-      }
     }
 
     // 卡片已被处理过（终态 card / 处理中 card-pending）都跳过，等待中的卡片由
@@ -1724,7 +1718,7 @@
       register(card, value, 'unknown', node);
     });
 
-    return { broken: broken, novelIds: novelIds, seriesIds: seriesIds };
+    return broken;
   }
 
   // /api/rescue/v1/lookup 的单次上限：novel_ids + series_ids 合计 40（A14-04）
@@ -1818,7 +1812,7 @@
 
   function markBrokenCards() {
     const found = collectBrokenCards();
-    if (!found.broken.length) {
+    if (!found.length) {
       // 没识别到失效卡片 ≠ 一切正常：Token 缺失时旧版在这里静默 return，
       // 用户永远看不到配置提示。用一次轻量 lookup 探测 Token 状态（只发一次）。
       if (!tokenProbed) {
@@ -1836,7 +1830,7 @@
     // 缓存命中：直接渲染，不发任何请求（每次进收藏页的等待主要来自这里）
     const cachedEntries = readLookupCache();
     const pendingEntries = [];
-    found.broken.forEach(function (entry) {
+    found.forEach(function (entry) {
       const cached = entry.type === 'unknown'
         ? (readCachedLookup(cachedEntries, entry.id, 'series') || readCachedLookup(cachedEntries, entry.id, 'novel'))
         : readCachedLookup(cachedEntries, entry.id, entry.type);
@@ -1848,8 +1842,7 @@
       }
     });
     if (!pendingEntries.length) return;
-    const pending = { broken: pendingEntries };
-    buildLookupBatches(pending.broken).forEach(function (batch) {
+    buildLookupBatches(pendingEntries).forEach(function (batch) {
       apiGet(buildLookupPath(batch.novelIds, batch.seriesIds)).then(function (data) {
         const novels = {};
         (data.novels || []).forEach(function (item) { novels[item.novel_id] = item; });
@@ -1901,44 +1894,19 @@
     // MutationObserver 在卡片节点插入时立刻扫一轮，不必等下一个 3 秒 tick；
     // 观察器去抖，避免渲染风暴时重复扫描。
     if (!window.__pixivRescueObserver) {
-      let scheduled = false;
       const observer = new MutationObserver(function () {
-        if (scheduled) return;
-        scheduled = true;
-        window.setTimeout(function () {
-          scheduled = false;
+        if (listScanTimer !== null) return;
+        listScanTimer = window.setTimeout(function () {
+          listScanTimer = null;
           if (!isBookmarksListPage() && !isWatchlistPage()) return;
           scanListPage();
-          // 这里不延长下面的快速轮询：每批插入都会走到这一轮扫描，漏不掉。0.12.1 及以前在这里把
-          // fastScanUntil 再推后 15 秒：页面一直有变动（广告、懒加载）时 500ms 全页扫描永不停止；
-          // 安静满 15 秒、快速轮询结束后，这一行又什么都不做
         }, 150);
       });
-      observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+      observer.observe(document.body || document.documentElement, {
+        childList: true, subtree: true, characterData: true, attributeFilter: ['href', 'data-gtm-value', 'class']
+      });
       window.__pixivRescueObserver = observer;
     }
-    // 快速轮询窗口：进入列表页（含 SPA 切页、翻页）后 15 秒内每 500ms 扫一次（SPA 分批渲染），
-    // 之后交给 3 秒 interval。定时器用链式 setTimeout，避免两个 interval 叠加。
-    fastScanUntil = Date.now() + 15000;
-    if (!window.__pixivRescueFastScan) {
-      const fastTick = function () {
-        if (!isBookmarksListPage() && !isWatchlistPage()) {
-          window.__pixivRescueFastScan = null;
-          return;
-        }
-        scanListPage();
-        if (Date.now() < fastScanUntil) {
-          window.__pixivRescueFastScan = window.setTimeout(fastTick, 500);
-        } else {
-          window.__pixivRescueFastScan = null;
-        }
-      };
-      window.__pixivRescueFastScan = window.setTimeout(fastTick, 500);
-    }
-    // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）。
-    // 它从不停止，跳出列表页后每个 tick 先看路径再决定扫不扫——0.9.0 及以前
-    // 在正文页、首页上也每 3 秒全页扫一遍。不 clearInterval：回到列表页时
-    // 不必重新注册，下一个 tick 就恢复扫描。
     if (!window.__pixivRescueListInterval) {
       window.__pixivRescueListInterval = window.setInterval(function () {
         if (!isBookmarksListPage() && !isWatchlistPage()) return;
@@ -2581,6 +2549,10 @@
     if (!isBookmarksListPage() && !isWatchlistPage() && window.__pixivRescueObserver) {
       window.__pixivRescueObserver.disconnect();
       window.__pixivRescueObserver = null;
+      window.clearTimeout(listScanTimer);
+      listScanTimer = null;
+      window.clearInterval(window.__pixivRescueListInterval);
+      window.__pixivRescueListInterval = null;
     }
   }
 

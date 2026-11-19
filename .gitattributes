@@ -6,3 +6,5 @@
 src/pixiv_novel_sync/static/css/tailwind.css text eol=lf
 # 阅读进度脚本也使用精确字节摘要，保持 Windows/Linux 检出一致
 src/pixiv_novel_sync/static/js/reading_progress_sync.js text eol=lf
+# 第三方运行时的 SRI 校验依赖原始字节，检出时禁止转换换行
+src/pixiv_novel_sync/static/vendor/*.js -text

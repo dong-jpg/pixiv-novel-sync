@@ -570,9 +570,6 @@ def create_app(
             active_statuses = {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCEL_REQUESTED}
             return any(job.status in active_statuses for job in shared_job_manager._jobs.values())
 
-    def _has_any_running_web_job() -> bool:
-        return _has_active_shared_jobs()
-
     def _api_error(error: str, status: int = 400, detail: Any | None = None):
         payload: dict[str, Any] = {"ok": False, "error": error}
         if detail is not None:
@@ -1087,7 +1084,7 @@ def create_app(
                 "; ".join(
                     (
                         "default-src 'self'",
-                        f"script-src 'self' 'nonce-{_csp_nonce()}' 'unsafe-eval' https://unpkg.com",
+                        f"script-src 'self' 'nonce-{_csp_nonce()}' 'unsafe-eval'",
                         "style-src 'self' 'unsafe-inline'",
                         "img-src 'self' data: blob:",
                         "font-src 'self' data:",
@@ -1106,8 +1103,8 @@ def create_app(
 
     @app.after_request
     def _cache_versioned_static(response):
-        # base.html 引用 /static/css/tailwind.css?v=<内容哈希>，CSS 一变 URL 就变，可以长缓存。
-        # Flask 默认给静态文件 no-cache，每次翻页都要为这个阻塞渲染的样式表多等一个往返。
+        # base.html 的 CSS 与本地 Vue 使用带版本的 URL，内容变化时更新版本，可以长缓存。
+        # Flask 默认给静态文件 no-cache，每次翻页都会为阻塞渲染的资源多等一个往返。
         if request.endpoint == "static" and request.args.get("v") and response.status_code == 200:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
@@ -1280,10 +1277,14 @@ def create_app(
         url = request.args.get("url", "").strip()
         if not url:
             return Response("Missing url parameter", status=400)
-        parsed = urlparse(url)
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError:
+            return Response("Invalid image URL", status=400)
         if parsed.scheme not in {"http", "https"}:
             return Response("Invalid scheme", status=400)
-        if parsed.port not in (None, 80, 443):
+        if port not in (None, 80, 443):
             return Response("Invalid port", status=400)
         hostname = parsed.hostname or ""
         if not (hostname == "pximg.net" or hostname.endswith(".pximg.net")):
@@ -1301,9 +1302,10 @@ def create_app(
             if resp.status_code != 200:
                 return Response(f"Upstream returned {resp.status_code}", status=502)
             out = Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
-            for hop in ("Content-Length", "Cache-Control"):
-                if resp.headers.get(hop):
-                    out.headers[hop] = resp.headers[hop]
+            # requests 已按 Content-Encoding 解压 content；上游 Content-Length
+            # 是压缩后的长度，转发会截断图片或让浏览器等待不存在的尾部。
+            if resp.headers.get("Cache-Control"):
+                out.headers["Cache-Control"] = resp.headers["Cache-Control"]
             return out
         except Exception as exc:
             return Response(f"Failed to fetch image: {exc}", status=502)

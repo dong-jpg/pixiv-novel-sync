@@ -34,9 +34,7 @@
     position: sticky;
     top: 0;
     z-index: 100;
-    background: rgba(255,255,255,0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    background: var(--library-surface);
     border-bottom: 1px solid rgba(0,0,0,0.06);
     transition: box-shadow 0.2s;
   }
@@ -287,9 +285,7 @@
     left: 0;
     right: 0;
     z-index: 40;
-    background: rgba(255,255,255,0.95);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: var(--library-surface);
     border-top: 1px solid rgba(0,0,0,0.06);
     padding: 8px max(12px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left));
   }
@@ -836,8 +832,11 @@
         } else writeLocalPosition();
       };
 
+      // 浏览器禁止站点存储时，读取 localStorage 属性本身也可能抛 SecurityError。
+      // 同步器会报告持久化不可用，正文仍应正常加载。
+      const readingStorage = (() => { try { return localStorage; } catch { return null; } })();
       const progressSync = window.ReadingProgressSync.create({
-        novelId, storage: localStorage,
+        novelId, storage: readingStorage,
         legacyProgress: (() => {
           try {
             const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
@@ -880,13 +879,15 @@
         // Any intervening scroll invalidates initial restoration, even a round trip to 0.
         restorePending = false;
         isScrolled.value = window.scrollY > 10;
-        progressPercent.value = Math.round(getReadingProgress().progress * 100);
+        const current = getReadingProgress();
+        progressPercent.value = Math.round(current.progress * 100);
         if (!novel.value || ignoreProgrammaticScroll || !userMotion || Date.now() > userMotionUntil) return;
-        latestUserSample = getReadingProgress();
-        // 立即保留样本，以免初始 GET 在 300ms 显示节流前取得错误的新基线。
-        writeLocalPosition(latestUserSample);
+        latestUserSample = current;
+        // CAS 意图立即采样（相同百分比由同步器去重），以免初始 GET 在节流前取得错误的新基线。
+        // 像素级旧缓存只在一组滚动的首帧、300ms tick 或 pagehide 落盘，避免每帧同步写 localStorage。
         progressSync.sample(Math.round(latestUserSample.progress * 100));
         if (scrollThrottle) return;
+        writeLocalPosition(current);
         scrollThrottle = setTimeout(() => {
           scrollThrottle = null;
           sampleUserProgress();

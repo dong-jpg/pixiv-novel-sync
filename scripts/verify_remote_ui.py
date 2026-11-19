@@ -1,8 +1,7 @@
 """Offline screenshot QA for the remote pilot, using the real Flask app.
 
-Run from the checkout with an already-downloaded Vue 3.4.38 global production
-runtime: python scripts/verify_remote_ui.py --vue-runtime PATH
-The runtime is checked against base.html's pinned SHA-384. The browser's requests
+Run from the checkout: python scripts/verify_remote_ui.py --browser firefox
+The packaged runtime is checked against base.html's pinned SHA-384. The browser's requests
 are fulfilled by Flask's test client; no server listens and no cloud is contacted.
 """
 from __future__ import annotations
@@ -23,14 +22,17 @@ import uuid
 
 
 def main() -> int:
+    checkout = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--vue-runtime", type=Path, required=True)
+    parser.add_argument("--vue-runtime", type=Path, default=checkout / "src/pixiv_novel_sync/static/vendor/vue-3.4.38.global.prod.js")
+    parser.add_argument("--browser", choices=("chromium", "firefox"), default="chromium")
     parser.add_argument("--output-dir", type=Path, default=Path(".superpowers/verification/remote-ui"))
     args = parser.parse_args()
     vue = args.vue_runtime.read_bytes()
     if base64.b64encode(hashlib.sha384(vue).digest()).decode() != "Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS":
         raise RuntimeError("Vue runtime integrity mismatch")
-    checkout = Path(__file__).resolve().parents[1]
+    if vue != (checkout / "src/pixiv_novel_sync/static/vendor/vue-3.4.38.global.prod.js").read_bytes():
+        raise RuntimeError("Selected Vue runtime must match the packaged asset served by Flask")
     sys.path.insert(0, str(checkout / "src"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     # Retain only OS/runtime locating variables before importing application code.
@@ -135,16 +137,12 @@ def main() -> int:
         active_client = client
         try:
             with sync_playwright() as browser_api:
-                browser = browser_api.chromium.launch(headless=True)
+                browser = getattr(browser_api, args.browser).launch(headless=True)
                 context = browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai", viewport={"width": 1280, "height": 900})
 
                 def dispatch(route):
                     request = route.request
                     parsed = urlsplit(request.url)
-                    if request.url == "https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js":
-                        route.fulfill(status=200, body=vue, content_type="application/javascript",
-                                      headers={"Access-Control-Allow-Origin": "*"})
-                        return
                     if f"{parsed.scheme}://{parsed.netloc}" != origin:
                         blocked.append(request.url)
                         route.abort()

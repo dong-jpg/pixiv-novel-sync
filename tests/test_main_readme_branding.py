@@ -145,7 +145,8 @@ def test_readme_describes_reader_workflows_without_promising_an_offline_web_app(
     for term in ("公开收藏", "私密收藏", "关注", "追更系列", "全文检索", "阅读进度", "EPUB"):
         assert term in README
     assert "CDN" in README
-    assert re.search(r"(?:不|不能|并非)[^。\n]*完整离线网页", README)
+    assert "Vue 和样式均随安装包提供" in README
+    assert "网页数据仍需连接自己的服务器" in README
     assert "已归档文件" in README
 
 

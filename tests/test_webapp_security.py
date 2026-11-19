@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 import pixiv_novel_sync
 from pixiv_novel_sync.jobs.models import JobSource, JobStatus
 from pixiv_novel_sync import webapp as webapp_module
@@ -477,6 +479,39 @@ def test_proxy_image_turns_non_200_into_502_and_forwards_cache_headers(tmp_path,
     assert ok.data == b"img"
     assert ok.headers["Cache-Control"] == "public, max-age=60"
     assert ok.headers["Content-Length"] == "3"
+
+
+@pytest.mark.parametrize("image_url", ["https://i.pximg.net:bad/a.jpg", "https://i.pximg.net:99999/a.jpg", "https://[invalid/a.jpg"])
+def test_proxy_image_rejects_malformed_url_without_fetch(tmp_path, monkeypatch, image_url):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+
+    def unexpected_fetch(*args, **kwargs):
+        pytest.fail("Malformed image URL must not reach the network")
+
+    monkeypatch.setattr(webapp_module.http_requests, "get", unexpected_fetch)
+    response = app.test_client().get("/proxy/image", query_string={"url": image_url})
+    assert response.status_code == 400
+
+
+def test_proxy_image_uses_decoded_content_length(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+    decoded = b"decoded image bytes"
+    monkeypatch.setattr(webapp_module.http_requests, "get", lambda *args, **kwargs: SimpleNamespace(
+        status_code=200, content=decoded,
+        headers={"Content-Type": "image/jpeg", "Content-Encoding": "gzip", "Content-Length": "99"},
+    ))
+
+    response = app.test_client().get("/proxy/image", query_string={"url": "https://i.pximg.net/a.jpg"})
+    assert response.status_code == 200
+    assert response.data == decoded
+    assert int(response.headers["Content-Length"]) == len(decoded)
+    assert "Content-Encoding" not in response.headers
 
 
 def test_session_cookie_secure_reads_env_file(tmp_path, monkeypatch):

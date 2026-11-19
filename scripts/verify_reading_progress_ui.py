@@ -1,4 +1,4 @@
-"""离线 Chromium + 真实 Flask/CAS 接口核验阅读进度，无生产数据或外部请求。"""
+"""离线 Chromium/Firefox + 真实 Flask/CAS 接口核验阅读进度，无生产数据或外部请求。"""
 from __future__ import annotations
 
 import argparse
@@ -14,14 +14,17 @@ import uuid
 
 
 def main() -> int:
+    checkout = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--vue-runtime", type=Path, required=True)
+    parser.add_argument("--vue-runtime", type=Path, default=checkout / "src/pixiv_novel_sync/static/vendor/vue-3.4.38.global.prod.js")
+    parser.add_argument("--browser", choices=("chromium", "firefox"), default="chromium")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     vue = args.vue_runtime.read_bytes()
     if base64.b64encode(hashlib.sha384(vue).digest()).decode() != "Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS":
         raise RuntimeError("Vue runtime integrity mismatch")
-    checkout = Path(__file__).resolve().parents[1]
+    if vue != (checkout / "src/pixiv_novel_sync/static/vendor/vue-3.4.38.global.prod.js").read_bytes():
+        raise RuntimeError("Selected Vue runtime must match the packaged asset served by Flask")
     sys.path.insert(0, str(checkout / "src"))
     keep = {key: value for key, value in os.environ.items() if key.upper() in {
         "PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "TEMP", "TMP", "HOME", "USERPROFILE",
@@ -83,7 +86,7 @@ def main() -> int:
 
         advance(60)
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = getattr(playwright, args.browser).launch(headless=True)
             contexts = []
 
             def device(width, legacy=None):
@@ -98,9 +101,6 @@ def main() -> int:
                 def dispatch(route):
                     request = route.request
                     parsed = urlsplit(request.url)
-                    if request.url == "https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js":
-                        route.fulfill(status=200, body=vue, content_type="application/javascript", headers={"Access-Control-Allow-Origin": "*"})
-                        return
                     if f"{parsed.scheme}://{parsed.netloc}" != origin:
                         blocked.append(request.url)
                         route.abort()

@@ -5,8 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
 
-  <script nonce="{[ csp_nonce() ]}" src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS" crossorigin="anonymous"></script>
-
   <style>
     :root {
       --library-bg: #f6f7fb;
@@ -26,6 +24,9 @@
       --mobile-bar-height: calc(64px + env(safe-area-inset-bottom));
     }
     [v-cloak] { display: none !important; }
+    .library-bootstrap { display: none; margin: 2rem; color: var(--library-ink); }
+    #app[v-cloak] + .library-bootstrap { display: block; }
+    .library-bootstrap a { color: var(--library-accent-strong); text-decoration: underline; }
     * { box-sizing: border-box; }
     body {
       min-height: 100vh;
@@ -46,8 +47,7 @@
     .library-sidebar {
       position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 40;
       display: flex; flex-direction: column;
-      background: rgba(255,255,255,.84);
-      backdrop-filter: blur(18px);
+      background: var(--library-surface);
       border-right: 1px solid var(--library-line);
     }
     .library-brand { padding: 26px 22px 20px; border-bottom: 1px solid rgba(229,231,239,.72); }
@@ -129,7 +129,7 @@
     .mobile-bottom-bar {
       display: none; grid-template-columns: repeat(5, minmax(0, 1fr));
       position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
-      min-height: 64px; background: rgba(255,255,255,.96); backdrop-filter: blur(18px);
+      min-height: 64px; background: var(--library-surface);
       border-top: 1px solid var(--library-line);
       padding: 5px max(4px, env(safe-area-inset-right)) calc(5px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left));
     }
@@ -254,7 +254,9 @@
 
     <app-mobile-bar current-path="{[ request.path ]}"></app-mobile-bar>
   </div>
+  <p class="library-bootstrap" role="status">正在打开书库。若长时间没有响应，请<a href="">重新加载本页</a>。<noscript>此页面需要启用 JavaScript。</noscript></p>
 
+  <script nonce="{[ csp_nonce() ]}" src="/static/vendor/vue-3.4.38.global.prod.js?v=b50eeefe35d4" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS"></script>
   {% include 'vue_components.html' ignore missing %}
 
   <script nonce="{[ csp_nonce() ]}">

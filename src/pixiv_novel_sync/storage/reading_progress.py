@@ -132,8 +132,3 @@ class ReadingProgressMixin:
             "SELECT * FROM reading_progress WHERE novel_id = ?", (novel_id,)
         ).fetchone()
         return dict(row) if row else None
-
-    def delete_reading_progress(self, novel_id: int) -> None:
-        """仅用于内部物理清理；阅读页重置使用带版本的 tombstone。"""
-        self.conn.execute("DELETE FROM reading_progress WHERE novel_id = ?", (novel_id,))
-        self._commit_if_needed()

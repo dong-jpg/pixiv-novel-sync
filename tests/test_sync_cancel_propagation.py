@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from pixiv_novel_sync.storage_files import FileStorage
+
 
 def test_sync_engine_does_not_swallow_interrupted_error() -> None:
     """宽泛的 except Exception 之前，同一 try 必须先显式重抛 InterruptedError。
@@ -44,3 +48,48 @@ def test_sync_engine_does_not_swallow_interrupted_error() -> None:
         if not rethrown:
             missing.append(index + 1)
     assert missing == []
+
+
+@pytest.mark.parametrize("cancel_at", ["before_request", "during_stream", "after_stream"])
+def test_asset_download_cancellation_keeps_previous_file_and_removes_partial(tmp_path, cancel_at):
+    from types import SimpleNamespace
+
+    target = tmp_path / "cover.jpg"
+    target.write_bytes(b"previous cover")
+    state = {"cancelled": cancel_at == "before_request", "requests": 0, "closed": False}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            state["closed"] = True
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield b"first part"
+            if cancel_at == "during_stream":
+                state["cancelled"] = True
+            yield b"second part"
+            if cancel_at == "after_stream":
+                state["cancelled"] = True
+
+    def get(*args, **kwargs):
+        state["requests"] += 1
+        return Response()
+
+    storage = FileStorage(SimpleNamespace())
+    storage._session = SimpleNamespace(get=get)
+    with pytest.raises(InterruptedError, match="Task stopped by user"):
+        storage.download_asset(
+            "https://i.pximg.net/cover.jpg", target,
+            timeout=30, verify_ssl=True, proxy=None,
+            stop_requested=lambda: state["cancelled"],
+        )
+
+    assert target.read_bytes() == b"previous cover"
+    assert not target.with_suffix(".jpg.tmp").exists()
+    assert state["requests"] == (0 if cancel_at == "before_request" else 1)
+    assert state["closed"] == (cancel_at != "before_request")

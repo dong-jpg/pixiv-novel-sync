@@ -119,6 +119,17 @@ def test_feedback_is_explicit_versioned_and_source_checked(env):
     assert env.learning.state()["eligible_works"] == 0
 
 
+@pytest.mark.parametrize("character", ["\U0001f600", "\x01"])
+def test_feedback_note_accepts_full_character_limit_independent_of_json_encoding(env, character):
+    note = character * 500
+    saved = env.learning.feedback("series", 10, {"reaction": "liked", "expected_version": 0, "note": note})
+    assert saved["note"] == note
+    assert env.learning.feedback_state("series", 10)["note"] == note
+    with pytest.raises(WorkAnalysisError, match="invalid_request"):
+        env.learning.feedback("series", 10, {"reaction": "liked", "expected_version": 1, "note": note + character})
+    assert env.learning.feedback_state("series", 10)["version"] == 1
+
+
 @pytest.mark.parametrize("reaction", [[], {}, True, "interested", "saved", "finished"])
 def test_invalid_feedback_does_not_become_a_preference(env, reaction):
     with pytest.raises(WorkAnalysisError):

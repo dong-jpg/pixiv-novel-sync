@@ -346,7 +346,9 @@ class PreferenceLearningMixin:
             raise WorkAnalysisError("invalid_request")
         if not isinstance(note, str) or len(note) > 500:
             raise WorkAnalysisError("invalid_request")
-        dump(note, 2000)
+        # 500 Unicode characters may need four UTF-8 bytes each, or six bytes
+        # each when JSON escapes control characters, plus the string quotes.
+        dump(note, 500 * 6 + 2)
         if reaction == "clear":
             note = ""
         with self.transaction() as conn:

@@ -6,6 +6,10 @@
 
 ## 当前交互约定
 
+### 浏览器启动与阅读性能
+
+Vue 3.4.38 与 Tailwind 从同站点安装包读取，内容版本与 SRI 固定，启动不依赖 CDN。Vue 挂载前显示加载说明，JavaScript 不可用时显示提示。侧栏、底栏及阅读固定工具栏使用实色背景，阅读滚动合并旧像素位置的本地存储写入；禁止站点存储时仍能加载正文并报告持久化不可用。`tests/test_browser_bootstrap.py` 使用真实 Chromium/Firefox、390/1280 宽度、认证 Flask 响应和千段正文验证；所有外站请求被拦截。这不代替生产网络、扩展和真机滚动性能验收。
+
 ### AI 设置与调用
 
 - `/dashboard/settings/models` 保留 URL，`view=providers|models|groups` 三视图与 `provider=<id>` 筛选随普通导航/刷新/历史往返保存；缺失 Provider 显示明确错误，不伪造空目录。路由组仍使用原模型池整数 ID/API，仅支持顺序尝试。
@@ -58,7 +62,7 @@
 职责：
 
 - 引用仓库里预生成的 Tailwind 样式 `/static/css/tailwind.css?v=<内容哈希>`（放在 `<head>` 最后；改模板类名后运行 `python scripts/build_tailwind_css.py` 重生成）。
-- 加载 Vue 3 CDN（锁定版本，带 SRI）。
+- 加载随包提供的 Vue 3.4.38（`/static/vendor/vue-3.4.38.global.prod.js`，内容版本 URL 与 SRI 校验），首屏不等待第三方 CDN。
 - 定义 Library OS 全局 CSS tokens。
 - 提供 `library-shell`、`library-sidebar`、`library-main`。
 - 保留 `window.initVueApp(setupFunc)`。
