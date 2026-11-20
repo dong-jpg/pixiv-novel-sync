@@ -177,6 +177,9 @@ class ControlStore:
                 runtime_ready=int(machine.runtime_ready), runtime_budget_until=machine.runtime_budget_until,
                 cooldown_until=machine.cooldown_until, gate_ready_until=None,
             )
+            if (row["last_error"] == "provider_unreachable" and row["action_json"] is None
+                    and row["mode"] != "disabled"):
+                values.update(last_error=None, backoff_count=0, next_poll_at=now)
             if row["owned_run_started_at"] is not None and (
                 machine.state != "running" or machine.run_started_at != row["owned_run_started_at"]
             ):

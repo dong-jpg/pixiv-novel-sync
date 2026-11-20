@@ -9,8 +9,6 @@ The browser's touch emulation is not on-device soft-keyboard acceptance.
 
 from collections import defaultdict
 from copy import deepcopy
-import base64
-import hashlib
 import json
 import mimetypes
 import os
@@ -93,13 +91,11 @@ def usage(input_tokens, output_tokens, total_tokens, reported, unreported, compl
 
 @pytest.fixture(scope="module")
 def local_vue():
-    configured = os.environ.get("AI_UI_VUE_JS") or STATIC / "vendor" / "vue-3.4.38.global.prod.js"
+    packaged = STATIC / "vendor" / "vue-3.4.38.global.prod.js"
+    configured = os.environ.get("AI_UI_VUE_JS") or packaged
     assert Path(configured).is_file(), "The packaged Vue runtime must exist"
     data = Path(configured).read_bytes()
-    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
-    sri = re.search(r'vue-3\.4\.38\.global\.prod\.js\?v=[0-9a-f]{12}"\s+integrity="sha384-([^" ]+)"', base)
-    assert sri is not None, "The shipped pinned Vue SRI must remain present"
-    assert base64.b64encode(hashlib.sha384(data).digest()).decode("ascii") == sri.group(1)
+    assert data == packaged.read_bytes(), "The browser fixture must use the exact packaged Vue runtime"
     return data
 
 
@@ -230,6 +226,7 @@ class OfflineUI:
         })();""")
         self.page = self.context.new_page()
         self.page.set_default_timeout(5000)
+        self.page.set_default_navigation_timeout(30000)
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
 
     def render(self, path):

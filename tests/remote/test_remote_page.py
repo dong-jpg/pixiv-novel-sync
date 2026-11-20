@@ -124,6 +124,8 @@ function boot() {
   assert.equal(page.machineMode.value, '等待就绪确认');
   assert.equal(page.providerLabel.value, '运行中');
   assert.equal(page.runLabel('active'), '执行中');
+  assert.match(page.errorLabel('provider_unreachable'), /服务器.*云平台管理接口/);
+  assert.match(page.errorLabel('provider_unreachable'), /浏览器或模型 API 无关/);
 })().catch(err => {console.error(err); process.exitCode = 1;});
 """
     completed = subprocess.run([shutil.which("node"), "-e", harness], input=json.dumps({"source": source}),

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import requests
-from urllib3.exceptions import HTTPError as Urllib3Error
+from urllib3.exceptions import HTTPError as Urllib3Error, SSLError as Urllib3SSLError, TimeoutError as Urllib3TimeoutError
 from urllib3.util import Timeout
 
 
@@ -52,11 +52,13 @@ def safe_provider_code(value: object) -> str:
 
 class ProviderError(RuntimeError):
     def __init__(self, code: str, http_status: int | None = None,
-                 retry_after: float | None = None, operation_id: str | None = None):
+                 retry_after: float | None = None, operation_id: str | None = None,
+                 *, network_reason: str | None = None):
         self.code = code
         self.http_status = http_status
         self.retry_after = retry_after
         self.operation_id = operation_id
+        self.network_reason = network_reason if network_reason in {"timeout", "tls", "connection"} else None
         super().__init__(code)
 
 
@@ -235,7 +237,7 @@ class InstaBoxClient:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ProviderError("provider_unreachable")
+                    raise ProviderError("provider_unreachable", network_reason="timeout")
                 sock = getattr(getattr(raw, "connection", None), "sock", None)
                 if sock is None:
                     # Connection: close / HTTP/1.0 can detach the socket from
@@ -253,7 +255,7 @@ class InstaBoxClient:
                 else:
                     chunk = next(chunks, b"")
                 if time.monotonic() >= deadline:
-                    raise ProviderError("provider_unreachable")
+                    raise ProviderError("provider_unreachable", network_reason="timeout")
                 if not chunk:
                     break
                 if not isinstance(chunk, bytes):
@@ -287,10 +289,17 @@ class InstaBoxClient:
                 if error.retry_after is None:
                     error.retry_after = _retry_after(response.headers, {}, time.time())
             raise
-        except (requests.RequestException, Urllib3Error, OSError):
+        except (requests.RequestException, Urllib3Error, OSError) as error:
+            if isinstance(error, (requests.exceptions.SSLError, Urllib3SSLError)):
+                reason = "tls"
+            elif isinstance(error, (requests.Timeout, Urllib3TimeoutError, TimeoutError)):
+                reason = "timeout"
+            else:
+                reason = "connection"
             raise ProviderError(
                 "provider_unreachable", response.status_code if response is not None else None,
                 _retry_after(response.headers, {}, time.time()) if response is not None else None,
+                network_reason=reason,
             ) from None
         finally:
             if response is not None:

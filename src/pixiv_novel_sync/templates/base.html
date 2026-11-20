@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
+  {% set vue_url = '/static/vendor/vue-3.4.38.global.prod.js?v=b50eeefe35d4' %}
+  {% set vue_integrity = 'sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS' %}
+  <link rel="preload" as="script" href="{[ vue_url ]}" integrity="{[ vue_integrity ]}" nonce="{[ csp_nonce() ]}">
 
   <style>
     :root {
@@ -254,9 +257,47 @@
 
     <app-mobile-bar current-path="{[ request.path ]}"></app-mobile-bar>
   </div>
-  <p class="library-bootstrap" role="status">正在打开书库。若长时间没有响应，请<a href="">重新加载本页</a>。<noscript>此页面需要启用 JavaScript。</noscript></p>
+  <p class="library-bootstrap" role="status"><span id="library-bootstrap-status">正在打开书库。若长时间没有响应，请</span><a href="">重新加载本页</a>。<noscript>此页面需要启用 JavaScript。</noscript></p>
 
-  <script nonce="{[ csp_nonce() ]}" src="/static/vendor/vue-3.4.38.global.prod.js?v=b50eeefe35d4" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS"></script>
+  <script nonce="{[ csp_nonce() ]}">
+    (function () {
+      const status = document.getElementById('library-bootstrap-status');
+      if (!status) return;
+      function fail(code, message) {
+        const root = document.getElementById('app');
+        if (!root || !root.hasAttribute('v-cloak')) return;
+        if (status.dataset.failure && status.dataset.failure !== 'timeout' && code !== 'policy') return;
+        status.dataset.failure = code;
+        status.textContent = message;
+      }
+      function onError(event) {
+        if (event.target && event.target.tagName === 'SCRIPT' && event.target.src.startsWith(location.origin + '/static/')) {
+          fail('resource', '页面脚本加载或完整性校验失败，请检查网络或浏览器控制台后');
+        } else if (event.target === window) {
+          fail('initialization', '页面初始化失败，请记录浏览器控制台中的首条错误后');
+        }
+      }
+      function onPolicy(event) {
+        if (event.disposition === 'report') return;
+        if ((event.effectiveDirective.startsWith('script-src') || event.effectiveDirective === 'default-src') &&
+            (event.blockedURI === 'eval' || event.blockedURI === 'inline' || event.blockedURI.startsWith(location.origin + '/static/'))) {
+          fail('policy', '页面脚本被安全策略拦截，请检查站点响应头与浏览器控制台后');
+        }
+      }
+      const timer = window.setTimeout(function () {
+        fail('timeout', '页面初始化超过 15 秒，请检查浏览器网络面板中未完成的请求后');
+      }, 15000);
+      window.addEventListener('error', onError, true);
+      document.addEventListener('securitypolicyviolation', onPolicy);
+      window.libraryBootstrapReady = function () {
+        window.clearTimeout(timer);
+        window.removeEventListener('error', onError, true);
+        document.removeEventListener('securitypolicyviolation', onPolicy);
+      };
+    })();
+  </script>
+
+  <script nonce="{[ csp_nonce() ]}" src="{[ vue_url ]}" integrity="{[ vue_integrity ]}"></script>
   {% include 'vue_components.html' ignore missing %}
 
   <script nonce="{[ csp_nonce() ]}">
@@ -480,6 +521,7 @@
         window.registerPageComponents(app);
       }
       app.mount('#app');
+      window.libraryBootstrapReady?.();
       return app;
     };
   </script>

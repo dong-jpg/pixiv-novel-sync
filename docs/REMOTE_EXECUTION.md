@@ -82,6 +82,16 @@ pixiv-remote doctor --role worker
 
 `doctor` 默认检查 Web 角色，只检查显式配置、路径与权限，不联网、不创建数据库或启动服务。输出 `network: not_checked` 就表示没有验证连通性。`controller --once` 或 `worker --once` 只执行一个监督周期；它们在启用并配置后可能产生真实网络请求，不能当作离线 doctor 的替代。
 
+远程页出现 `provider_unreachable` 表示 VPS 控制器未能完成对 InstaBox 管理接口的请求。浏览器刷新只读取控制库，“实例状态”是上次成功确认的值。暂时断线按退避间隔重试；下一次成功观察到实例且没有在途启停操作时，清除旧连接错误和连续失败次数。认证失败和结果未确认的启停操作保留各自的处理规则。
+
+如错误持续，可在 VPS 上用控制器相同的服务用户、环境和网络运行 `pixiv-remote doctor --role controller --network`。它只向配置的实例发一次状态 GET，不启动或暂停实例，不创建数据库。按仓库中的 systemd 安装路径，示例为：
+
+```console
+sudo systemd-run --wait --pipe --collect -p User=pixivsync -p EnvironmentFile=/etc/pixiv-remote/controller.env /opt/pixiv-novel-sync/app/.venv/bin/pixiv-remote doctor --role controller --network
+```
+
+`network=reachable` 表示本次请求通过；`reason=connection` 检查 VPS 的 DNS、路由及直连 443，`timeout` 表示连接或读取超时，`tls` 检查时间和证书链；HTTP 401/403 检查控制器的平台密钥与权限。控制器直连 `api.instabox.sh`，不读取环境代理，模型 Provider 代理或 `PIXIV_REMOTE_EGRESS_PROXY` 不用于这个接口。不要把密钥放入命令行或日志。若使用了额外的 systemd 网络隔离，测试时也要复用相同设置。
+
 controller 与 worker 主入口分别是：
 
 ```console
