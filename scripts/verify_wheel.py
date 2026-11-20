@@ -51,7 +51,7 @@ for path in ("/dashboard/ai", "/dashboard/wizard", "/dashboard/settings/adult"):
     checks += 1
 assets = root / "pixiv_novel_sync" / "static"
 vue = (assets / "vendor/vue-3.4.38.global.prod.js").read_bytes()
-template = (assets.parent / "templates/base.html").read_text(encoding="utf-8")
+template = client.get("/dashboard").get_data(as_text=True)
 integrity = base64.b64encode(hashlib.sha384(vue).digest()).decode()
 assert 'integrity="sha384-' + integrity + '"' in template
 assert "The MIT License" in (assets / "vendor/vue-LICENSE.txt").read_text(encoding="utf-8")

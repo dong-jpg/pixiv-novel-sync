@@ -399,6 +399,45 @@ def test_authentication_failure_stops_mutations(f):
     assert f.control.snapshot(f.clock.now)["last_error"] == "provider_authentication"
 
 
+def test_successful_poll_clears_transport_error_and_resets_backoff(f):
+    f.provider.fail_next = ProviderError("provider_unreachable")
+    f.step()
+    failed = f.control.snapshot(f.clock.now)
+    assert failed["last_error"] == "provider_unreachable"
+    assert failed["backoff_count"] == 1
+    f.until(lambda: f.control.snapshot(f.clock.now)["last_provider_at"] is not None)
+    recovered = f.control.snapshot(f.clock.now)
+    assert recovered["mode"] == "idle"
+    assert recovered["last_error"] is None
+    assert recovered["backoff_count"] == 0
+    f.provider.fail_next = ProviderError("provider_unreachable")
+    f.step(seconds=30)
+    failed_again = f.control.snapshot(f.clock.now)
+    assert failed_again["backoff_count"] == 1
+    assert failed_again["next_poll_at"] == f.clock.now + 30
+
+
+def test_machine_observation_preserves_unconfirmed_mutation_error(f):
+    f.enqueue()
+    f.provider.lose_response = True
+    f.until(lambda: bool(f.provider.mutations))
+    before = f.control.snapshot(f.clock.now)
+    assert before["last_error"] == "provider_unreachable"
+    assert before["action"]["phase"] == "unknown"
+    assert f.control.observe(f.provider.view, f.clock.now)
+    after = f.control.snapshot(f.clock.now)
+    assert after["last_error"] == before["last_error"]
+    assert after["backoff_count"] == before["backoff_count"]
+    assert after["action"] == before["action"]
+
+
+def test_machine_observation_preserves_authentication_error(f):
+    f.provider.fail_next = ProviderError("invalid_key", 401)
+    f.step()
+    assert f.control.observe(f.provider.view, f.clock.now)
+    assert f.control.snapshot(f.clock.now)["last_error"] == "provider_authentication"
+
+
 @pytest.mark.parametrize("code,expected", [
     ("permission_denied", "provider_authentication"),
     ("invalid_key", "provider_authentication"),

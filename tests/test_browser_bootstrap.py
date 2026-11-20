@@ -22,7 +22,6 @@ def test_vue_is_pinned_packaged_and_served_without_authentication(tmp_path, monk
     template = (ASSET.parents[2] / "templates/base.html").read_text(encoding="utf-8")
     version = hashlib.sha256(data).hexdigest()[:12]
     integrity = base64.b64encode(hashlib.sha384(data).digest()).decode("ascii")
-    assert f'src="{VUE_PATH}?v={version}" integrity="sha384-{integrity}"' in template
     assert not re.search(r'<script[^>]+src="https?://', template)
     assert "The MIT License" in ASSET.with_name("vue-LICENSE.txt").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -31,6 +30,12 @@ def test_vue_is_pinned_packaged_and_served_without_authentication(tmp_path, monk
     env = tmp_path / "empty.env"
     env.write_text("", encoding="utf-8")
     client = create_app(config_path=str(tmp_path / "missing.yaml"), env_path=str(env), start_scheduler=False).test_client()
+    assert client.post('/api/auth/login', data={'token': 'fixture-bootstrap-password'}).status_code == 302
+    html = client.get('/dashboard').get_data(as_text=True)
+    expected = f'"{VUE_PATH}?v={version}" integrity="sha384-{integrity}"'
+    assert 'rel="preload" as="script" href=' + expected in html
+    assert 'src=' + expected in html
+    client = client.application.test_client()
     response = client.get(VUE_PATH + "?v=" + version, environ_base={"REMOTE_ADDR": "203.0.113.2"})
     try:
         assert response.status_code == 200
@@ -121,5 +126,48 @@ def test_authenticated_pages_boot_without_cdn(bootstrap_browser, width, tmp_path
         assert external == []
         assert errors == []
         assert assets == [200, 200, 200]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("failure", ("resource", "policy"))
+def test_boot_failure_explains_blocked_scripts(bootstrap_browser, failure, tmp_path, monkeypatch):
+    from pixiv_novel_sync.webapp import create_app
+
+    monkeypatch.setenv("DASHBOARD_TOKEN", "fixture-bootstrap-password")
+    monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "0")
+    env = tmp_path / "empty.env"
+    env.write_text("", encoding="utf-8")
+    app = create_app(config_path=str(tmp_path / "missing.yaml"), env_path=str(env), start_scheduler=False)
+    app.config.update(TESTING=True, RAW_HTTP=True)
+    client = app.test_client()
+    origin = "http://127.0.0.1:5018"
+    assert client.post("/api/auth/login", data={"token": "fixture-bootstrap-password"}, base_url=origin).status_code == 302
+    context = bootstrap_browser.new_context()
+
+    def dispatch(route):
+        url = urlsplit(route.request.url)
+        if url.scheme + "://" + url.netloc != origin:
+            return route.abort("blockedbyclient")
+        if url.path == VUE_PATH and failure == "resource":
+            return route.abort("blockedbyclient")
+        response = client.get(url.path + ("?" + url.query if url.query else ""), base_url=origin)
+        try:
+            headers = {key: value for key, value in response.headers.items()
+                       if key.lower() not in {"content-length", "transfer-encoding"}}
+            if failure == "policy" and "Content-Security-Policy" in headers:
+                headers["Content-Security-Policy"] = headers["Content-Security-Policy"].replace(" 'unsafe-eval'", "")
+            return route.fulfill(status=response.status_code, headers=headers, body=response.get_data())
+        finally:
+            response.close()
+
+    context.route("**/*", dispatch)
+    page = context.new_page()
+    try:
+        page.goto(origin + "/dashboard/remote", wait_until="networkidle")
+        page.wait_for_function("expected => document.getElementById('library-bootstrap-status').dataset.failure === expected", arg=failure)
+        assert page.locator(".library-bootstrap").is_visible()
+        assert page.get_by_role("link", name="重新加载本页").is_visible()
+        assert not page.locator("#app").is_visible()
     finally:
         context.close()

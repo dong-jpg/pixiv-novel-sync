@@ -160,6 +160,22 @@ def test_start_transport_contract_and_no_hidden_retries():
     assert kwargs["stream"] is True
 
 
+@pytest.mark.parametrize("error,reason", [
+    (requests.Timeout("private-network-detail"), "timeout"),
+    (requests.exceptions.SSLError("private-certificate-detail"), "tls"),
+    (requests.ConnectionError("private-connection-detail"), "connection"),
+    (TimeoutError("private-read-detail"), "timeout"),
+])
+def test_network_diagnostic_uses_only_fixed_reason_codes(error, reason):
+    transport = Transport(error)
+    with pytest.raises(ProviderError) as caught:
+        InstaBoxClient("ibk_test_secret", "m_fixture", transport).machine()
+    assert caught.value.code == "provider_unreachable"
+    assert caught.value.network_reason == reason
+    assert "private" not in str(caught.value)
+    assert len(transport.calls) == 1
+
+
 @pytest.mark.parametrize("action", ["pause", "stop", "delete", "exec", "../start"])
 def test_mutation_registry_is_closed(action):
     transport = Transport()

@@ -227,6 +227,9 @@ window.initVueApp({
       input_mismatch: '输入校验失败，请重新提交任务。', protocol_mismatch: '执行器版本不匹配，请检查配置。',
       deadline_exceeded: '任务超过最晚完成时间。', result_expired: '结果已过期，可以重新提交导出。',
       idempotency_conflict: '请求编号已用于另一条任务，请开始新请求。',
+      provider_unreachable: '服务器暂时无法连接云平台管理接口，正在按退避间隔重试。请检查服务器网络、DNS 和 TLS；该错误与浏览器或模型 API 无关。',
+      provider_authentication: '云平台认证失败，请检查控制器的 API 密钥及实例权限。',
+      provider_rejected: '云平台拒绝了实例操作，请检查平台限制和控制器配置。',
     };
     function errorLabel(code) {
       const value = String(code || '');

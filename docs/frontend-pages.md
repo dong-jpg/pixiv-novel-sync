@@ -62,7 +62,8 @@ Vue 3.4.38 与 Tailwind 从同站点安装包读取，内容版本与 SRI 固定
 职责：
 
 - 引用仓库里预生成的 Tailwind 样式 `/static/css/tailwind.css?v=<内容哈希>`（放在 `<head>` 最后；改模板类名后运行 `python scripts/build_tailwind_css.py` 重生成）。
-- 加载随包提供的 Vue 3.4.38（`/static/vendor/vue-3.4.38.global.prod.js`，内容版本 URL 与 SRI 校验），首屏不等待第三方 CDN。
+- 在 `<head>` 预加载随包提供的 Vue 3.4.38，正文末尾执行。预加载和执行使用同一个内容版本 URL 与 SRI 校验值，首屏不等待第三方 CDN。
+- 页面还未挂载时，保留可见的重新加载入口；若本地脚本下载或完整性验证失败、脚本执行被 CSP 拦截、初始化抛错或超过 15 秒，显示对应提示。遇到 Firefox 白屏，先看网络面板中的主文档、登录跳转、`/static/vendor/vue-3.4.38.global.prod.js` 和控制台首条错误。不要关闭浏览器的证书或内容安全校验。
 - 定义 Library OS 全局 CSS tokens。
 - 提供 `library-shell`、`library-sidebar`、`library-main`。
 - 保留 `window.initVueApp(setupFunc)`。

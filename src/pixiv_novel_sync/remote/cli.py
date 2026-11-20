@@ -33,6 +33,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--once", action="store_true", help="perform one supervision cycle and exit")
     doctor = commands.add_parser("doctor", help="offline configuration and directory checks")
     doctor.add_argument("--role", choices=("web", "controller", "worker"), default="web")
+    doctor.add_argument("--network", action="store_true", help="read controller's machine status without changing it")
     commands.add_parser('egress',help='run the explicitly configured cloud TLS CONNECT exit')
     for name in ("recover", "gc"):
         command = commands.add_parser(name)
@@ -59,7 +60,9 @@ def _signals(stop: threading.Event):
             signal.signal(signum, handler)
 
 
-def _doctor(cfg: RemoteConfig) -> int:
+def _doctor(cfg: RemoteConfig, network: bool = False) -> int:
+    if network and cfg.role != "controller":
+        raise RemoteError("controller_role_required", 400)
     if not cfg.enabled:
         print("remote disabled")
         return 0
@@ -77,8 +80,26 @@ def _doctor(cfg: RemoteConfig) -> int:
         if not os.access(ancestor, os.W_OK | os.X_OK):
             raise RemoteError("directory_not_accessible", 400)
         directory = "creation_required"
-    print(json.dumps({"role": cfg.role, "configuration": "valid", "directory": directory,
-                      "network": "not_checked"}, sort_keys=True))
+    result = {"role": cfg.role, "configuration": "valid", "directory": directory,
+              "network": "not_checked"}
+    if network:
+        from .instabox import BASE_URL, InstaBoxClient, ProviderError
+
+        provider = InstaBoxClient(cfg.api_key, cfg.machine_id)
+        started = time.monotonic()
+        try:
+            machine = provider.machine()
+            result.update(network="reachable", provider_state=machine.state, runtime_ready=machine.runtime_ready)
+        except ProviderError as error:
+            result.update(network="failed", error=error.code, http_status=error.http_status,
+                          reason=error.network_reason)
+        finally:
+            provider.close()
+        result.update(endpoint=BASE_URL, proxy="disabled", tls_verification=True,
+                      elapsed_ms=round((time.monotonic() - started) * 1000))
+    print(json.dumps(result, sort_keys=True))
+    if result["network"] == "failed":
+        return 1
     return 0
 
 
@@ -176,7 +197,7 @@ def run_cli(argv: list[str], env: Mapping[str, str] | None = None) -> int:
         if args.command in {"recover", "gc"}:
             return _maintenance(args, values)
         cfg = RemoteConfig.from_env(values, role=args.role if args.command == "doctor" else args.command)
-        return _doctor(cfg) if args.command == "doctor" else _serve(args, cfg)
+        return _doctor(cfg, args.network) if args.command == "doctor" else _serve(args, cfg)
     except SystemExit as exc:
         return int(exc.code or 0)
     except RemoteError as exc:

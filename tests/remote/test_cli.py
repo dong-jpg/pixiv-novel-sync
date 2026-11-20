@@ -39,6 +39,51 @@ def test_enabled_doctor_only_checks_explicit_configuration(tmp_path, capsys):
     assert "b" * 64 not in output
 
 
+@pytest.mark.parametrize("failure", [None, "timeout", "tls", "connection", "authentication"])
+def test_controller_network_doctor_is_read_only_and_redacted(failure, tmp_path, monkeypatch, capsys):
+    import json
+    from pixiv_novel_sync.remote import instabox
+
+    calls = []
+
+    class ProbeProvider:
+        def machine(self):
+            calls.append("machine")
+            if failure == "authentication":
+                raise instabox.ProviderError("invalid_key", 401)
+            if failure:
+                raise instabox.ProviderError("provider_unreachable", network_reason=failure)
+            return SimpleNamespace(state="suspended", runtime_ready=False)
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(instabox, "InstaBoxClient", lambda *args: ProbeProvider())
+    root = tmp_path / "uncreated-state"
+    env = {"PIXIV_REMOTE_ENABLED": "1", "PIXIV_REMOTE_STATE_DIR": str(root),
+           "PIXIV_REMOTE_MACHINE_ID": "m_private_fixture", "INSTABOX_API_KEY": "private-key"}
+    code = run_cli(["doctor", "--role", "controller", "--network"], env=env)
+    assert code == (1 if failure else 0)
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["network"] == ("failed" if failure else "reachable")
+    assert result["proxy"] == "disabled"
+    assert result["tls_verification"] is True
+    if failure == "authentication":
+        assert result["http_status"] == 401
+    elif failure:
+        assert result["reason"] == failure
+    assert calls == ["machine", "close"]
+    assert not root.exists()
+    assert "private" not in captured.out + captured.err
+    assert str(root) not in captured.out + captured.err
+
+
+def test_network_doctor_rejects_non_controller_role(capsys):
+    assert run_cli(["doctor", "--network"], env={}) == 1
+    assert "controller_role_required" in capsys.readouterr().err
+
+
 def test_worker_cli_uses_dedicated_entry_without_loading_business_settings(tmp_path, monkeypatch):
     class FakeWorker:
         last_error = None
