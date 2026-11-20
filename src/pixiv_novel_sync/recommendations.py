@@ -234,7 +234,8 @@ class RecommendationService:
     def _login_api(self) -> AppPixivAPI:
         auth = PixivAuthManager(self.settings.pixiv)
         api, _ = auth.login()
-        return api
+        from .remote.execution import bind_api
+        return bind_api(api)
 
     def _page_delay(self, emit: Any = None) -> None:
         """Phase 3.4: 使用统一限速器；emit 命中取消时抛 InterruptedError"""

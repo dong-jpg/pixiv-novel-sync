@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from http.cookiejar import DefaultCookiePolicy
 import re
 import threading
@@ -280,6 +281,7 @@ class WorkerHTTP:
         value = self._rpc("POST", "/sessions", bootstrap=True, payload={
             "boot_id": boot_id, "session_secret": session_secret,
             "protocol": PROTOCOL, "renderer": RENDERER,
+            "task_kinds": sorted(k for k in KINDS if not k.startswith('checkin.') or os.environ.get('PIXIV_REMOTE_CHECKIN_CONFIG')),
         })
         try:
             session_id = require_uuid(value.get("session_id"))
@@ -334,6 +336,14 @@ class WorkerHTTP:
     def renew(self, grant: Grant, seq: int) -> dict:
         return self._rpc("POST", f"/attempts/{require_uuid(grant.attempt_id)}/heartbeat",
                          payload={**self._grant_payload(grant), "seq": require_int(seq, 1)})
+
+    def upstream(self, grant, ordinal):
+        return self._rpc('POST',f'/attempts/{require_uuid(grant.attempt_id)}/upstream',limit=RESULT_LIMIT,
+                         payload={**self._grant_payload(grant),'ordinal':require_int(ordinal,1,2)})
+
+    def permit(self, grant, ordinal):
+        return self._rpc('POST',f'/attempts/{require_uuid(grant.attempt_id)}/permit',
+                         payload={**self._grant_payload(grant),'ordinal':require_int(ordinal,1,2)})
 
     def stage(self, grant: Grant, path: Path, sha256: str, size: int) -> dict:
         require_digest(sha256)

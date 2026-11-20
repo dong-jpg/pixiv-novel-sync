@@ -363,10 +363,25 @@ class Worker:
                         cover_path = target
             self._ensure_work(attempt)
             output = root / "result.bin"
+            credentials = None
+            if grant.kind in {'checkin.status.v1','checkin.submit.v1'}:
+                from .checkin_task import load_worker_config
+                credentials=load_worker_config()
             with self._lock:
                 self._ensure_work(attempt)
                 self.state = "running"
-                attempt.child = self.runner.start(grant.kind, manifest_path, text_path, cover_path, output)
+                if grant.kind in {'pixiv.novel.v1','pixiv.api.v1','ai.text.v1','checkin.status.v1','checkin.submit.v1'}:
+                    def remote_call(ordinal):
+                        self._ensure_work(attempt)
+                        reply=(self.client.permit(grant,ordinal) if grant.kind.startswith('checkin.')
+                               else self.client.upstream(grant,ordinal))
+                        self._ensure_work(attempt)
+                        return reply
+                    attempt.child = self.runner.start(grant.kind, manifest_path, text_path, cover_path, output,
+                        credentials=credentials, permit=remote_call)
+                else:
+                    attempt.child = self.runner.start(grant.kind, manifest_path, text_path, cover_path, output)
+            credentials = None
             while attempt.child.poll() is None:
                 self._ensure_work(attempt)
                 attempt.cancel.wait(0.1)

@@ -10,19 +10,7 @@ from pixiv_novel_sync.jobs.services import JobReporter, _catalog_inputs_changed,
 def _is_addable_number(value: Any) -> bool:
     return isinstance(value, Number) and not isinstance(value, bool)
 
-_TASK_LABELS: dict[str, str] = {
-    "bookmark": "收藏小说",
-    "following_users": "关注用户",
-    "following_novels": "关注用户小说",
-    "subscribed_series": "订阅系列",
-    "user_status": "用户状态检查",
-    "novel_status": "小说状态检查",
-    "series_status": "系列状态检查",
-    "pending_deletion_detection": "待删除检测",
-    "user_backup": "用户全量备份",
-    "preference_analyze": "偏好分析",  # Phase 7.6
-    "recommendation_run": "生成推荐",  # Phase 7.6
-}
+from .registry import JOB_LABELS as _TASK_LABELS
 
 
 
@@ -45,6 +33,12 @@ def _stop_requested_from_context(context: dict[str, Any]) -> Callable[[], bool]:
 
 
 def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    from ..remote.execution import execution_scope
+    with execution_scope(settings,task_type,_stop_requested_from_context(context or {})):
+        return _execute_task(task_type,settings,context)
+
+
+def _execute_task(task_type: str, settings: Any, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     context = context or {}
     reporter = _job_reporter_from_context(context)
     stop_requested = _stop_requested_from_context(context)
@@ -318,6 +312,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
     reporter.add_log("info", "=== 开始增量分析本地偏好 ===")
 
     db = Database(settings.storage.db_path)
+    current_rebuild = None
     try:
         prepare_schema(db)
         analyzer = PreferenceAnalyzer(db)
@@ -339,15 +334,16 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
                 raise InterruptedError("Task stopped by user")
             reporter.add_log("info", f"已分析 {processed} 篇 (本次), 剩余约 {remaining} 篇待分析")
 
-        result = analyzer.analyze_incremental(
-            batch_size=batch_size,
-            max_batches=max_batches,
-            min_text_length=min_text_length,
-            progress=progress,
-        )
-
-        # 从累加器重建画像
-        rebuilt = analyzer.rebuild_profile_from_accumulator()
+        if params.get("mode") == "current_archive":
+            from pixiv_novel_sync.preference_statistics import CurrentArchiveRebuild
+            current_rebuild = CurrentArchiveRebuild(
+                db, min_text_length=min_text_length, expected_generation=params.get("expected_generation"),
+                stop_requested=stop_requested)
+            result, rebuilt = current_rebuild.prepare(progress)
+        else:
+            result = analyzer.analyze_incremental(
+                batch_size=batch_size, max_batches=max_batches, min_text_length=min_text_length, progress=progress)
+            rebuilt = analyzer.rebuild_profile_from_accumulator()
         existing = db.get_default_preference_profile()
         stats = rebuilt.get("stats") or {}
         old_stats = (existing or {}).get("stats") or {}
@@ -435,13 +431,18 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
             "profile": rebuilt["profile"],
             "is_default": True,
         }
-        if existing:
-            profile_id = int(existing["id"])
-            db.update_preference_profile(profile_id, profile_payload)
-            action = "更新"
-        else:
-            profile_id = db.create_preference_profile(profile_payload)
-            action = "创建"
+        with db.transaction() as conn:
+            if current_rebuild is not None:
+                if db.get_default_preference_profile() != existing:
+                    raise ValueError('默认画像在重算期间已变化，保留原内容，请重新运行')
+                current_rebuild.publish(conn)
+            if existing:
+                profile_id = int(existing["id"])
+                db.update_preference_profile(profile_id, profile_payload)
+                action = "更新"
+            else:
+                profile_id = db.create_preference_profile(profile_payload)
+                action = "创建"
 
         positive_tags = (rebuilt.get("profile") or {}).get("positive_preferences", {}).get("tags", [])
         reporter.add_log(
@@ -453,6 +454,8 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         )
         return {"profile_id": profile_id, **result, **rebuilt}
     finally:
+        if current_rebuild is not None:
+            current_rebuild.close()
         db.close()
 
 

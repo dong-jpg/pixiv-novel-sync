@@ -275,6 +275,8 @@ class RecommendationsMixin:
                     "INSERT OR IGNORE INTO preference_analyzed_novels (novel_id) VALUES (?)",
                     [(int(nid),) for nid in analyzed_ids],
                 )
+                self.conn.execute("UPDATE preference_statistics_state SET generation=generation+1,"
+                                  "basis='historical',snapshot_revision=NULL WHERE id=1")
 
     def prepare_preference_accumulator_scope(self, min_text_length: int) -> bool:
         """选择分析范围；门槛变化时原子清空旧统计，并记录空范围。"""
@@ -308,6 +310,8 @@ class RecommendationsMixin:
             self.conn.execute("DELETE FROM preference_term_counts")
             self.conn.execute("DELETE FROM preference_analyzed_novels")
             self.conn.execute("DELETE FROM preference_accumulator")
+            self.conn.execute("UPDATE preference_statistics_state SET generation=generation+1,"
+                              "basis='historical',snapshot_revision=NULL WHERE id=1")
 
     def prune_preference_term_noise(
         self,

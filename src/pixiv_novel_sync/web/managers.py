@@ -68,10 +68,9 @@ SCHEDULER_STARTUP_STAGGER_SECONDS = 60.0
 # 调度器内部任务名 → task_logs.task_type 的别名。
 # webapp 提交定时任务时写入 task_logs 的是 _scheduler_job_spec() 归一化后的
 # task_types[0]，这里必须保持同一套映射，否则按任务名查不到任何历史记录。
-SCHEDULER_TASK_TYPE_ALIASES = {
-    "bookmarks": "bookmark",
-    "following_list": "following_users",
-}
+from ..jobs.registry import SCHEDULER_TASK_TYPE_ALIASES, SCHEDULER_TASK_CONFIGS, TASK_LABELS as TASK_LABELS
+
+__all__ = ["AutoSyncScheduler", "SettingsManager", "TASK_LABELS"]
 
 # 定时任务清单：调度主循环与重启补偿共用，避免两处走样。
 #
@@ -83,19 +82,6 @@ SCHEDULER_TASK_TYPE_ALIASES = {
 #   bookmarks/following_list/pending_detection 本身只跑几十秒到几分钟，没必要打断；
 #   subscribed_series 每轮从 watchlist 头部重走一遍、不是水位式续跑，打断等于白跑；
 #   recommendation_run 跑一半的推荐结果没有意义。
-SCHEDULER_TASK_CONFIGS: tuple[dict[str, Any], ...] = (
-    {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron", "priority": 1, "preemptible": False},
-    {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron", "priority": 2, "preemptible": False},
-    {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron", "priority": 3, "preemptible": False},
-    {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron", "priority": 3, "preemptible": True},
-    {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron", "priority": 3, "preemptible": True},
-    {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron", "priority": 3, "preemptible": True},
-    {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron", "priority": 3, "preemptible": True},
-    {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron", "priority": 3, "preemptible": True},
-    {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron", "priority": 3, "preemptible": False},
-    {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron", "priority": 3, "preemptible": True},
-    {"name": "recommendation_run", "setting_check": "auto_sync_recommendation_run_enabled", "interval_setting": "auto_sync_recommendation_run_interval_hours", "cron_setting": "auto_sync_recommendation_run_cron", "priority": 3, "preemptible": False},
-)
 
 SCHEDULER_TASK_CONFIG_BY_NAME: dict[str, dict[str, Any]] = {
     config["name"]: config for config in SCHEDULER_TASK_CONFIGS
@@ -178,6 +164,8 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
             "max_items_per_run",
             "max_pages_per_run",
             "bookmark_max_pages_per_run",
+            "archive_rescan_days",
+            "pixiv_execution",
             "following_max_novels_per_author",
             "series_max_pages_per_run",
             "series_sync_limit",
@@ -244,25 +232,6 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
 }
 
 
-TASK_LABELS = {
-    "bookmark": "同步收藏小说",
-    "bookmarks": "同步收藏小说",
-    "following_users": "同步关注用户列表",
-    "following_list": "同步关注用户列表",
-    "following_novels": "同步关注用户小说",
-    "subscribed_series": "同步追更系列",
-    "user_status": "检查用户状态",
-    "novel_status": "检查小说状态",
-    "series_status": "检查系列状态",
-    "user_backup": "全量备份关注用户小说",
-    "pending_deletion_detection": "检测取消收藏/追更",
-    "preference_analyze": "增量分析本地偏好",
-    "preference_summarize": "生成个人偏好画像",
-    "work_analysis": "分析作品",
-    "recommendation_run": "生成推荐",
-    "keyword_clean": "关键词清洗",
-    "manual": "手工同步",
-}
 
 
 @dataclass
@@ -1093,6 +1062,12 @@ class SettingsManager:
         sync_data["bookmark_max_pages_per_run"] = _normalize_optional_int(
             payload.get("bookmark_max_pages_per_run", sync_data.get("bookmark_max_pages_per_run"))
         )
+        from ..settings import _execution_location
+        sync_data['pixiv_execution'] = _execution_location(payload.get('pixiv_execution',sync_data.get('pixiv_execution','local')))
+        days = _normalize_int(payload.get('archive_rescan_days',sync_data.get('archive_rescan_days',7)),7)
+        if not 0 <= days <= 365:
+            raise ValueError('回扫间隔必须为 0–365 天')
+        sync_data['archive_rescan_days'] = days
         # 留空 = 跟随通用上限/不限；_normalize_optional_int 会拒绝 0 与负数，
         # 避免把"每作者 0 篇"这种等于关掉同步的值写进配置。
         sync_data["following_max_novels_per_author"] = _normalize_optional_int(

@@ -402,7 +402,8 @@ def test_every_scheduler_task_is_registered_in_all_three_tables() -> None:
     from pixiv_novel_sync.web.managers import TASK_LABELS
     from pixiv_novel_sync.web.utils import _scheduler_job_spec
 
-    dispatch_source = inspect.getsource(execute_task)
+    from pixiv_novel_sync.jobs.tasks import _execute_task
+    dispatch_source = inspect.getsource(_execute_task)
 
     for config in SCHEDULER_TASK_CONFIGS:
         name = config["name"]

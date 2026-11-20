@@ -466,6 +466,7 @@ class NovelsMixin:
                 n.restrict_value,
                 n.total_bookmarks,
                 n.total_views,
+                n.text_length,
                 n.last_seen_at,
                 n.first_seen_at,
                 CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind,

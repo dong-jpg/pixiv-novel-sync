@@ -367,6 +367,7 @@ class AIServiceCore:
             config.max_retries,
             config.proxy,
             config.stream_enabled,
+            os.environ.get('PIXIV_REMOTE_AI_EXECUTION','local'),
         )
 
     def _get_provider(self, config: AIProviderConfig) -> AIProvider:
@@ -386,6 +387,9 @@ class AIServiceCore:
             from .. import service as service_facade
 
             provider = service_facade.create_provider(config)
+            if os.environ.get('PIXIV_REMOTE_AI_EXECUTION','local')=='remote':
+                from ...remote.ai_task import RemoteAIProvider
+                provider=RemoteAIProvider(provider)
             self._provider_cache[key] = provider
             if config.id is not None:
                 self._provider_cache_by_id[config.id] = key

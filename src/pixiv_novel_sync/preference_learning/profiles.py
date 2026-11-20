@@ -236,11 +236,11 @@ class PreferenceLearningService:
                 conn.execute(
                     "INSERT INTO preference_summary_runs(run_id,idempotency_hash,request_hash,source_fingerprint,"
                     "configuration_fingerprint,agent_id,output_tokens,request_limit,token_limit,active_seconds_limit,"
-                    "status,created_at,source_count,sources_json) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',?,?,?)",
+                    "status,created_at,source_count,sources_json,source_revision) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?)",
                     (run_id, key, request_hash, captured["source_fingerprint"], configuration["configuration_fingerprint"],
                      request["agent_id"], request["output_tokens"], request["budget"]["request_limit"],
                      request["budget"]["token_limit"], request["budget"]["active_seconds_limit"], stamp(),
-                     len(captured["sources"]), dump(captured["sources"])),
+                     len(captured["sources"]), dump(captured["sources"]), captured["source_revision"]),
                 )
                 conn.executemany(
                     "INSERT INTO preference_summary_sources(run_id,source_kind,source_id,report_run_id) VALUES(?,?,?,?)",
@@ -413,7 +413,7 @@ class PreferenceLearningService:
             db = self.db_factory()
             try:
                 with db.read_transaction() as conn:
-                    row = require_bound(conn, binding)
+                    row = require_bound(conn, binding, lightweight=False)
                     sources = json.loads(row["sources_json"])
                     configuration, prompt, preflight = snapshot_work_configuration(conn, row["agent_id"], row["output_tokens"])
                     payload = _payload(sources, configuration, prompt)

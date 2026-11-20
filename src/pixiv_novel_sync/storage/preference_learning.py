@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from ..ai.usage import ProviderUsage, merge_usage_snapshot
 from ..preference_learning.contracts import PreferenceCallBinding
+from .preference_sources import migrate_source_revisions, source_revision, source_rows
 from ..work_analysis.artifacts import validate_artifact
 from ..work_analysis.configuration import snapshot_work_configuration
 from ..work_analysis.contracts import (
@@ -132,9 +133,12 @@ def migrate_preference_learning(conn: sqlite3.Connection):
             "ON preference_reading_feedback BEGIN " + _invalidate("1") + " END"
         )
     for kind, table, column in (("novel", "novels", "novel_id"), ("series", "series", "series_id")):
+        trigger=f'preference_source_{kind}_delete'
+        old=conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",(trigger,)).fetchone()
+        if old and 'DELETE FROM preference_reading_feedback' in old[0]:
+            conn.execute(f'DROP TRIGGER {trigger}')
         statements.append(
             f"CREATE TRIGGER IF NOT EXISTS preference_source_{kind}_delete AFTER DELETE ON {table} BEGIN "
-            f"DELETE FROM preference_reading_feedback WHERE source_kind='{kind}' AND source_id=OLD.{column}; "
             + _invalidate(
                 "run_id IN (SELECT run_id FROM preference_summary_sources "
                 f"WHERE source_kind='{kind}' AND source_id=OLD.{column})", "source_deleted"
@@ -162,6 +166,18 @@ def migrate_preference_learning(conn: sqlite3.Connection):
     )
     for statement in statements:
         conn.execute(statement)
+    if migrate_source_revisions(conn):
+        # Preserve valid, already-paid legacy profiles. Only the one-time migration
+        # reads reports; a source mismatch never acquires a fresh revision.
+        if conn.execute("SELECT 1 FROM preference_summary_runs WHERE status!='deleted' LIMIT 1").fetchone():
+            try:
+                captured = capture_sources(conn)
+            except (TypeError, ValueError):
+                pass  # Existing profiles stay on precise validation if sources are malformed.
+            else:
+                conn.execute("UPDATE preference_summary_runs SET source_revision=? "
+                             "WHERE source_fingerprint=? AND status NOT IN ('deleted','invalidated')",
+                             (captured["source_revision"], captured["source_fingerprint"]))
 
 
 def capture_sources(conn):
@@ -170,15 +186,7 @@ def capture_sources(conn):
     Stored reports are the sole quote source. No full novel text is read/copied.
     A series rating takes precedence over ratings of its individual chapters.
     """
-    feedback = [dict(row) for row in conn.execute(
-        "SELECT f.*,n.novel_id AS existing_novel,n.series_id AS parent_series,s.series_id AS existing_series "
-        "FROM preference_reading_feedback f "
-        "LEFT JOIN novels n ON f.source_kind='novel' AND n.novel_id=f.source_id "
-        "LEFT JOIN series s ON f.source_kind='series' AND s.series_id=f.source_id "
-        "WHERE f.reaction!='clear' ORDER BY f.source_kind,f.source_id LIMIT 2001"
-    )]
-    if len(feedback) > 2000:
-        raise WorkAnalysisError("input_too_large", 413)
+    feedback = source_rows(conn)
     counts = {key: sum(row["reaction"] == key for row in feedback) for key in ("liked", "disliked", "neutral")}
     rated_series = {row["source_id"] for row in feedback if row["source_kind"] == "series"}
     eligible = {
@@ -253,12 +261,14 @@ def capture_sources(conn):
             source_identity["claim_feedback_revision"] = source["claim_feedback_revision"]
         identity.append(source_identity)
         sources.append(source)
-    return {"sources": sources, "source_fingerprint": fingerprint(identity), "feedback_counts": counts,
+    return {"sources": sources, "source_fingerprint": fingerprint(identity), "source_revision": fingerprint(feedback), "feedback_counts": counts,
             "eligible_works": len(sources), "missing_reports": missing}
 
 
-def get_run(conn, run_id):
-    row = conn.execute("SELECT * FROM preference_summary_runs WHERE run_id=?", (hex_id(run_id, 32),)).fetchone()
+def get_run(conn, run_id, *, lightweight=False):
+    fields = ("run_id,status,owner_token,configuration_fingerprint,deadline_at,source_fingerprint,source_revision,"
+              "agent_id,output_tokens,child_job_id,request_count,request_limit,planned_tokens,token_limit") if lightweight else "*"
+    row = conn.execute(f"SELECT {fields} FROM preference_summary_runs WHERE run_id=?", (hex_id(run_id, 32),)).fetchone()
     if row is None:
         raise WorkAnalysisError("not_found", 404)
     return row
@@ -268,6 +278,12 @@ def is_stale(conn, row, captured=None):
     if row["status"] in {"invalidated", "deleted"}:
         return True
     try:
+        if row["source_revision"] is not None:
+            current = captured['source_revision'] if captured is not None else source_revision(conn)
+            if row['source_revision'] != current:
+                return True
+            if captured is None:
+                return False
         return row["source_fingerprint"] != (captured or capture_sources(conn))["source_fingerprint"]
     except (TypeError, ValueError):
         return True
@@ -295,10 +311,10 @@ def public_run(conn, row, *, include_result=False, captured=None):
     return result
 
 
-def require_bound(conn, binding, *, now=None):
+def require_bound(conn, binding, *, now=None, lightweight=True):
     if not isinstance(binding, PreferenceCallBinding):
         raise WorkAnalysisError("owner_lost", 409)
-    row = get_run(conn, binding.run_id)
+    row = get_run(conn, binding.run_id, lightweight=lightweight)
     if row["status"] == "deleted":
         raise WorkAnalysisError("work_deleted", 410)
     if row["status"] in {"cancelled", "invalidated"}:
@@ -333,10 +349,11 @@ def _child(conn, child_job_id, row, *, now=None):
 class PreferenceLearningMixin:
     def get_reading_feedback(self, kind, source_id):
         with self.read_transaction() as conn:
-            if not source_exists(conn, kind, source_id):
-                raise WorkAnalysisError("not_found", 404)
+            exists=source_exists(conn, kind, source_id)
             row = conn.execute("SELECT * FROM preference_reading_feedback WHERE source_kind=? AND source_id=?",
                                (kind, source_id)).fetchone()
+            if not exists and row is None:
+                raise WorkAnalysisError("not_found", 404)
             return dict(row) if row else {"source_kind": kind, "source_id": source_id, "reaction": "clear",
                                           "version": 0, "note": ""}
 
@@ -352,7 +369,7 @@ class PreferenceLearningMixin:
         if reaction == "clear":
             note = ""
         with self.transaction() as conn:
-            if not source_exists(conn, kind, source_id):
+            if not source_exists(conn, kind, source_id) and reaction!='clear':
                 raise WorkAnalysisError("not_found", 404)
             old = conn.execute("SELECT * FROM preference_reading_feedback WHERE source_kind=? AND source_id=?",
                                (kind, source_id)).fetchone()

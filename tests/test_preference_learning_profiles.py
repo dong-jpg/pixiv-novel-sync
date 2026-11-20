@@ -367,6 +367,7 @@ def test_claim_feedback_migrates_existing_reports_and_keeps_unrelated_writing_da
         conn.execute("CREATE TABLE fixture_writing_data(value TEXT NOT NULL)")
         conn.execute("INSERT INTO fixture_writing_data VALUES('preserved')")
         conn.execute("DROP TRIGGER preference_report_claim_feedback")
+        conn.execute("DROP TRIGGER IF EXISTS preference_report_revision")
         conn.execute("ALTER TABLE work_analysis_runs DROP COLUMN claim_feedback_revision")
     env.db.init_schema()
     env.db.init_schema()
@@ -689,7 +690,9 @@ def test_migration_is_repeatable_and_keeps_callers_transaction():
     try:
         conn.execute("CREATE TABLE novels(novel_id INTEGER PRIMARY KEY)")
         conn.execute("CREATE TABLE series(series_id INTEGER PRIMARY KEY)")
-        conn.execute("CREATE TABLE work_analysis_runs(run_id TEXT PRIMARY KEY, deleted_at TEXT, report_stale INTEGER, archive_outdated INTEGER, report_json TEXT)")
+        conn.execute("CREATE TABLE work_analysis_runs(run_id TEXT PRIMARY KEY, source_kind TEXT, source_id INTEGER, "
+                     "created_at TEXT, status TEXT, claim_feedback_revision INTEGER DEFAULT 0, "
+                     "deleted_at TEXT, report_stale INTEGER, archive_outdated INTEGER, report_json TEXT)")
         conn.commit()
         conn.execute("BEGIN")
         migrate_preference_learning(conn)

@@ -176,11 +176,17 @@ class SchemaMixin:
         self._migrate_query_indexes()
         from .work_analysis.schema import migrate_work_analysis
         from .preference_learning import migrate_preference_learning
+        from ..sync.rescan import migrate_rescans
+        from ..sync.series_inventory import migrate_inventory
+        from .preference_statistics import migrate_statistics
         from .library_analysis import migrate_library_analysis
 
         with self.transaction() as conn:
             migrate_work_analysis(conn)
             migrate_preference_learning(conn)
+            migrate_rescans(conn)
+            migrate_inventory(conn)
+            migrate_statistics(conn)
             migrate_library_analysis(conn)
         self._commit_if_needed()
 

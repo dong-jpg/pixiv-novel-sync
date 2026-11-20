@@ -52,7 +52,7 @@ class BookmarksMixin:
                 n.novel_id, n.title, n.user_id, n.series_id,
                 u.name AS author_name, n.cover_url, n.restrict_value,
                 n.x_restrict, u.raw_json AS author_raw_json,
-                n.total_bookmarks, n.total_views, n.last_seen_at, n.first_seen_at,
+                n.total_bookmarks, n.total_views, n.text_length, n.last_seen_at, n.first_seen_at,
                 CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind,
                 rp.status AS reading_status,
                 rp.progress AS reading_progress

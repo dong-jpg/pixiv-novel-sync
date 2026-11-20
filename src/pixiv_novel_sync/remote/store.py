@@ -66,21 +66,32 @@ class RemoteStore:
     def migrate(self):
         self._safe_paths()
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with self.transaction() as conn:
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, SCHEMA_VERSION):
-                raise RemoteError("unsupported_control_schema", 503)
-            if version == 0:
-                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchone():
-                    raise RemoteError("not_a_control_database", 503)
-                for statement in STATEMENTS:
-                    conn.execute(statement)
-                conn.execute("INSERT INTO meta VALUES(1,?,1)", (str(uuid.uuid4()),))
-                conn.execute("INSERT INTO machine_control(id,machine_id) VALUES(1,?)", (self.machine_id,))
+        with self.read() as conn:
+            conn.execute('PRAGMA foreign_keys=OFF')
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if version not in (0, 1, SCHEMA_VERSION):
+                    raise RemoteError("unsupported_control_schema", 503)
+                if version == 0:
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchone():
+                        raise RemoteError("not_a_control_database", 503)
+                    for statement in STATEMENTS:
+                        conn.execute(statement)
+                    conn.execute("INSERT INTO meta VALUES(1,?,1)", (str(uuid.uuid4()),))
+                    conn.execute("INSERT INTO machine_control(id,machine_id) VALUES(1,?)", (self.machine_id,))
+                row = conn.execute("SELECT machine_id FROM machine_control WHERE id=1").fetchone()
+                if row is None or row[0] != self.machine_id:
+                    raise RemoteError("machine_mismatch", 503)
+                from .business_schema import migrate_business
+                migrate_business(conn)
+                if conn.execute('PRAGMA foreign_key_check').fetchone():
+                    raise RemoteError('invalid_control_references',503)
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            row = conn.execute("SELECT machine_id FROM machine_control WHERE id=1").fetchone()
-            if row is None or row[0] != self.machine_id:
-                raise RemoteError("machine_mismatch", 503)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         with self.read() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
 
@@ -129,7 +140,7 @@ class RemoteStore:
                 raise RemoteError("queue_full", 429)
             parts = conn.execute("""SELECT p.part,p.blob_sha256,b.state FROM input_parts p
                 LEFT JOIN blob_objects b ON b.sha256=p.blob_sha256 WHERE p.input_sha256=?""", (input_sha256,)).fetchall()
-            required = {"manifest", "text"} if kind == "epub.single.v1" else {"manifest"}
+            required = {"manifest", "text"} if kind in {"epub.single.v1",'ai.text.v1'} else {"manifest"}
             by_part = {row["part"]: row for row in parts}
             if not required <= by_part.keys() or by_part["manifest"]["blob_sha256"] != input_sha256:
                 raise RemoteError("input_unavailable", 503)
@@ -180,7 +191,8 @@ class RemoteStore:
                 self._end_attempt(conn, attempt, "lost", "worker_restarted", now)
             conn.execute("UPDATE sessions SET state='retired' WHERE machine_id=? AND state='active'", (self.machine_id,))
             session_id = str(uuid.uuid4())
-            conn.execute("""INSERT INTO sessions VALUES(?,?,?,?,?,?,?,'active',?,?,?)""",
+            conn.execute("""INSERT INTO sessions(session_id,machine_id,boot_id,token_hash,epoch,protocol,renderer,
+                         state,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?,?,'active',?,?,?)""",
                          (session_id, self.machine_id, boot_id, token_hash, epoch, protocol, renderer,
                           now, now + SESSION_SECONDS, now))
             return self._public_session(conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone())
@@ -243,8 +255,9 @@ class RemoteStore:
         with self.read() as conn:
             self._session(conn, session_id, now)
             replay = conn.execute("SELECT 1 FROM attempts WHERE session_id=? AND claim_key=?", (session_id, claim_key)).fetchone()
+            pending = conn.execute("SELECT 1 FROM runs WHERE state IN ('queued','active') AND deadline>? LIMIT 1", (now,)).fetchone()
         physical_free = None
-        if not replay:
+        if not replay and pending:
             try:
                 physical_free = self._probe_receiver()
             except (OSError, RemoteError):
@@ -279,7 +292,9 @@ class RemoteStore:
                     return None
             if conn.execute("SELECT 1 FROM attempts WHERE machine_id=? AND state='active'", (self.machine_id,)).fetchone():
                 return None
-            run = conn.execute("SELECT * FROM runs WHERE state='queued' AND not_before<=? AND deadline>? ORDER BY created_at,run_id LIMIT 1", (now, now)).fetchone()
+            run = conn.execute("SELECT * FROM runs WHERE state='queued' AND not_before<=? AND deadline>? "
+                               "AND kind IN (SELECT value FROM json_each(?)) ORDER BY created_at,run_id LIMIT 1",
+                               (now, now, session['task_kinds_json'])).fetchone()
             if not run:
                 return None
             output_budget = DIAGNOSTIC_LIMIT if run["kind"] == "diagnostic.v1" else RESULT_LIMIT
@@ -397,6 +412,8 @@ class RemoteStore:
                 conn.execute("UPDATE attempts SET state='cancelled',error_code='cancelled',ended_at=? WHERE run_id=? AND state='active'", (now, run_id))
                 conn.execute("UPDATE runs SET state='cancelled',error_code='cancelled',finished_at=? WHERE run_id=?", (now, run_id))
                 self._record_activity(conn)
+                conn.execute('DELETE FROM upstream_receipts WHERE attempt_id IN (SELECT attempt_id FROM attempts WHERE run_id=?)',(run_id,))
+                conn.execute('DELETE FROM business_secrets WHERE input_sha256=(SELECT input_sha256 FROM runs WHERE run_id=?)',(run_id,))
             return dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
 
     def _sweep(self, conn, now):
@@ -418,6 +435,10 @@ class RemoteStore:
         changes += expired
         conn.execute("UPDATE sessions SET state='expired' WHERE state='active' AND expires_at<=?", (now,))
         conn.execute("DELETE FROM blob_reservations WHERE expires_at<=?", (now,))
+        conn.execute("DELETE FROM business_secrets WHERE expires_at<=? OR input_sha256 IN "
+                     "(SELECT input_sha256 FROM runs WHERE state IN ('succeeded','failed','cancelled','expired'))", (now,))
+        conn.execute("DELETE FROM upstream_receipts WHERE attempt_id IN "
+                     "(SELECT attempt_id FROM attempts WHERE state!='active')")
         return changes
 
     def sweep(self, now: float):

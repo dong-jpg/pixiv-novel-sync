@@ -134,6 +134,11 @@ class SeriesMixin:
                         series_info["cover_url"] = cu
                         break
         series_info["novels"] = [dict(row) for row in novels]
+        from ..sync.series_inventory import observed_order
+        order = {novel_id: index for index, novel_id in enumerate(observed_order(self.conn, series_id))}
+        if order:
+            series_info["novels"].sort(key=lambda row: (order.get(row["novel_id"], len(order)),
+                                                       row.get("create_date") or "", row["novel_id"]))
         # 用本地实际记录数覆盖远端 total_novels
         series_info["total_novels"] = len(novels)
         # 计算系列总字数

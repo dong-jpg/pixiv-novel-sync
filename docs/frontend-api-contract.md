@@ -744,6 +744,8 @@ Body:
 
 ## Work Analysis APIs
 
+传统统计另有 `GET /api/dashboard/preferences/statistics-state`，返回 `generation`、`archive_revision`、`basis`、`snapshot_revision`、`current_archive`。`POST /api/dashboard/preferences/profiles/analyze` 可显式提交 `mode=current_archive` 与 `expected_generation`，使用原共享任务槽；成功时统计和默认画像同事务发布，来源/画像变化则失败并保留原结果。省略 mode 仍为增量模式。
+
 用于 `/dashboard/preferences?view=work-analysis`，一次分析一部已归档单篇/系列。单作品报告本身不把作品特征当作用户喜好；偏好学习可在明确评价后引用其有效报告，全库批次也复用这一执行管道。源码入口：`work_analysis_web.py`、`work_analysis/service.py`、`storage/work_analysis/`。默认偏好页不调用这些接口。
 
 ### 路径与请求

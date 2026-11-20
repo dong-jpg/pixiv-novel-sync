@@ -1,8 +1,24 @@
 # 远程执行运维指南
 
-本功能让 VPS 保留唯一书库、阅读入口和任务记录，由 InstaBox 按需执行诊断或单本 EPUB 导出。现有本地同步与 EPUB/ZIP 下载保持原契约。云实例暂停、冷却或无法连接时，阅读仍由 VPS 提供。
+本功能让 VPS 保留唯一书库、阅读入口和任务记录，由 InstaBox 按需执行诊断、单本 EPUB 及固定业务任务。现有本地同步与 EPUB/ZIP 下载保持原契约。云实例暂停、冷却或无法连接时，阅读仍由 VPS 提供。
 
-远程执行目前仅接入 `diagnostic.v1` 和 `epub.single.v1` 手动任务。收藏同步、签到、生产 cron 及全库搬迁未迁至云端。[阅读进度同步](READING_PROGRESS_SYNC.md)已由 VPS 独立实现，不使用 worker。不要向任务协议添加任意 shell、Python、SQL、URL 或文件路径。
+远程执行保留 `diagnostic.v1`、`epub.single.v1` 手动任务，并增加内部 `pixiv.novel.v1`、`pixiv.api.v1`、`ai.text.v1`，以及显式提交的 `checkin.status.v1`、`checkin.submit.v1`。VPS 仍保存唯一书库、原任务调度、水位和业务预算。[阅读进度同步](READING_PROGRESS_SYNC.md)独立运行。不要向任务协议添加任意 shell、Python、SQL、URL 或文件路径。
+
+## 业务执行位置与可信出口
+
+同步设置的 `pixiv_execution: local|remote` 决定收藏、关注、追更、作者备份、状态检查、待删除检测和推荐中的固定 Pixiv 调用是否走 worker。默认 local。显式 remote 时控制配置/worker 不可用会失败，不静默回退。`archive_rescan_days` 控制旧正文回扫，原分页、请求间隔与任务优先级继续生效。
+
+本版采用**VPS 上游转发**：worker 只请求冻结参数的操作，不取得 Pixiv token/Cookie 或模型 API key；VPS 使用持久发送回执调用上游，云端完成 DTO 整理/校验和结果交付。因此上游公网出口、登录和附件下载仍在 VPS，不能把此模式描述成“所有网络请求已从云机发出”。旧 worker 只声明诊断/EPUB 能力，不会领取新增业务。
+
+可选的 `pixiv-remote egress` 提供云主机 HTTPS CONNECT 出口。VPS 的 `PIXIV_REMOTE_EGRESS_PROXY` 留空时保持上述行为和 Provider 原有代理；填写 `https://worker:<独立URL安全密钥>@<可信云主机>:8443` 后，远程 Pixiv/模型上游连接经该出口发送，失败不会改用本地出口。上游 TLS 仍由 VPS 验证并端到端加密，出口主机不解密 Pixiv token、Cookie、模型 API key 或正文。OAuth 登录与归档附件下载继续使用原 VPS 路径。
+
+出口单独使用 [环境示例](../config/remote-egress.env.example) 和 [systemd unit](../deploy/systemd/pixiv-remote-egress.service)。部署时提供受 VPS 信任的证书、仅服务用户可读的私钥、至少 32 字符的独立随机密钥、实际 Pixiv/Provider 主机名白名单，并限制入口仅允许 VPS。默认只监听回环；跨主机部署必须明确设置监听地址和防火墙。代理仅允许白名单解析出的公网地址与 443 端口，不接受私网/元数据地址、其他端口或任意代理目标。单机最多四个隧道，每个最多十分钟/128 MiB；证书过期或域名白名单缺失会导致远程任务失败，应先验证再启用。生产出口尚未部署验证。
+
+Web 配置增加 `PIXIV_REMOTE_TASK_SECRET`（至少 32 字符的稳定随机值，用于内部临时 Pixiv 凭据加密，可使用已配置的 AI secret 作为回落）。`PIXIV_REMOTE_AI_EXECUTION=remote` 可让统一文本调用走云任务协议；默认 local。模型发送前仍执行原父子预算事务，不更换已有 Provider/路由组，也不自动重播未知结果。输入用每任务临时密钥加密，密钥仅在 VPS 当前进程内存；重启后遗留密文不可重放。
+
+升级顺序：先一致备份业务库与控制库，再停派发/worker，升级 Web/controller 和 worker，核对控制库 schema v2 与能力声明，先诊断后测试单篇/各类业务。新版本 schema 不能由旧 controller 直接读取；回退要按本文恢复流程处理，不能仅回退 Python 代码。`sync-bookmarks` CLI 的 Pixiv 远程任务需同一在线 Web worker API；独立 CLI 的远程 AI 不支持共享进程内授权，应通过 Web 业务入口执行。
+
+签到是可选功能，worker 须安装兼容 `daily-checkin` 并配置独占的已授权浏览器状态；见 [签到适配](CHECKIN_STATUS_ADAPTER.md)。不自动搬迁个人浏览器配置或登录会话。
 
 ## 状态与验证边界
 
@@ -18,8 +34,9 @@
 |---|---|---|---|
 | 现有 Web 服务 | VPS | `config/remote-web.env.example` | 原书库权限、worker bootstrap 的 SHA-256；不需要 InstaBox key |
 | `pixiv-remote controller` | VPS | `config/remote-controller.env.example` | 指定机器的 InstaBox key、独立控制库；没有 worker bootstrap 明文 |
-| `pixiv-remote worker` | InstaBox | `config/remote-worker.env.example` | 独立 worker bootstrap、任务级输入；没有书库 DB、Pixiv/签到凭据、Flask secret 或 AI 解密密钥 |
+| `pixiv-remote worker` | InstaBox | `config/remote-worker.env.example` | 独立 worker bootstrap、任务级输入；可选签到独占会话另行配置，没有书库 DB、Pixiv 凭据、Flask secret 或 AI 解密密钥 |
 | `pixiv-remote gc` | VPS | `config/remote-maintenance.env.example` | 控制目录与机器 ID；不需要平台、worker 或业务密钥，不联网 |
+| `pixiv-remote egress`（可选） | 可信云主机 | `config/remote-egress.env.example` | 出口独立密钥、TLS 证书/私钥及主机白名单；没有上游账户凭据 |
 
 控制目录建议 `/var/lib/pixiv-remote`，其中 `control.db` 为独立 SQLite，文件存储位于 `blobs/`。不要把它配置成业务主库或归档目录。Web 与 controller 需要对该目录具备必要的共享读写权限，建议使用相同专用服务用户；不要授予 Nginx 读取配置秘密的权限。
 
@@ -92,6 +109,8 @@ python -m pip install -c config/remote-renderer-constraints.txt "requests>=2.32.
 - `config/nginx/remote-worker-location.conf`：加入现有 HTTPS server，不覆盖整个站点配置。
 
 服务示例不会自动修改既有 `pixiv-novel-sync.service` 或其 timer。目标实例必须确认在冷启动后启动 worker，不能依赖图形桌面登录或只验证内存恢复。
+
+从 wheel 安装时，上述环境、systemd 与 Nginx 示例同时位于安装前缀的 `share/pixiv-novel-sync/`，仍须操作员按目标路径安装；安装 Python 包不会自动启用系统服务。开发者可用 `python scripts/verify_wheel.py <wheel>` 检查隔离安装的页面/资源，写作分支增加 `--writing`。
 
 Nginx 示例顶部的 `limit_req_zone` 必须放在 `http {}` 内一次，不能放进 `server {}`；其余 location 放入 HTTPS server。bootstrap `/sessions` 入口按每 IP 每分钟 6 次、burst 3 限制，返回 429 与 `Retry-After`。共享出口会共享该 IP 桶。认证后的 worker RPC 另受服务端 session 速率限制，认证仍是必要条件。
 

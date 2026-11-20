@@ -72,7 +72,7 @@
     <div>
       <p class="library-kicker">Remote execution</p>
       <h1 class="library-title">远程执行</h1>
-      <p class="library-subtitle">按需运行诊断与单本 EPUB 导出，在这里查看进度并取得结果。</p>
+      <p class="library-subtitle">查看诊断、导出及业务子任务；同步任务执行位置在同步设置中选择。</p>
     </div>
     {% if remote_enabled %}
     <div class="library-actions">
@@ -164,7 +164,7 @@
       <li v-for="run in runs" :key="run.run_id" class="remote-run">
         <div>
           <div class="remote-run-heading">
-            <h3>{{ run.kind === 'diagnostic.v1' ? '连接诊断' : '单本 EPUB' }}</h3>
+            <h3>{{ ({ 'diagnostic.v1':'连接诊断', 'epub.single.v1':'单本 EPUB', 'pixiv.novel.v1':'单本抓取', 'pixiv.api.v1':'Pixiv 查询', 'ai.text.v1':'AI 文本调用', 'checkin.status.v1':'签到状态', 'checkin.submit.v1':'单站签到' })[run.kind] || run.kind }}</h3>
             <span class="remote-status" :class="statusClass(run.result_expired ? 'expired' : run.state)">{{ run.result_expired ? '结果已过期' : runLabel(run.state) }}</span>
           </div>
           <span class="remote-run-id">{{ run.run_id }}</span>

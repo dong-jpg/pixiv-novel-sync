@@ -111,13 +111,21 @@ class ResultService:
         validate_sha256(sha256)
         if type(size) is not int or size < 0:
             raise RemoteError("invalid_size", 400)
-        if grant.kind not in {"diagnostic.v1", "epub.single.v1"}:
+        from .contracts import KINDS
+        if grant.kind not in KINDS:
             raise RemoteError("unsupported_kind", 400)
         limit = DIAGNOSTIC_LIMIT if grant.kind == "diagnostic.v1" else RESULT_LIMIT
         if size > limit:
             raise RemoteError("result_too_large", 413)
 
     def _validate_output(self, grant: Grant, sha256: str) -> None:
+        if grant.kind in {'pixiv.novel.v1','pixiv.api.v1','ai.text.v1','checkin.status.v1','checkin.submit.v1'}:
+            from .business_contracts import decode_business_manifest, validate_business_result
+            with self.blobs.open_blob(grant.input_sha256) as source:
+                manifest=decode_business_manifest(source.read(MANIFEST_LIMIT+1),grant.kind)
+            with self.blobs.open_blob(sha256) as source:
+                validate_business_result(source.read(RESULT_LIMIT+1),manifest)
+            return
         with self.blobs.open_blob(sha256) as source:
             if grant.kind == "epub.single.v1":
                 validate_epub(source)
@@ -202,10 +210,27 @@ class ResultService:
                 return receipt
         self.blobs.verify(sha256, size)
         now = self._now(now)
+        business_manifest=None
+        checkin_result=None
+        if grant.kind.startswith('checkin.'):
+            from .business import BusinessTasks
+            from .checkin_task import validate_result
+            business_manifest=BusinessTasks(self.store,self.blobs).manifest(grant)
+            with self.blobs.open_blob(sha256) as source:
+                checkin_result=validate_result(source.read(DIAGNOSTIC_LIMIT+1),business_manifest)
+        if grant.kind in {'pixiv.novel.v1','pixiv.api.v1','ai.text.v1'}:
+            from .business import BusinessTasks
+            business_manifest=BusinessTasks(self.store,self.blobs).manifest(grant)
+            if grant.kind=='ai.text.v1':
+                from .ai_task import require_authorization
+                require_authorization(grant,business_manifest)
         with self.store.transaction() as conn:
             receipt = self._publication(conn, grant, sha256, size, now)
             if receipt is not None:
                 return receipt
+            if business_manifest is not None and grant.kind.startswith('pixiv.'):
+                from .account_scope import require_account
+                require_account(conn,business_manifest['account_scope'],business_manifest['account_owner'],now)
             blob = conn.execute("SELECT * FROM blob_objects WHERE sha256=?", (sha256,)).fetchone()
             if blob is None or blob["state"] != "ready" or blob["size_bytes"] != size:
                 raise RemoteError("blob_unavailable", 503)
@@ -215,6 +240,13 @@ class ResultService:
                          (now, grant.attempt_id))
             conn.execute("UPDATE runs SET state='succeeded',finished_at=?,error_code=NULL WHERE run_id=?",
                          (now, grant.run_id))
+            conn.execute('DELETE FROM upstream_receipts WHERE attempt_id=?',(grant.attempt_id,))
+            conn.execute('DELETE FROM business_secrets WHERE input_sha256=?',(grant.input_sha256,))
+            if checkin_result and checkin_result['status']=='already_done':
+                checkin_request=business_manifest['request']
+                conn.execute("UPDATE checkin_effects SET state='confirmed',confirmed_at=? "
+                             "WHERE site_id=? AND identity=? AND business_day=?",(now,checkin_request['site_id'],
+                              checkin_request['expected_identity'],checkin_request['business_day']))
             self.store._record_activity(conn)
             run, attempt, artifact = self._records(conn, grant, now)
             return _published_receipt(run, attempt, artifact)
