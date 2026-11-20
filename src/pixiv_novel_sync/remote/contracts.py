@@ -10,7 +10,7 @@ import uuid
 
 PROTOCOL = 1
 RENDERER = "epub-v1"
-KINDS = frozenset({"diagnostic.v1", "epub.single.v1"})
+KINDS = frozenset({"diagnostic.v1", "epub.single.v1", "pixiv.novel.v1", "pixiv.api.v1", "ai.text.v1", "checkin.status.v1", "checkin.submit.v1"})
 TEXT_LIMIT = 16 * 1024 * 1024
 COVER_LIMIT = 5 * 1024 * 1024
 RESULT_LIMIT = 32 * 1024 * 1024
@@ -31,7 +31,7 @@ RETENTION_SECONDS = 86400
 METADATA_SECONDS = 14 * 86400
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "expired"})
 WORKER_ERRORS = frozenset({"render_failed", "input_mismatch", "protocol_mismatch",
-                           "worker_transient", "result_too_large"})
+    "worker_transient", "result_too_large", "pixiv_fetch_failed", "pixiv_unavailable"})
 
 
 class RemoteError(RuntimeError):
@@ -52,7 +52,7 @@ def digest(data: bytes) -> str:
 
 
 def request_digest(kind: str, novel_id: int | None) -> str:
-    if not isinstance(kind, str) or kind not in KINDS:
+    if not isinstance(kind, str) or kind not in {'diagnostic.v1','epub.single.v1'}:
         raise RemoteError("unsupported_kind", 400)
     if kind == "epub.single.v1":
         if type(novel_id) is not int or not 0 < novel_id <= 2**63 - 1:
@@ -63,6 +63,8 @@ def request_digest(kind: str, novel_id: int | None) -> str:
 
 
 def retry_delay(kind: str, attempt_no: int, code: str) -> int | None:
+    if kind in {'pixiv.novel.v1','pixiv.api.v1','ai.text.v1','checkin.status.v1','checkin.submit.v1'}:
+        return None  # Unknown remote execution never silently repeats authenticated API work.
     if kind not in KINDS or attempt_no < 1 or attempt_no >= MAX_ATTEMPTS:
         return None
     if code not in {"lease_lost", "worker_restarted", "worker_transient"}:

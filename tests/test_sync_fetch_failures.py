@@ -34,6 +34,7 @@ def test_bookmark_page_failure_marks_fetch_failed(tmp_path) -> None:
         SimpleNamespace(),
         settings,
     )
+    service.db.get_watermark = lambda key: None
     stats = service.sync(1, ["public"], download_assets=False, write_markdown=False, write_raw_text=False)
     assert stats["incomplete"] is True
     assert stats["aborted_reason"] == "fetch_failed"

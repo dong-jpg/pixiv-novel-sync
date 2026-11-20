@@ -53,7 +53,10 @@ def create_worker_blueprint(store, blobs, results, cfg, clock):
                 buckets.popitem(last=False)
             while events and events[0] <= now - 60:
                 events.popleft()
-            if len(events) >= 120:
+            # A scoped relay needs receipt polls in addition to lease heartbeats.
+            # This bounds control traffic; upstream calls have their own account
+            # spacer and durable one-send receipt.
+            if len(events) >= 600:
                 raise RemoteError("worker_rate_limited", 429)
             events.append(now)
 
@@ -84,9 +87,16 @@ def create_worker_blueprint(store, blobs, results, cfg, clock):
 
     @bp.post("/sessions")
     def enroll():
-        body = require_fields(bounded_json(), {"boot_id", "session_secret", "protocol", "renderer"})
+        body = require_fields(bounded_json(), {"boot_id", "session_secret", "protocol", "renderer"}, {'task_kinds'})
         require_uuid(body["boot_id"])
+        from .contracts import KINDS
+        import json
+        kinds=body.get('task_kinds',['diagnostic.v1','epub.single.v1'])
+        if not isinstance(kinds,list) or not kinds or any(not isinstance(k,str) or k not in KINDS for k in kinds) or len(kinds)>len(KINDS):
+            raise RemoteError('unsupported_kind',400)
         session = store.enroll(body["boot_id"], token_hash(body["session_secret"]), body["protocol"], body["renderer"], clock())
+        with store.transaction() as conn:
+            conn.execute('UPDATE sessions SET task_kinds_json=? WHERE session_id=?',(json.dumps(kinds),session['session_id']))
         return response(session)
 
     @bp.post("/session-heartbeat")
@@ -124,6 +134,23 @@ def create_worker_blueprint(store, blobs, results, cfg, clock):
         body = require_fields(bounded_json(), GRANT_FIELDS | {"seq"})
         grant = resolve(attempt_id, body)
         return response(store.renew(grant, require_int(body["seq"]), clock()))
+
+    @bp.post('/attempts/<attempt_id>/upstream')
+    def business_upstream(attempt_id):
+        from .business import BusinessTasks
+        from .upstream import poll_upstream
+        body=require_fields(bounded_json(),GRANT_FIELDS|{'ordinal'})
+        grant=resolve(attempt_id,body)
+        return response(poll_upstream(BusinessTasks(store,blobs,clock=clock),grant,body['ordinal']))
+
+    @bp.post('/attempts/<attempt_id>/permit')
+    def business_permit(attempt_id):
+        from .business import BusinessTasks
+        body=require_fields(bounded_json(),GRANT_FIELDS|{'ordinal'})
+        grant=resolve(attempt_id,body)
+        if grant.kind!='checkin.submit.v1':
+            raise RemoteError('unsupported_upstream',400)
+        return response(BusinessTasks(store,blobs,clock=clock).permit(grant,body['ordinal']))
 
     @bp.put("/attempts/<attempt_id>/result")
     def stage(attempt_id):

@@ -52,7 +52,14 @@ def _source_identity(conn, kind, source_id):
         raise WorkAnalysisError("empty_source", 409)
     if len(rows) > 2048:
         raise WorkAnalysisError("input_too_large", 413)
-    manifest = {"source_kind": kind, "source_id": source_id, "chapters": [dict(row) for row in rows]}
+    chapters = [dict(row) for row in rows]
+    if kind == 'series':
+        from ..sync.series_inventory import observed_order
+        order = observed_order(conn, source_id)
+        by_id = {row['novel_id']: row for row in chapters}
+        if set(order) == set(by_id):
+            chapters = [by_id[novel_id] for novel_id in order]
+    manifest = {"source_kind": kind, "source_id": source_id, "chapters": chapters}
     return content_identity(manifest)
 
 

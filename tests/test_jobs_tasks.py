@@ -752,6 +752,10 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
             captured["profile"] = data
             return 1
 
+        def transaction(self):
+            from contextlib import nullcontext
+            return nullcontext()
+
         def update_preference_profile(self, profile_id, data):
             captured["updated"] = (profile_id, data)
 
@@ -826,6 +830,10 @@ def test_preference_analyze_keeps_manual_fields_when_nothing_new(monkeypatch):
             pass
 
     class FakeDb:
+        def transaction(self):
+            from contextlib import nullcontext
+            return nullcontext()
+
         def init_schema(self):
             pass
 

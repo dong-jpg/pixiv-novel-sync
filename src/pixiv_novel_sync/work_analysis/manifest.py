@@ -63,7 +63,7 @@ def validate_manifest(value):
             or value["publication_source"] not in {"unknown", "user_declared"}):
         raise WorkAnalysisError("invalid_manifest")
     if (not isinstance(value["order_source"], str)
-            or value["order_source"] not in {"publication_date_suggestion", "user_confirmed"}):
+            or value["order_source"] not in {"publication_date_suggestion", "remote_order_suggestion", "user_confirmed"}):
         raise WorkAnalysisError("invalid_manifest")
     if value["remote_inventory_verified"] is not False or type(value["requires_partial_confirmation"]) is not bool:
         raise WorkAnalysisError("invalid_manifest")
@@ -164,7 +164,10 @@ def capture_manifest(conn, selection):
     if len(rows) > 2048 or sum(row["bytes"] for row in rows) > MAX_BYTES:
         raise WorkAnalysisError("input_too_large", 413)
     by_id = {row["novel_id"]: row for row in rows}
-    ordered = selection.get("ordered_novel_ids", list(by_id))
+    from ..sync.series_inventory import observed_order
+    remote_order = observed_order(conn, source_id) if kind == 'series' else []
+    suggested = remote_order if set(remote_order) == set(by_id) else list(by_id)
+    ordered = selection.get("ordered_novel_ids", suggested)
     if set(ordered) != set(by_id) or len(ordered) != len(by_id):
         raise WorkAnalysisError("invalid_order", 409)
     texts, metadata = _fetch_texts(conn, ordered)
@@ -181,7 +184,8 @@ def capture_manifest(conn, selection):
         "schema_version": 1, "source_kind": kind, "source_id": source_id, "title": source["title"],
         "publication_state": selection["publication_state"],
         "publication_source": "unknown" if selection["publication_state"] == "unknown" else "user_declared",
-        "order_source": "user_confirmed" if kind == "novel" or "ordered_novel_ids" in selection else "publication_date_suggestion",
+        "order_source": "user_confirmed" if kind == "novel" or "ordered_novel_ids" in selection else
+                        "remote_order_suggestion" if suggested is remote_order else "publication_date_suggestion",
         "expected_count": expected,
         "expected_count_observed_at": source["last_seen_at"] if kind == "series" else None,
         "remote_inventory_verified": False, "requires_partial_confirmation": True,

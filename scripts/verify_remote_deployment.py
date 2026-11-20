@@ -32,7 +32,7 @@ def checked(args, **kwargs):
 def verify_units(directory: Path) -> dict:
     units = directory / "units"
     units.mkdir()
-    roles = ("controller", "worker", "gc")
+    roles = ("controller", "worker", "gc", "egress")
     service_names = [f"pixiv-remote-{role}.service" for role in roles]
     names = [*service_names, "pixiv-remote-gc.timer"]
     for name in names:

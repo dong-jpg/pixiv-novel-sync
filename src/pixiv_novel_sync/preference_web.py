@@ -67,12 +67,29 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
         finally:
             instance.close()
 
+    @app.get("/api/dashboard/preferences/statistics-state")
+    def preference_statistics_state():
+        from .storage.preference_statistics import statistics_state
+        instance = db()
+        try:
+            return ok(statistics_state(instance.conn))
+        finally:
+            instance.close()
+
     @app.post("/api/dashboard/preferences/profiles/analyze")
     def analyze_preference_profile():
         """Phase 7.6: 改为后台job。经统一提交器写入 task_logs，纳入任务日志页。"""
         from pixiv_novel_sync.jobs.models import JobType, JobSource, JobSpec
 
         payload = json_payload()
+        if not isinstance(payload, dict):
+            return fail(ValueError("请求必须是对象"))
+        mode = payload.get("mode", "incremental")
+        if mode not in ("incremental", "current_archive"):
+            return fail(ValueError("未知统计模式"))
+        generation = payload.get("expected_generation")
+        if mode == "current_archive" and (type(generation) is not int or generation < 0):
+            return fail(ValueError("重算需要当前统计版本"))
         submit_shared_web_job = app.config.get("submit_shared_web_job")
         if not callable(submit_shared_web_job):
             return fail(RuntimeError("Shared job submitter not available"))
@@ -83,6 +100,7 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
             job_type=JobType.PREFERENCE_ANALYZE,
             params={
                 "scope": payload.get("scope", {}),
+                **({"mode": mode, "expected_generation": generation} if mode == "current_archive" else {}),
                 **{key: payload[key] for key in ("name", "description") if key in payload},
                 "is_default": bool(payload.get("is_default", True)),
             },
@@ -92,7 +110,7 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
                 spec,
                 current_settings(),
                 task_type="preference_analyze",
-                task_name="增量分析本地偏好",
+                task_name="重算当前书库统计" if mode == "current_archive" else "增量分析本地偏好",
             )
         except RuntimeError as exc:
             return fail(exc)

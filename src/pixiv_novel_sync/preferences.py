@@ -178,8 +178,11 @@ class PreferenceAnalyzer:
         for term_type, (stats_key, top_n) in self.TERM_TYPES.items():
             stats[stats_key] = self.db.top_preference_terms(term_type, top_n)
         profile = self._build_profile(stats)
+        from .storage.preference_statistics import statistics_state
+        state=statistics_state(self.db.conn)
         return {
-            "source_scope": {"min_text_length": int(acc.get("min_text_length") or 1000), "incremental": True},
+            "source_scope": {"min_text_length": int(acc.get("min_text_length") or 1000), "incremental": True,
+                             **{key:state[key] for key in ('basis','generation','archive_revision','current_archive')}},
             "stats": stats,
             "profile": profile,
         }

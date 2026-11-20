@@ -136,7 +136,7 @@ def test_preference_endpoint_preserves_omitted_fields(tmp_path: Path, payload) -
 
 def test_preference_page_does_not_reset_name_on_analyze() -> None:
     text = Path('src/pixiv_novel_sync/templates/dashboard_preferences.html').read_text(encoding='utf-8')
-    analyze = text.split('async function analyze()', 1)[1].split('async function', 1)[0]
+    analyze = text.split('async function analyze(mode)', 1)[1].split('async function', 1)[0]
     assert "name: '本地偏好画像'" not in analyze
 
 

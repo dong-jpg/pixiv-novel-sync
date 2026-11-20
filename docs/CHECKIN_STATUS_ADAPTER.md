@@ -1,6 +1,10 @@
 # 单站签到状态适配底座
 
-该模块实现 `checkin.status.v1` 的 Python 请求、结果和只读网关边界，尚未加入远程任务注册表、HTTP 路由或 worker 派发。它不自动签到，不安装或启用 `daily-checkin`，也不迁移真实账户、浏览器会话或回执数据库。
+`checkin.status.v1` 的 Python 请求、结果和只读网关保持原边界；现在另有固定 `checkin.submit.v1`、worker 派发与 `POST /api/dashboard/remote/checkin`（Dashboard 登录、CSRF、Idempotency-Key）。请求为 `{"kind":"checkin.status.v1|checkin.submit.v1","request":<下述冻结请求>}`。它不自动安装或启用 `daily-checkin`，不迁移真实账户、浏览器会话或回执数据库。
+
+worker 的 `PIXIV_REMOTE_CHECKIN_CONFIG` 指向绝对路径私有 JSON（POSIX 权限 0600），包含 `data_dir`、`identity_key_hex`、`session_bindings`。这些是受信任部署配置，不从任务正文读取。未配置的 worker 不声明签到能力。数据目录必须独占，不能和另一端同时运行相同 profile。
+
+提交先通过原只读状态/身份/日期检查，再由固定 Runner 在提交前领取 VPS 单次许可。`checkin_effects` 以站点、账号代号、业务日唯一记录 submitted/confirmed；超时、重启或换 run 不会获得第二次提交机会。状态不确定时只读查询，仍无法确认则显示 uncertain。实际提交只允许一次 POST，禁止重新登录和自动解验证；需要验证码时保留待人工处理状态。
 
 ## 调用与证据
 
@@ -33,4 +37,4 @@
 - 稳定的独立 HMAC 密钥和会话代次维护机制。登录会话变化必须更新绑定；当前模块不监测或推断 profile 中的实际登录变化。
 - 浏览器 profile/回执权威位置及备份策略，站点状态查询语义与日期回执的真实验收。不能复制私有状态后让多端各自运行。
 
-未来真正的签到提交仍需独立的 VPS 副作用台账、冻结计划日期及未知结果核对协议；不能复用 EPUB 的自动重试分类。当前合成测试仅验证本模块边界和固定网关约定，不代表任何真实站点已验收。
+提交台账、冻结日期与未知结果处理已有合成回归；所有签到任务均不复用 EPUB 自动重试。真实站点、浏览器依赖、会话迁移和账户提交仍需目标环境验收，不能由本地通过推断。

@@ -1,6 +1,6 @@
 """Independent control database schema; never applied to the library database."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Each statement is executed inside the caller's migration transaction. executescript
 # would implicitly commit and is intentionally avoided here.

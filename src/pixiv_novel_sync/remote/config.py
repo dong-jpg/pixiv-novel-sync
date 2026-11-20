@@ -53,6 +53,8 @@ class RemoteConfig:
         enabled = env.get("PIXIV_REMOTE_ENABLED", "0")
         if enabled not in {"0", "1"}:
             raise RemoteError("invalid_remote_enabled", 400)
+        if env.get('PIXIV_REMOTE_AI_EXECUTION','local') not in {'local','remote'}:
+            raise RemoteError('invalid_ai_execution',400)
         if role == "worker":
             work_dir = _directory(env.get("PIXIV_REMOTE_WORK_DIR"))
             origin = validate_origin(env.get("PIXIV_REMOTE_SERVER_ORIGIN"))

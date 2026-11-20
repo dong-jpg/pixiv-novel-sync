@@ -68,9 +68,10 @@
       <div class="preference-management-content space-y-4 mt-4">
         <div class="preference-management-heading">
           <div class="text-sm library-muted">基于本地归档小说生成偏好画像、搜索词和推书依据</div>
-          <button type="button" @click="analyze" :disabled="loading" class="library-btn library-btn-primary disabled:opacity-50">
+          <button type="button" @click="analyze()" :disabled="loading" class="library-btn library-btn-primary disabled:opacity-50">
             {{ loading ? '增量分析中…' : '继续增量分析本地偏好' }}
           </button>
+          <button type="button" @click="analyze('current_archive')" :disabled="loading" class="library-btn disabled:opacity-50">重算当前书库统计</button>
         </div>
         <div v-if="message" class="px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'" :role="messageType === 'error' ? 'alert' : 'status'">
           {{ message }}
@@ -104,6 +105,7 @@
             <h2 class="text-lg font-bold text-gray-900">{{ selected?.name || '本地偏好画像' }}</h2>
             <p class="text-sm text-pixiv-gray mt-1">{{ selected?.profile?.summary || '还没有生成本地偏好画像。点击上方按钮开始增量分析。' }}</p>
             <p class="text-xs library-muted mt-2">本地统计提供基础画像；启用的 AI 画像与最新评价参与下一轮搜索与排序。</p>
+            <p class="text-xs library-muted mt-2">增量统计保留历史累计；重算只统计当前归档，成功后整体替换统计，保留读后评价和 AI 画像。</p>
           </div>
         </div>
         <div v-if="selected" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -325,21 +327,30 @@ window.initVueApp({
       }
     }
 
-    async function analyze() {
+    async function analyze(mode) {
       loading.value = true;
       try {
+        const payload = { is_default: true, scope: { min_text_length: 1000, max_batches: 10 } };
+        if (mode === 'current_archive') {
+          const stateRes = await fetchJson('/api/dashboard/preferences/statistics-state');
+          const state = await stateRes.json();
+          if (!state.ok) throw new Error(window.errorText(state, stateRes));
+          if (!window.confirm('重算当前归档的统计？成功后替换历史累计统计；读后喜恶评价和 AI 偏好画像保留。')) return;
+          payload.mode = mode;
+          payload.expected_generation = state.data.generation;
+        }
         // Phase 7.6: 启动后台job
         const res = await fetchJson('/api/dashboard/preferences/profiles/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ is_default: true, scope: { min_text_length: 1000, max_batches: 10 } })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (!data.ok) throw new Error(window.errorText(data, res));
 
         const jobId = data.data.job_id;
         analysisResult.value = null;
-        showMessage('正在增量分析本地偏好，本次会连续处理多批未分析小说...');
+        showMessage(mode === 'current_archive' ? '正在重算当前书库，完成前保留原统计...' : '正在增量分析本地偏好，本次会连续处理多批未分析小说...');
 
         const result = await pollJob(jobId, 300000, (job) => {
           analysisJob.value = job;
@@ -351,7 +362,7 @@ window.initVueApp({
           showMessage('分析仍在后台运行，可到任务日志查看', 'warning');
         } else if (result.status === 'succeeded') {
           await loadProfiles();
-          showMessage('本地偏好画像已增量更新');
+          showMessage(mode === 'current_archive' ? '当前书库统计已重算' : '本地偏好画像已增量更新');
         } else {
           throw new Error(result.error || result.message || '分析失败');
         }

@@ -36,6 +36,9 @@ def _invalid_constant(value):
 
 
 def decode_manifest(payload: bytes, kind: str = "epub.single.v1") -> dict:
+    from .business_contracts import BUSINESS_KINDS, decode_business_manifest
+    if kind in BUSINESS_KINDS:
+        return decode_business_manifest(payload,kind)
     if not isinstance(payload, bytes) or len(payload) > MANIFEST_LIMIT:
         raise RemoteError("manifest_too_large", 413)
     try:
@@ -48,6 +51,10 @@ def decode_manifest(payload: bytes, kind: str = "epub.single.v1") -> dict:
 
 
 def validate_manifest(manifest: dict, kind: str = "epub.single.v1") -> None:
+    from .business_contracts import BUSINESS_KINDS, validate_business_manifest
+    if kind in BUSINESS_KINDS:
+        validate_business_manifest(manifest,kind)
+        return
     if kind not in {"diagnostic.v1", "epub.single.v1"}:
         raise RemoteError("unsupported_kind", 400)
     fields = _DIAGNOSTIC_FIELDS if kind == "diagnostic.v1" else _EPUB_FIELDS

@@ -64,7 +64,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 - app 级共享一个 `shared_job_manager`(`app.config["job_manager"]`)与 `shared_job_runner`(executor 为 `run_web_task`,每次执行前用 `SettingsManager` 重新加载 settings)。
 - 提交入口 `_submit_shared_job`(暴露为 `app.config["submit_shared_web_job"]`):
-  1. **单活跃任务约束**:先调 `_has_any_running_web_job()`(实现为 `_has_active_shared_jobs`,检查共享管理器中是否存在 `QUEUED/RUNNING/CANCEL_REQUESTED` 的 job),有则抛 `RuntimeError("已有同步任务正在运行…")`。注意这是提交时的软约束,配合 JobManager 信号量做双保险。
+  1. **单活跃任务约束**:调用 `_has_active_shared_jobs` 检查共享管理器中是否存在 `QUEUED/RUNNING/CANCEL_REQUESTED` 的 job，有则抛 `RuntimeError("已有同步任务正在运行…")`。这是提交时的软约束，配合 JobManager 信号量。
   2. 写入 **task_logs 镜像**:先在锁外 `db.create_task_log(task_type, task_name, is_auto_sync=...)`(此时还没有 job_id),再次检查单活跃约束后 `submit`,把返回的 `log_id` 存进 `job.progress["log_id"]`,并把 `job_id` 回填到该行(回填失败会把已入队的 job 标成 failed)。
   3. `run_async=True` 时起 **daemon 线程**执行 `_run_shared_web_job(job_id)`。
 - `_run_shared_web_job`:调用 `shared_job_runner.run(job_id)`,结束后按最终 `JobStatus` 把 stats/logs/error 回写到 `task_logs` 表(`db.update_task_log`)——这就是「任务日志」页的数据来源。内存 JobState 是实时视图,task_logs 是持久化镜像。
@@ -186,11 +186,11 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 1. **实现任务函数**:签名接收 `settings` 与从 context 取出的 `reporter` / `stop_requested`(必要时 `claim_finalization`、`params`),返回 stats dict。放在 `jobs/services.py` 或独立模块,遵循函数内延迟 import 约定。
 2. **注册分派**:在 `jobs/tasks.py:execute_task` 中加一个 `if task_type == "my_task":` 分支(未注册的 task_type 会抛 `RuntimeError("Unsupported task type for CLI execution: ...")`)。
-3. **注册标签**:同文件 `_TASK_LABELS` 加中文标签(`task_label()` 用它渲染日志/UI);若要出现在 web 端任务列表/定时任务,`web/managers.py:TASK_LABELS` 也要加(两处是独立字典)。
+3. **注册元数据**:在 `jobs/registry.py:TASKS` 加 `TaskDefinition`，统一提供任务/调度标签、别名、优先级及可让位属性；`jobs/tasks.py` 与 `web/managers.py` 消费其生成的兼容字典。
 4. **接入触发源**(按需):
    - CLI:在 `cli.py` 的参数解析 / `build_job_spec_from_args` 中允许该 task_type;
    - Web:在 `webapp.py` 相应路由里用 `_submit_shared_job` 提交;
-   - Scheduler:在 `web/managers.py:SCHEDULER_TASK_CONFIGS` 增加条目(**必须带 `priority` 与 `preemptible`**,漏了会静默落到 P3/不可让位,`tests/test_scheduler_priority.py` 有防漏断言),并在 `SyncSettings` / `SettingsManager.save_sync_settings` 补 `auto_sync_my_task_{enabled,interval_hours,cron}` 三件套。`preemptible=True` 只给能从水位续跑的任务。调度器名与内部 task_type 不同名时(如 `bookmarks` → `bookmark`),`web/utils.py:_scheduler_job_spec` 与 `web/managers.py:SCHEDULER_TASK_TYPE_ALIASES` 必须是同一套映射,否则按任务名查不到任何历史记录。
+   - Scheduler:在上述 `TaskDefinition` 填写 `scheduler_name`、`setting_prefix`、`priority` 与 `preemptible`，并在 `SyncSettings` / `SettingsManager.save_sync_settings` 补 `auto_sync_my_task_{enabled,interval_hours,cron}` 三件套。`preemptible=True` 只给能从水位续跑的任务。别名表由注册表生成，`web/utils.py:_scheduler_job_spec` 应与其保持相同映射。
    - 加完后跑 `pytest tests/test_scheduler_priority.py -k registered`:那里的 `EXPECTED_SCHEDULER_TASKS` 会先红,提示上面 2/3 步和 `_job_spec` 分支是否真的都补了。
 5. **同步前端契约**:更新 `docs/frontend-api-contract.md`(以及涉及页面时的 `docs/frontend-pages.md`),让前端知道新的 task_type 字符串与标签;若响应结构变化,同步模板中的 Vue 代码。
 6. **测试**:参照 `tests/test_jobs_runner.py` 等,依赖 conftest 的 tmp 路径 fixture;验证正常完成、取消(`stop_requested` 生效)、stats 合并。
@@ -229,14 +229,9 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 `recommendation_run` 默认关闭:它会消耗 Pixiv 搜索配额,且必须先有默认偏好画像。启用后仍与其他同步任务共用同一个 JobManager,天然互斥,不会和收藏同步并行抢配额。手动入口 `POST /api/dashboard/recommendations/run` 保持不变。
 
-### 5.1 两个标签字典是独立的
+### 5.1 任务元数据统一来源
 
-`recommendation_run` 的接线跨了两个互不相干的标签字典,新增 task_type 时两处都要加:
-
-- `jobs/tasks.py:_TASK_LABELS` —— 供 job 内部日志渲染(`task_label()`)。
-- `web/managers.py:TASK_LABELS` —— 供**调度器**把内部任务名翻成中文写进 `task_logs`。缺失时任务日志页会显示英文键名。
-
-手动路由 `POST /api/dashboard/recommendations/run` 提交时显式传 `task_name="生成推荐"`,不依赖任何字典;而定时触发走 `_submit_scheduler_task` → `TASK_LABELS.get(task_name)`。所以**只补一个字典时,手动能显示中文、定时却会显示英文键名**——这类不一致由 `tests/test_recommendation_scheduling.py::test_every_scheduler_task_has_a_web_label` 兜住。
+`jobs/registry.py:TASKS` 同时生成 `JOB_LABELS`、`TASK_LABELS`、`SCHEDULER_TASK_CONFIGS` 和 `SCHEDULER_TASK_TYPE_ALIASES`。原调用位置继续导入这些值，新增任务只在注册表声明标签与调度属性，避免手动与定时日志显示不一致。分派实现、设置字段及 `JobType` 映射仍按 §4 补齐，并运行注册完整性回归。
 
 同理,`web/utils.py:_job_spec` 里若没有对应 task_type 的分支,JobSpec 会静默落到 `JobType.SYNC`,任务统计归错类。这一条以及"四处注册表是否齐全"由 `tests/test_scheduler_priority.py::test_every_scheduler_task_is_registered_in_all_three_tables` / `::test_scheduler_tasks_map_to_their_own_job_type` 锁住:新增定时任务时那里的 `EXPECTED_SCHEDULER_TASKS` 会先红,提示按本文 §4 把四处补齐。
 

@@ -144,7 +144,17 @@
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">收藏最大页数（留空跟随全局）</label>
               <input type="number" v-model.number="settings.bookmark_max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-              <p class="mt-1 text-xs text-pixiv-light">每页约 30 条；配成全局的 2 页时只有最新 60 条收藏会被访问到</p>
+              <p class="mt-1 text-xs text-pixiv-light">每页约 30 条；周期回扫沿保存的游标继续，仍遵守这个单轮上限</p>
+            </div>
+            <div>
+              <label for="archive-rescan-days" class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">归档回扫间隔（天，0 关闭）</label>
+              <input id="archive-rescan-days" type="number" v-model.number="settings.archive_rescan_days" min="0" max="365" class="library-input">
+              <p class="mt-1 text-xs text-pixiv-light">检查旧收藏和系列正文修改；保持原请求间隔与单轮配额</p>
+            </div>
+            <div>
+              <label for="pixiv-execution" class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">Pixiv 任务执行位置</label>
+              <select id="pixiv-execution" v-model="settings.pixiv_execution" class="library-input"><option value="local">本机</option><option value="remote">已配置的云端 worker</option></select>
+              <p class="mt-1 text-xs text-pixiv-light">远程需先部署兼容 worker；不可用时任务报错，不自动切回本机</p>
             </div>
           </div>
         </div>

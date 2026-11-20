@@ -663,6 +663,7 @@ def test_list_recent_novels_search_matches_via_fts_rowid(db: Database) -> None:
 
     assert result["total"] == 1
     assert [item["novel_id"] for item in result["items"]] == [27182818]
+    assert result["items"][0]["text_length"] == 10
     assert db.list_recent_novels(search="不存在的词")["total"] == 0
 
 
@@ -679,6 +680,7 @@ def test_list_bookmark_novels_search_matches_via_fts_rowid(db: Database) -> None
 
     assert result["total"] == 1
     assert [item["novel_id"] for item in result["items"]] == [31415926]
+    assert result["items"][0]["text_length"] == 10
 
 
 def test_list_bookmark_novels_exposes_avatar_and_r18_badge(db: Database) -> None:

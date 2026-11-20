@@ -69,7 +69,7 @@ JobSpec (source, job_type, task_types, params)
   → execute_task(task_type, settings, context)  # jobs/tasks.py dispatches by string task_type
 ```
 
-`jobs/models.py` defines `JobStatus`, `JobSource`, `JobType`, `JobSpec`, `JobState`. Task types are plain strings (`"bookmark"`, `"following_novels"`, `"user_status"`, …) dispatched inside `execute_task`; an unregistered string raises `RuntimeError`. Adding a task type touches four registries (dispatch, two independent label dicts, scheduler config + `SyncSettings` triple) — follow the checklist in `docs/JOB_SYSTEM.md` §4 rather than guessing. Missing a registry fails silently rather than loudly: no `web/utils.py:_job_spec` branch means the spec quietly becomes `JobType.SYNC`, and a missing `web/managers.py:TASK_LABELS` entry shows the raw English key in the log page (`tests/test_recommendation_scheduling.py` guards the label case).
+`jobs/models.py` defines `JobStatus`, `JobSource`, `JobType`, `JobSpec`, `JobState`. Task types are plain strings (`"bookmark"`, `"following_novels"`, `"user_status"`, …) dispatched inside `execute_task`; an unregistered string raises `RuntimeError`. `jobs/registry.py:TASKS` is the shared source for labels, scheduler aliases, priorities and preemption. Adding a task still requires its dispatcher, settings fields and `web/utils.py:_job_spec` type mapping; follow `docs/JOB_SYSTEM.md` §4 and the registration tests.
 
 Two protocols in `jobs/manager.py` are easy to break:
 
@@ -171,7 +171,7 @@ The AI writing pages (`/dashboard/ai` project list and its chapters/notes subpag
 - `ai/services/keyword_clean.py` implements optional keyword cleanup; work reports and personal profiles use unified text invocations with `metadata_only` retention, validated evidence, cumulative budgets and business checkpoints. Never route those requests through legacy writing resume or store their full inputs in ordinary job history.
 - **Provider API keys are encrypted at rest** using `PIXIV_NOVEL_SYNC_AI_SECRET_KEY`; keep that value stable or saved keys become unreadable.
 
-Generation flows through `ai/services/core.py` (`_start_route_job` → `_stream_route` → `_finish_route_job`). main disables generic job continue; work analysis resumes through its owned checkpoints without resetting cumulative budgets. `remote/` has a separate control database and session/lease protocol: only diagnostic and single EPUB kinds are registered. Pixiv fetch and check-in adapters are not remote task implementations. See `docs/MODEL_ROUTING_GUIDE.md` and `docs/REMOTE_EXECUTION.md`.
+Generation flows through `ai/services/core.py` (`_start_route_job` → `_stream_route` → `_finish_route_job`). main disables generic job continue; work analysis resumes through its owned checkpoints without resetting cumulative budgets. `remote/` has a separate schema-v2 control database and session/lease protocol for diagnostic, EPUB, fixed Pixiv calls, AI text and check-in tasks. Credentials and durable upstream receipts stay on the VPS; optional HTTPS CONNECT egress changes the public exit without decrypting upstream TLS. Deployment remains a separate acceptance step. See `docs/MODEL_ROUTING_GUIDE.md` and `docs/REMOTE_EXECUTION.md`.
 
 ## Conventions
 

@@ -65,6 +65,8 @@ def collect_garbage(store, blobs, now: float):
                                                  (now - METADATA_SECONDS,))]
         for run_id in old_runs:
             conn.execute("DELETE FROM artifacts WHERE attempt_id IN (SELECT attempt_id FROM attempts WHERE run_id=?)", (run_id,))
+            conn.execute('DELETE FROM business_request_permits WHERE attempt_id IN (SELECT attempt_id FROM attempts WHERE run_id=?)',(run_id,))
+            conn.execute('DELETE FROM business_secrets WHERE input_sha256=(SELECT input_sha256 FROM runs WHERE run_id=?)',(run_id,))
             conn.execute("DELETE FROM attempts WHERE run_id=?", (run_id,))
             conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
         # Never remove this epoch's boot tombstones: old requests must not gain

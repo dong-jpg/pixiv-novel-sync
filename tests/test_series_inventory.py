@@ -76,3 +76,28 @@ def test_invalid_series_continuation_is_incomplete(tmp_path, monkeypatch):
         stats = service.sync_subscribed_series()
     assert stats["incomplete"] and stats["truncated"]
     assert stats["truncated_series"] == 1
+
+
+def test_remote_reorder_changes_reader_and_analysis_order_without_deleting_archive(tmp_path, monkeypatch):
+    from work_analysis_runtime_helpers import make_runtime_environment
+    from pixiv_novel_sync.sync.series_inventory import remember_order, observed_order
+    from pixiv_novel_sync.work_analysis.manifest import capture_manifest
+    from pixiv_novel_sync.storage.library_analysis import _source_identity, content_identity
+
+    env = make_runtime_environment(tmp_path, monkeypatch, texts=['first synthetic chapter', 'second synthetic chapter'])
+    try:
+        assert remember_order(env.db, 10, [1,2], 2)
+        assert remember_order(env.db, 10, [2,1], 2)
+        assert observed_order(env.db.conn, 10) == [2,1]
+        assert env.db.get_work_analysis(env.run_id)['status'] == 'invalidated'
+        assert [n['novel_id'] for n in env.db.get_series_detail(10)['novels']] == [2,1]
+        with env.db.read_transaction() as conn:
+            manifest, _ = capture_manifest(conn, {'source_kind':'series','source_id':10})
+            assert manifest['order_source'] == 'remote_order_suggestion'
+            assert [n['novel_id'] for n in manifest['chapters']] == [2,1]
+            assert _source_identity(conn, 'series', 10) == content_identity(manifest)
+        assert not remember_order(env.db, 10, [1], 2)
+        assert observed_order(env.db.conn, 10) == [2,1]
+        assert env.db.conn.execute('SELECT count(*) FROM novels').fetchone()[0] == 2
+    finally:
+        env.close()

@@ -88,7 +88,8 @@ def register_remote_routes(app, settings_callback):
         expired = run["finished_at"] is not None and clock() >= run["finished_at"] + RETENTION_SECONDS
         artifact_state = run["artifact_state"]
         payload["result_expired"] = run["state"] == "succeeded" and (expired or artifact_state == "expired")
-        payload["can_download"] = run["state"] == "succeeded" and not payload["result_expired"] and artifact_state == "published"
+        payload["can_download"] = (run['kind'] in {'diagnostic.v1','epub.single.v1'} and run["state"] == "succeeded"
+                                   and not payload["result_expired"] and artifact_state == "published")
         return payload
 
     def machine_view():
@@ -141,6 +142,27 @@ def register_remote_routes(app, settings_callback):
             return response({"run_id": run["run_id"], "state": run["state"]}, 202)
         finally:
             store.release_reservation(reservation, clock())
+
+    @bp.post('/api/dashboard/remote/checkin')
+    def submit_checkin():
+        from .checkin_task import validate_manifest
+        from .contracts import canonical_bytes, digest
+        body=require_fields(bounded_json(),{'kind','request'})
+        manifest=validate_manifest({'protocol':1,**body},body['kind'])
+        key=require_key(request.headers.get('Idempotency-Key'))
+        raw=canonical_bytes(manifest)
+        sha=digest(raw)
+        old=store.find_submission(key,sha)
+        if old is not None:
+            return response({'run_id':old['run_id'],'state':old['state']},202)
+        reservation=store.reserve_blob('input',key,len(raw),clock())
+        try:
+            blobs.put_bytes(raw,MANIFEST_LIMIT)
+            store.register_input(sha,{'manifest':(sha,len(raw))},reservation,clock())
+            run=store.enqueue(key,sha,body['kind'],sha,clock())
+            return response({'run_id':run['run_id'],'state':run['state']},202)
+        finally:
+            store.release_reservation(reservation,clock())
 
     @bp.get("/api/dashboard/remote/runs")
     def runs():

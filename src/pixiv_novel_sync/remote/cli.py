@@ -33,6 +33,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--once", action="store_true", help="perform one supervision cycle and exit")
     doctor = commands.add_parser("doctor", help="offline configuration and directory checks")
     doctor.add_argument("--role", choices=("web", "controller", "worker"), default="web")
+    commands.add_parser('egress',help='run the explicitly configured cloud TLS CONNECT exit')
     for name in ("recover", "gc"):
         command = commands.add_parser(name)
         command.add_argument("--state-dir", required=True)
@@ -168,6 +169,10 @@ def run_cli(argv: list[str], env: Mapping[str, str] | None = None) -> int:
     values = dict(os.environ if env is None else env)
     try:
         args = _parser().parse_args(argv)
+        if args.command=='egress':
+            from .egress import serve
+            serve(values)
+            return 0
         if args.command in {"recover", "gc"}:
             return _maintenance(args, values)
         cfg = RemoteConfig.from_env(values, role=args.role if args.command == "doctor" else args.command)

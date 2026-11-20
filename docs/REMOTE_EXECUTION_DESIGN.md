@@ -6,13 +6,13 @@
 
 VPS 保留唯一书库数据库、归档、认证、阅读服务和业务调度。InstaBox 只取得任务级输入并交付产物；云端可丢弃缓存不是备份，不能把云端 SQLite 同步覆盖回 VPS。
 
-当前协议只注册 `diagnostic.v1` 和 `epub.single.v1`。Pixiv 单本 DTO、签到只读适配器是后续基础，不能据此声称同步、推荐、分析或业务 cron 已远程化。阅读进度独立由 VPS 实现。
+当前协议注册诊断、EPUB、Pixiv 单本/固定 API、AI 文本，以及可选的单站签到状态/提交。Pixiv 与 AI 使用受限上游转发：密钥留在 VPS，worker 不接受任意 URL/SQL/代码，不持有书库。默认公网出口在 VPS；可选 HTTPS CONNECT 服务可迁移远程请求出口，保留上游端到端 TLS，独立校验出口密钥、证书及公网主机白名单。原业务 cron、登录与附件下载仍在 VPS；阅读进度独立运行。可选出口未通过生产部署验收。
 
 ## 进程和凭据
 
 - Web 持有书库权限及 worker bootstrap 摘要，提供受认证的提交/查询/下载和 worker RPC。
 - controller 持有指定机器的 InstaBox key 与控制库访问权限，不持有 worker bootstrap 明文。
-- worker 持有独立 bootstrap，执行固定处理器，不持有书库数据库、Dashboard/Flask/AI secret。
+- worker 持有独立 bootstrap，执行固定处理器，不持有书库数据库、Dashboard/Flask/AI secret 或上游通用 API key/token/Cookie。可选签到 profile 是明确配置的 worker 本地状态，不能与另一台机器同时运行。
 - CLI 只读显式环境，不搜索业务 `.env`；默认关闭。执行 payload 不允许任意 shell、Python、SQL、URL 或路径。
 
 控制库与业务库分离。session secret 只存摘要；冷启动创建新 boot 身份，旧 session/epoch/fence 不能重新取得发布权。当前 epoch 的退役 boot 墓碑不能被普通 GC 清掉。
@@ -46,6 +46,8 @@ VPS blobs 1 GiB 配额包含预留，worker 专用目录上限 128 MiB。路径�
 备份必须包含业务数据库一致快照、归档、控制库/必要产物、配置与解密密钥，并有独立恢复验证。禁止在线复制正在写入的 DB/WAL/SHM 作为完整备份。
 
 ## 扩展验收
+
+业务账户租约由 VPS 续期，worker 请求不能延长账户所有权；本地/远程共用间隔与退避。上游调用先写 sent 回执，重复轮询只读结果；进程中断的 sent 变为结果未知，不重发。AI 发送前调用原预算 guard；失联、取消、配置或来源失效终止授权。模型正文输入及临时回执加密，任务密钥不落持久队列。签到提交按站点/账号代号/业务日持久去重；未知结果只查询状态，不能通过新 run 绕过台账。
 
 新增任务必须同时修改严格契约、数据库 kind 约束、worker 固定分派、VPS 接收和测试，禁止只加 UI 开关。需要远端账号的业务先完成任务范围凭据、共享限流与本地/云端账户互斥，再接现有任务/水位/取消语义。
 

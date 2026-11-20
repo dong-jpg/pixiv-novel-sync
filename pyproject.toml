@@ -50,3 +50,8 @@ pythonpath = ["src"]
 
 [tool.setuptools.package-data]
 pixiv_novel_sync = ["templates/*.html", "static/css/*.css", "static/js/*.js", "static/vendor/*.js", "static/vendor/*.txt"]
+
+[tool.setuptools.data-files]
+"share/pixiv-novel-sync/config" = ["config/remote-*.env.example"]
+"share/pixiv-novel-sync/config/nginx" = ["config/nginx/remote-worker-location.conf"]
+"share/pixiv-novel-sync/deploy/systemd" = ["deploy/systemd/pixiv-remote-*.service", "deploy/systemd/pixiv-remote-*.timer"]

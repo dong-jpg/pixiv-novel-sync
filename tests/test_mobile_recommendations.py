@@ -223,7 +223,7 @@ def test_preferences_show_results_before_independent_profile_and_search_manageme
     assert results < management < html.index('v-if="pageLoading"')
     assert results < html.index("增量分析进度")
     assert "画像与搜索设置" in html
-    assert '@click="analyze"' in html
+    assert '@click="analyze()"' in html
     assert '@click="runRecommendations"' in html
     assert '@mute-author="muteRecommendationAuthor(item)"' in html
     assert ':allow-mute="true"' in html
