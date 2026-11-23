@@ -18,6 +18,8 @@ Web 配置增加 `PIXIV_REMOTE_TASK_SECRET`（至少 32 字符的稳定随机值
 
 升级顺序：先一致备份业务库与控制库，再停派发/worker，升级 Web/controller 和 worker，核对控制库 schema v2 与能力声明，先诊断后测试单篇/各类业务。新版本 schema 不能由旧 controller 直接读取；回退要按本文恢复流程处理，不能仅回退 Python 代码。`sync-bookmarks` CLI 的 Pixiv 远程任务需同一在线 Web worker API；独立 CLI 的远程 AI 不支持共享进程内授权，应通过 Web 业务入口执行。
 
+worker 版本可在它实际使用的 Python 环境执行 `python -c "from pixiv_novel_sync.remote.contracts import KINDS; print(sorted(KINDS))"` 只读核对。仅有 `diagnostic.v1` / `epub.single.v1` 表示旧版本；只更新 VPS 或在网页切换执行位置不会给它补齐新协议。代码中的 KINDS 包含签到不代表签到可用，还要有兼容依赖及独占会话配置。先核对运行中的 worker 已重启到对应环境，再开启业务远程模式；现有业务读取、调度和附件下载的 VPS 边界不变。
+
 签到是可选功能，worker 须安装兼容 `daily-checkin` 并配置独占的已授权浏览器状态；见 [签到适配](CHECKIN_STATUS_ADAPTER.md)。不自动搬迁个人浏览器配置或登录会话。
 
 ## 状态与验证边界

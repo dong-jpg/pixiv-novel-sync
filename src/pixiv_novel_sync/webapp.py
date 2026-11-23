@@ -1029,6 +1029,8 @@ def create_app(
             if blocked is not None:
                 return blocked
             return
+        if request.method in {"GET", "HEAD"} and request.endpoint in {"index", "dashboard_home"}:
+            return render_template("library_entry.html")
         # API 请求返回 401，页面请求重定向到登录
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401

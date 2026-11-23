@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixiv 小说书库</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f7fb; color: #162033; font: 1rem/1.6 system-ui, sans-serif; }
+    main { max-width: 40rem; margin: 0 auto; padding: 3rem 1.25rem; }
+    h1 { margin: 0; font-size: 1.75rem; }
+    p { margin: .25rem 0 1.75rem; color: #46546b; }
+    nav { border-top: 1px solid #d8deea; }
+    a { display: block; padding: .85rem .25rem; border-bottom: 1px solid #d8deea; color: #2459bc; text-underline-offset: .2em; }
+    a:focus-visible { outline: 3px solid #2459bc; outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Pixiv 小说书库</h1>
+    <p>访客首页 · 尚未登录</p>
+    <nav aria-label="书库入口">
+      <a href="{[ url_for('dashboard_novels_page') ]}">打开私人书库</a>
+      <a href="{[ url_for('auth_login', next=url_for('dashboard_home')) ]}">进入控制台</a>
+      <a href="{[ url_for('dashboard_settings_section_page', section='sync') ]}">打开设置</a>
+    </nav>
+  </main>
+</body>
+</html>

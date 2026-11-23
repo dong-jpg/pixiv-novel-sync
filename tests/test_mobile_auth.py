@@ -571,6 +571,30 @@ def test_protected_page_redirect_preserves_path_and_query(auth_env):
     assert parse_qs(parsed.query)["next"] == ["/dashboard/novels/42?from=bookmarks&page=3"]
 
 
+@pytest.mark.parametrize("entry", ["/", "/dashboard"])
+def test_guest_entry_needs_no_session_database_or_subresources(auth_env, monkeypatch, entry):
+    client = auth_env.app.test_client()
+    remote = {"REMOTE_ADDR": "203.0.113.8"}
+    with monkeypatch.context() as patch:
+        patch.setattr(webapp_module, "_open_database", lambda *_: pytest.fail("guest home opened private DB"))
+        response = client.get(entry, environ_base=remote)
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "访客首页" in html and 'href="/dashboard/settings/sync"' in html
+        assert not any(value in html for value in ('<script', '<link', '<img', 'v-cloak', '/api/dashboard/'))
+        assert "no-store" in response.headers["Cache-Control"]
+        assert "Set-Cookie" not in response.headers
+        assert client.head(entry, environ_base=remote).status_code == 200
+        assert client.get(PROTECTED, environ_base=remote).status_code == 401
+        protected = client.get("/dashboard/settings/sync", environ_base=remote)
+        target = urlsplit(protected.location)
+        assert protected.status_code == 302 and target.path == LOGIN
+        assert parse_qs(target.query)["next"] == ["/dashboard/settings/sync"]
+    assert _login(client).status_code == 302
+    signed_in = client.get(entry, follow_redirects=True).get_data(as_text=True)
+    assert 'id="app"' in signed_in and "访客首页" not in signed_in
+
+
 @pytest.mark.parametrize("next_path", [
     "https://evil.example/", "http://localhost/dashboard", "//evil.example/x",
     "\\evil.example", "/\\evil.example", "/safe\\bad", "javascript:alert(1)",

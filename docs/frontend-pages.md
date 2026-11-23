@@ -30,12 +30,14 @@ Vue 3.4.38 与 Tailwind 从同站点安装包读取，内容版本与 SRI 固定
 
 ## 页面总览
 
+配置网站密码时，未登录的 `/` 与 `/dashboard` 使用独立 `library_entry.html`：普通 HTML、内联样式，无脚本、图片、外部资源和私人接口请求。打开设置或私人书库才进入原生密码表单；已登录用户仍得到完整控制台。救援 API 本来就不依赖 Dashboard 会话，此改动不公开救援内容，也不移除它的 Bearer Token。F12 触发重绘或改变网络时序后页面才显示，不能据此证明密码验证是根因；访客首页只消除入口阶段的 Vue 和登录重定向依赖。
+
 小说阅读页可确认后重置阅读进度、移除本地收藏记录，不取消 Pixiv 收藏；请求失败保持当前位置。阅读页每次打开都核对服务端版本，五秒节流保存；本机离线记录和旧缓存保留，冲突由用户明确选择。重置留下递增版本标记，任何手动滚动或显式保存/重置使旧恢复失效。无生产调用、可能与后台备份竞争的批量用户删除 API 按 T3-01 允许方案移除，不新增其按钮。Node 与离线 Chromium 证据见 [项目现状](STATUS.md)，不代替真机体验验收。
 
 | Route | Template | 页面用途 | Library OS 状态 |
 | --- | --- | --- | --- |
 | `/token-login` | `src/pixiv_novel_sync/templates/token_login.html` | Token/OAuth 授权 | 待独立视觉适配 |
-| `/dashboard` | `src/pixiv_novel_sync/templates/dashboard.html` | 同步控制台、统计、任务状态 | 已接入 `library-page` / `library-page-header` |
+| `/`、`/dashboard` | `src/pixiv_novel_sync/templates/library_entry.html`（未登录） / `dashboard.html`（已登录） | 访客入口或同步控制台、统计、任务状态 | 访客入口不依赖脚本；控制台使用 `library-page` / `library-page-header` |
 | `/dashboard/follows` | `src/pixiv_novel_sync/templates/dashboard_follows.html` | 关注作者列表 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 小说库、追更系列与拯救成功列表 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels/<id>` | `src/pixiv_novel_sync/templates/dashboard_novel_detail.html` | 小说详情和阅读页 | 已接入 `library-page` / `library-page-header` |

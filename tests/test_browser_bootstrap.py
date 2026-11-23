@@ -130,6 +130,60 @@ def test_authenticated_pages_boot_without_cdn(bootstrap_browser, width, tmp_path
         context.close()
 
 
+@pytest.mark.parametrize("javascript", (True, False), ids=("scripts-enabled", "scripts-disabled"))
+def test_guest_home_and_password_form_load_without_private_requests(
+    bootstrap_browser, javascript, tmp_path, monkeypatch,
+):
+    import threading
+    from werkzeug.serving import make_server
+    from pixiv_novel_sync.webapp import create_app
+
+    monkeypatch.setenv("DASHBOARD_TOKEN", "fixture-bootstrap-password")
+    monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "0")
+    env = tmp_path / "empty.env"
+    env.write_text("", encoding="utf-8")
+    app = create_app(config_path=str(tmp_path / "missing.yaml"), env_path=str(env), start_scheduler=False)
+    app.config.update(TESTING=True, RAW_HTTP=True)
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = "http://127.0.0.1:" + str(server.server_port)
+    context = bootstrap_browser.new_context(java_script_enabled=javascript)
+    requests = []
+
+    def dispatch(route):
+        request = route.request
+        url = urlsplit(request.url)
+        requests.append((request.method, url.path))
+        if url.scheme + "://" + url.netloc != origin:
+            pytest.fail("Guest entry requested an external resource")
+        return route.continue_()
+
+    context.route("**/*", dispatch)
+    page = context.new_page()
+    try:
+        for path in ("/", "/dashboard"):
+            response = page.goto(origin + path, wait_until="domcontentloaded")
+            assert response.status == 200
+            assert page.get_by_text("访客首页 · 尚未登录", exact=True).is_visible()
+        page.get_by_role("link", name="打开设置", exact=True).click()
+        page.wait_for_url(re.compile(r"/api/auth/login\?next="), wait_until="domcontentloaded")
+        assert page.locator("#token").is_visible()
+        assert not any(path.startswith(("/static/", "/api/dashboard/")) for _, path in requests)
+        page.get_by_label("访问密码", exact=True).fill("fixture-bootstrap-password")
+        page.get_by_role("button", name="登录", exact=True).click()
+        page.wait_for_url(origin + "/dashboard/settings/sync")
+        if javascript:
+            page.wait_for_selector("#app:not([v-cloak])")
+        assert context.request.get(origin + "/api/dashboard/sync/status").status == 200
+    finally:
+        context.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        app.extensions.get("close_work_analysis_owner", lambda: None)()
+
+
 @pytest.mark.parametrize("failure", ("resource", "policy"))
 def test_boot_failure_explains_blocked_scripts(bootstrap_browser, failure, tmp_path, monkeypatch):
     from pixiv_novel_sync.webapp import create_app

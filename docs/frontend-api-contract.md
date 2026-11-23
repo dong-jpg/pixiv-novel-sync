@@ -8,7 +8,7 @@
 
 ## 通用约定
 
-- 页面仍由 Flask/Jinja 渲染，前端通过 Vue 3 CDN 增强交互。
+- 页面由 Flask/Jinja 渲染，业务页面使用随安装包提供的 Vue 3 增强交互，访客首页和登录表单不需要 JavaScript。
 - 导航仍使用服务端路由和普通 `<a>` 跳转，不是 SPA router。
 - 图片资源统一通过 `GET /proxy/image?url=...` 代理加载。
 - Core dashboard 接口存在 raw JSON 与 envelope 混用。
@@ -18,9 +18,9 @@
 
 | Route | Template | 说明 |
 | --- | --- | --- |
-| `/` | redirect/dashboard | 入口 |
+| `/` | `library_entry.html` 或 redirect/dashboard | 未登录显示静态访客入口；已登录进入控制台 |
 | `/token-login` | `token_login.html` | Token / OAuth 授权 |
-| `/dashboard` | `dashboard.html` | 控制台 |
+| `/dashboard` | `library_entry.html` / `dashboard.html` | 未登录显示静态访客入口；已登录显示控制台 |
 | `/dashboard/follows` | `dashboard_follows.html` | 作者列表 |
 | `/dashboard/novels` | `dashboard_novels.html` | 小说库 / 追更系列 / 拯救成功列表 |
 | `/dashboard/novels/<novel_id>` | `dashboard_novel_detail.html` | 小说详情 / 阅读页 |
@@ -41,6 +41,7 @@
 
 Used by: 浏览器登录流程（配置 `DASHBOARD_TOKEN` 时）。
 
+- 未登录的 `GET/HEAD /`、`GET/HEAD /dashboard` 直接返回不含私人信息的访客首页，不先跳转登录，也不请求业务 API。设置、私人书库及其 API 仍要求登录；`/api/rescue/v1/` 保持独立救援 Token 认证。
 - `GET`：返回独立 `login.html`，不加载受保护的公共框架或业务 API；未配置 `DASHBOARD_TOKEN` 时仍重定向到 `/`。
 - `POST`：表单编码 `application/x-www-form-urlencoded`。`token` 为访问密码；只有 `remember_device=1` 才启用记住设备，默认不勾选；`next` 为经校验的站内返回路径。
 - 未勾选：浏览器会话 Cookie，服务端最长 **7天**。勾选：Cookie 与服务端记录均固定 **30天**，普通访问和 CSRF 刷新不延长期限。浏览器的“恢复上次会话”可能保留会话 Cookie，但不能突破服务端期限。
