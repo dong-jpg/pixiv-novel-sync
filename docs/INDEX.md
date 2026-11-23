@@ -1,10 +1,10 @@
 # 项目文档索引
 
-**最近更新：2026-11-19**
+**最近更新：2026-11-23**
 
 当前能力和验证边界看 [项目现状](STATUS.md)，开发任务、依赖与验收标准看 [修复与优化实施计划](IMPLEMENTATION_PLAN.md)。
 
-main 提供归档、同步、阅读、推荐、救援、作品分析、偏好学习，以及 VPS / InstaBox 远程执行试点；ai-writing 继承 main 并增加写作和成人润色。代码交付与实际部署分别记录，先看 [项目现状](STATUS.md)。
+main 提供本地归档、同步、阅读、推荐、救援、作品分析、偏好学习及 NAS / Docker 部署；ai-writing 继承共享功能并增加写作和成人润色。代码交付与实际部署分别记录，先看 [项目现状](STATUS.md)。
 
 ## 使用
 
@@ -14,9 +14,9 @@ main 提供归档、同步、阅读、推荐、救援、作品分析、偏好学
 | [救援使用指南](RESCUE_USER_GUIDE.md) | 救援 Token、用户脚本安装与排查 |
 | [模型路由指南](MODEL_ROUTING_GUIDE.md) | Provider、模型目录、模型池、调用预算 |
 | [偏好学习指南](PREFERENCE_LEARNING_GUIDE.md) | 作品报告、读后评价、AI 偏好 / XP 画像、全库批次与持续自动分析 |
-| [远程执行](REMOTE_EXECUTION.md) | VPS 与 InstaBox 试点、凭据隔离、运行和恢复 |
+| [NAS / Docker 部署](DOCKER.md) | 单容器运行、目录权限、网络、备份与旧服务器迁移 |
 | [阅读进度同步](READING_PROGRESS_SYNC.md) | 服务端版本、自动保存、离线记录、跨设备冲突与重置 |
-| [实施计划](IMPLEMENTATION_PLAN.md) | 当前修复、性能优化和完整远程执行的分阶段任务 |
+| [实施计划](IMPLEMENTATION_PLAN.md) | 当前修复、性能优化、本地执行与 NAS 部署验收 |
 
 ## 开发参考
 
@@ -30,9 +30,7 @@ main 提供归档、同步、阅读、推荐、救援、作品分析、偏好学
 | [界面规范](library-os-style-guide.md) | Library OS 视觉规范 |
 | [AI 调用设计](AI_ROUTING_DESIGN.md) | 目录同步、池图、完整文本预检、路由、预算与兼容 |
 | [作品分析与偏好学习设计](WORK_ANALYSIS_DESIGN.md) | 冻结来源、全文覆盖、证据、预算、评价与画像失效 |
-| [远程执行设计](REMOTE_EXECUTION_DESIGN.md) | 唯一书库、固定任务、租约/发布与后续业务接线 |
-| [Pixiv 抓取边界](PIXIV_FETCH_BOUNDARY.md) | 单本 DTO、传输校验及现有本地消费者 |
-| [签到状态适配](CHECKIN_STATUS_ADAPTER.md) | 可选项目的单站只读网关及未接入边界 |
+| [Pixiv 抓取边界](PIXIV_FETCH_BOUNDARY.md) | 单本结果、归档校验及本地消费者 |
 
 ## 文档职责
 

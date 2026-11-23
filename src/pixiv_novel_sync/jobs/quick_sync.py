@@ -54,12 +54,6 @@ def run_bookmark_sync(
     stop_requested: StopRequested | None = None,
     claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, int]:
-    from ..remote.execution import execution_scope
-    with execution_scope(settings,'bookmark',stop_requested or (lambda:False)):
-        return _run_bookmark_sync(settings,stop_requested,claim_finalization)
-
-
-def _run_bookmark_sync(settings, stop_requested=None, claim_finalization=None):
     _raise_if_stopped(stop_requested)
     auth = PixivAuthManager(settings.pixiv)
     api, auth_result = auth.login()

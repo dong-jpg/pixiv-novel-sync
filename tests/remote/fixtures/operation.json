@@ -1,9 +1,0 @@
-{
-  "id": "op_fixture",
-  "machineId": "m_fixture",
-  "type": "start",
-  "state": "queued",
-  "error": null,
-  "createdAt": "2026-11-10T12:50:00Z",
-  "updatedAt": "2026-11-10T12:50:00Z"
-}

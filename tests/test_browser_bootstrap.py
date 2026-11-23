@@ -218,7 +218,7 @@ def test_boot_failure_explains_blocked_scripts(bootstrap_browser, failure, tmp_p
     context.route("**/*", dispatch)
     page = context.new_page()
     try:
-        page.goto(origin + "/dashboard/remote", wait_until="networkidle")
+        page.goto(origin + "/dashboard/settings/sync", wait_until="networkidle")
         page.wait_for_function("expected => document.getElementById('library-bootstrap-status').dataset.failure === expected", arg=failure)
         assert page.locator(".library-bootstrap").is_visible()
         assert page.get_by_role("link", name="重新加载本页").is_visible()

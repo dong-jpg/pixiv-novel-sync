@@ -42,7 +42,6 @@ def test_03_loading_env_file_can_populate_remote_settings(tmp_path: Path) -> Non
 
 
 def test_04_remote_environment_does_not_leak_into_ordinary_web_tests() -> None:
-    # This file is outside tests/remote: its fixture cannot protect ordinary
-    # create_app calls from a developer's environment or another test's dotenv.
+    # 旧 .env 的未知键仍可被 dotenv 加载，测试之间必须隔离。
     assert not any(name.startswith("PIXIV_REMOTE_") for name in os.environ)
     assert "INSTABOX_API_KEY" not in os.environ

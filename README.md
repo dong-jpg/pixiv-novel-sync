@@ -12,7 +12,7 @@
 
 ## 分支选择
 
-- **main：私人书库。** 包含同步、归档、阅读、推荐、偏好 / XP 分析及远程执行试点；main 不包含写作模块。
+- **main：私人书库。** 包含本地同步、归档、阅读、推荐、偏好 / XP 分析，支持 NAS / Docker 部署；main 不包含写作模块。
 - **ai-writing：书库与写作。** [ai-writing 分支](https://github.com/dong-jpg/pixiv-novel-sync/tree/ai-writing)包含 main 的全部功能，额外提供创作项目、章节、创作向导、风格蒸馏与润色。共享改动先进入 main，再合并到 ai-writing。
 
 ## 书库体验
@@ -23,7 +23,7 @@
 - **规则推荐**：依据本地统计和规则整理阅读偏好、搜索 Pixiv 并筛选候选，支持反馈及屏蔽作者、标签。
 - **本地救援**：从私人备份中查找失效作品，书库入口为 `/dashboard/novels?category=rescue`。
 - **可选偏好学习**：结合已归档作品报告和明确的读后评价生成个人偏好 / XP 画像；全库及新增作品分析受累计授权预算限制。
-- **可选云端任务**：VPS 保留书库、调度与凭据，InstaBox 执行固定诊断、EPUB 和业务子任务。同步／推荐可选择 worker，模型调用可单独启用；默认经 VPS 受限转发，可选 HTTPS CONNECT 云出口，附件仍在 VPS 下载。配置与实际验收见 [远程能力边界](docs/REMOTE_EXECUTION.md)。
+- **NAS 部署**：支持单容器运行，任务在部署主机执行，配置、SQLite 和归档保存在挂载目录中。安装与旧服务器迁移见 [Docker 指南](docs/DOCKER.md)。
 
 已归档文件可以本地保存或导出阅读。网页的 Vue 和样式均随安装包提供，打开书库无需连接前端 CDN；网页数据仍需连接自己的服务器。
 
@@ -104,6 +104,8 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 ~~~
 
 ## 部署与安全
+
+**NAS 推荐使用 [Docker Compose](docs/DOCKER.md)**：准备 `config/config.yaml`、`config/.env` 和数据目录，设置访问密码及目录权限后运行 `docker compose up -d --build`。只运行一个应用容器，SQLite 数据库放在 NAS 本地存储卷；默认镜像使用手动 Token/Cookie，可选构建包含自动登录浏览器的镜像。原云端执行方案已移除，旧服务停用及数据迁移见指南。
 
 Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 systemd，并配置虚拟环境。执行前先审阅脚本并备份；新安装默认 main（可设 `PIXIV_BRANCH=ai-writing`）。更新保留当前分支，只从 `origin/main` 或 `origin/ai-writing` 快进，有未提交代码或分叉时中止。[update.sh](update.sh)保留配置与旧提交记录，并核对本机健康接口；它不代替数据库和归档备份。
 

@@ -28,7 +28,6 @@ function registerGlobalComponents(app) {
     { type: 'divider', label: 'Operations' },
     { path: '/dashboard/pending-deletions', label: '待确认删除', icon: 'trash', hasBadge: true },
     { path: '/dashboard/logs', label: '任务日志', mobileLabel: '任务', icon: 'clipboard' },
-    { path: '/dashboard/remote', label: '远程执行', icon: 'cloud' },
     // 设置已拆成四个一级页面。父项的 path 留作高亮前缀（四个子页都在 /dashboard/settings
     // 下），href 才是实际落点：/dashboard/settings 只是一个 302。
     {

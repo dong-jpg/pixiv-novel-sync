@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import asdict, fields, replace
@@ -105,11 +104,6 @@ def snapshot_work_configuration(conn, agent_id: int, output_tokens: int):
         "schema_version": 1, "agent_id": agent_id, "output_tokens": output_tokens,
         "agent": agent_identity, "profiles": [asdict(profile) for profile in profiles], "pools": pools,
     }
-    execution=os.environ.get('PIXIV_REMOTE_AI_EXECUTION','local')
-    if execution not in ('local','remote'):
-        raise WorkAnalysisError('configuration_unavailable',409)
-    if execution=='remote':
-        identity['execution']='remote-v1'
     configuration = {
         "schema_version": 1, "agent_id": agent_id, "output_tokens": output_tokens,
         "configuration_fingerprint": fingerprint(identity),

@@ -10,8 +10,8 @@ import pytest
 from pixivpy3 import PixivError
 
 from pixiv_novel_sync.pixiv_fetch import (
-    METADATA_LIMIT, TEXT_LIMIT, WIRE_LIMIT, PixivFetchError,
-    deserialize_novel, fetch_novel, serialize_novel, validate_novel,
+    METADATA_LIMIT, TEXT_LIMIT, PixivFetchError,
+    fetch_novel, validate_novel,
 )
 from pixiv_novel_sync.utils_hashing import sha256_text, stable_json_dumps
 
@@ -52,12 +52,7 @@ class Api:
         return self.webview if self.webview is not None else {"id": novel_id, "text": self.text}
 
 
-def rehash(payload):
-    payload["sha256"] = sha256_text(stable_json_dumps({key: value for key, value in payload.items() if key != "sha256"}))
-    return stable_json_dumps(payload).encode("utf-8")
-
-
-def test_fixed_fetch_round_trip_preserves_normalization_and_legacy_hashes():
+def test_fixed_fetch_preserves_normalization_and_legacy_hashes():
     api = Api()
     dto = fetch_novel(api, 42)
     assert api.calls == [("detail", 42), ("text", 42)]
@@ -67,7 +62,6 @@ def test_fixed_fetch_round_trip_preserves_normalization_and_legacy_hashes():
     expected = {key: value for key, value in api.metadata.items() if key not in {"total_view", "total_bookmarks"}}
     assert dto.meta_hash == sha256_text(stable_json_dumps(expected))
     assert dto.text_hash == sha256_text(dto.text)
-    assert deserialize_novel(serialize_novel(dto), expected_novel_id=42) == dto
     assert validate_novel(dto, expected_novel_id=42) is dto
 
 
@@ -88,9 +82,8 @@ def test_valid_raw_extensions_are_preserved_without_changing_the_legacy_hash():
     api.metadata["marker"] = {"page": 2}
     api.metadata["future_readonly_metadata"] = {"labels": ["original", "long"]}
     dto = fetch_novel(api, 42)
-    encoded = serialize_novel(dto)
     assert dto.metadata == api.metadata
-    assert "future_readonly_metadata" not in json.loads(encoded)["metadata"]
+    assert "future_readonly_metadata" not in dto.normalized_metadata()
     expected = {key: value for key, value in api.metadata.items() if key not in {"total_view", "total_bookmarks"}}
     assert dto.meta_hash == sha256_text(stable_json_dumps(expected))
     assert "第一段" not in repr(dto) and "fixture" not in repr(dto)
@@ -106,78 +99,60 @@ def test_unsafe_raw_extensions_are_rejected_explicitly(field):
     assert "private-upstream-secret" not in str(raised.value)
 
 
-@pytest.mark.parametrize("field", ["command", "url", "callback_url", "path", "sql"])
-def test_wire_rejects_unknown_fields_even_with_a_matching_envelope_hash(field):
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    payload[field] = "forbidden"
-    with pytest.raises(PixivFetchError, match="unexpected_fields"):
-        deserialize_novel(rehash(payload), expected_novel_id=42)
-
-
 @pytest.mark.parametrize("where", ["novel", "user", "tag"])
-def test_wire_metadata_is_a_closed_whitelist(where):
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    value = payload["metadata"] if where == "novel" else payload["raw_metadata"]
+def test_fetch_metadata_is_a_closed_whitelist(where):
+    dto = fetch_novel(Api(), 42)
+    metadata = dto.normalized_metadata() if where == "novel" else dto.metadata
+    value = metadata
     if where == "user":
         value = value["user"]
     elif where == "tag":
         value = value["tags"][0]
     value["secret"] = "forbidden"
+    field = "normalized_json" if where == "novel" else "metadata_json"
     with pytest.raises(PixivFetchError, match="unexpected_fields|unsafe_metadata"):
-        deserialize_novel(rehash(payload), expected_novel_id=42)
+        validate_novel(replace(dto, **{field: json.dumps(metadata)}), expected_novel_id=42)
 
 
-@pytest.mark.parametrize("field", ["meta_hash", "text_hash", "sha256"])
+@pytest.mark.parametrize("field", ["meta_hash", "text_hash"])
 def test_forged_hash_is_rejected(field):
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    payload[field] = "0" * 64
-    encoded = stable_json_dumps(payload).encode("utf-8") if field == "sha256" else rehash(payload)
+    dto = fetch_novel(Api(), 42)
     with pytest.raises(PixivFetchError, match="hash_mismatch"):
-        deserialize_novel(encoded, expected_novel_id=42)
+        validate_novel(replace(dto, **{field: "0" * 64}), expected_novel_id=42)
 
 
 @pytest.mark.parametrize("field,value", [("title", "not the raw title"), ("user_id", 99),
                                          ("caption", "unrelated caption"), ("tags_json", "[]")])
 def test_normalized_metadata_cannot_contradict_the_raw_archive(field, value):
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    payload["metadata"][field] = value
+    dto = fetch_novel(Api(), 42)
+    metadata = dto.normalized_metadata()
+    metadata[field] = value
     with pytest.raises(PixivFetchError, match="metadata_mismatch"):
-        deserialize_novel(rehash(payload), expected_novel_id=42)
+        validate_novel(replace(dto, normalized_json=json.dumps(metadata)), expected_novel_id=42)
 
 
 @pytest.mark.parametrize("asset", [[["inline_image"], "https://i.pximg.net/a.jpg"],
                                   ["inline_image", {"url": "https://i.pximg.net/a.jpg"}]])
-def test_malformed_asset_types_are_fixed_protocol_errors(asset):
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    payload["assets"].append(asset)
+def test_malformed_asset_types_are_fixed_fetch_errors(asset):
+    dto = fetch_novel(Api(), 42)
     with pytest.raises(PixivFetchError, match="invalid_assets"):
-        deserialize_novel(rehash(payload), expected_novel_id=42)
+        validate_novel(replace(dto, assets=(*dto.assets, tuple(asset))), expected_novel_id=42)
 
 
-def test_invalid_base64_duplicate_keys_and_nonfinite_json_are_rejected():
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    payload["text_base64"] = "!" * len(payload["text_base64"])
-    with pytest.raises(PixivFetchError, match="invalid_text"):
-        deserialize_novel(rehash(payload), expected_novel_id=42)
-    for encoded in (b'{"protocol":1,"protocol":1}', b'{"protocol":NaN}'):
+def test_duplicate_keys_and_nonfinite_metadata_are_rejected():
+    dto = fetch_novel(Api(), 42)
+    for encoded in ('{"id":1,"id":1}', '{"id":NaN}'):
         with pytest.raises(PixivFetchError, match="invalid_payload"):
-            deserialize_novel(encoded, expected_novel_id=42)
+            validate_novel(replace(dto, metadata_json=encoded), expected_novel_id=42)
 
 
 @pytest.mark.parametrize("encoded", [b'{"raw_metadata":' + b'[' * 20 + b'0' + b']' * 20 + b'}',
                                      b'{"assets":[' + b'{},' * 11000 + b'{}]}'],
                          ids=["too_deep", "too_many_containers"])
-def test_wire_structure_has_a_budget_before_json_allocates_containers(encoded):
+def test_metadata_structure_has_a_budget_before_json_allocates_containers(encoded):
+    dto = fetch_novel(Api(), 42)
     with pytest.raises(PixivFetchError, match="metadata_too_large"):
-        deserialize_novel(encoded, expected_novel_id=42)
-
-
-@pytest.mark.parametrize("field,value", [("protocol", 2), ("protocol", True), ("kind", "shell")])
-def test_wire_version_and_kind_are_fixed(field, value):
-    payload = json.loads(serialize_novel(fetch_novel(Api(), 42)))
-    payload[field] = value
-    with pytest.raises(PixivFetchError, match="unsupported_protocol"):
-        deserialize_novel(rehash(payload), expected_novel_id=42)
+        validate_novel(replace(dto, metadata_json=encoded.decode()), expected_novel_id=42)
 
 
 @pytest.mark.parametrize("novel_id", [True, 0, -1, "https://example.invalid", 2**63])
@@ -188,7 +163,7 @@ def test_fetch_only_accepts_a_positive_novel_id(novel_id):
     assert api.calls == []
 
 
-def test_reply_and_deserialized_payload_cannot_cross_novel_identity():
+def test_reply_and_fetch_result_cannot_cross_novel_identity():
     api = Api(metadata=novel(43))
     with pytest.raises(PixivFetchError, match="novel_id_mismatch"):
         fetch_novel(api, 42)
@@ -197,9 +172,9 @@ def test_reply_and_deserialized_payload_cannot_cross_novel_identity():
     api.webview = {"id": 43, "text": "wrong work"}
     with pytest.raises(PixivFetchError, match="novel_id_mismatch"):
         fetch_novel(api, 42)
-    encoded = serialize_novel(fetch_novel(Api(), 42))
+    dto = fetch_novel(Api(), 42)
     with pytest.raises(PixivFetchError, match="novel_id_mismatch"):
-        deserialize_novel(encoded, expected_novel_id=43)
+        validate_novel(dto, expected_novel_id=43)
 
 
 @pytest.mark.parametrize("endpoint", ["detail", "text"])
@@ -237,7 +212,7 @@ def test_missing_or_nontext_body_is_not_a_success(text):
         fetch_novel(Api(text=text), 42)
 
 
-def test_utf8_text_and_metadata_limits_are_checked_before_serialization():
+def test_utf8_text_and_metadata_limits_are_checked_before_archiving():
     with pytest.raises(PixivFetchError, match="text_too_large"):
         fetch_novel(Api(text="中" * (TEXT_LIMIT // 3 + 1)), 42)
     metadata = novel()
@@ -246,11 +221,10 @@ def test_utf8_text_and_metadata_limits_are_checked_before_serialization():
         fetch_novel(Api(metadata=metadata), 42)
 
 
-def test_real_maximum_body_has_bounded_round_trip_wire_size():
+def test_real_maximum_body_is_accepted_without_truncation():
     dto = fetch_novel(Api(text="x" * (TEXT_LIMIT - 1)), 42)
-    encoded = serialize_novel(dto)
-    assert dto.text_size == TEXT_LIMIT and len(encoded) <= WIRE_LIMIT
-    assert deserialize_novel(encoded, expected_novel_id=42).text_hash == dto.text_hash
+    assert dto.text_size == TEXT_LIMIT
+    assert dto.text_hash == sha256_text(dto.text)
     with pytest.raises(PixivFetchError, match="text_too_large"):
         validate_novel(replace(dto, text=dto.text + "x"), expected_novel_id=42)
 

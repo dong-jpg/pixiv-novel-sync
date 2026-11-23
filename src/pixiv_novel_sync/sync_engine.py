@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
 from pixivpy3 import AppPixivAPI
+import requests
 
 from . import pixiv_fetch as _pixiv_fetch
 from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
@@ -262,8 +263,7 @@ class BookmarkNovelSyncService:
         settings: Settings,
         stop_requested: Callable[[], bool] | None = None,
     ) -> None:
-        from .remote.execution import bind_api
-        self.api = bind_api(api)
+        self.api = api
         self.db = db
         self.storage = storage
         self.settings = settings
@@ -1081,8 +1081,6 @@ class BookmarkNovelSyncService:
         if web_cookie:
             watchlist_confirmed = False
             try:
-                from .remote.execution import watchlist_get
-                
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept": "application/json",
@@ -1101,7 +1099,7 @@ class BookmarkNovelSyncService:
                 for endpoint in api_endpoints:
                     try:
                         logger.info("Trying Web API: %s", endpoint)
-                        response = watchlist_get(
+                        response = requests.get(
                             endpoint, headers=headers, proxies=proxies,
                             timeout=self.settings.pixiv.timeout,
                             verify=self.settings.pixiv.verify_ssl,
@@ -1115,7 +1113,7 @@ class BookmarkNovelSyncService:
                                 web_cookie = new_cookie
                                 headers["Cookie"] = new_cookie
                                 # 用新 cookie 重试
-                                response = watchlist_get(
+                                response = requests.get(
                                     endpoint, headers=headers, proxies=proxies,
                                     timeout=self.settings.pixiv.timeout,
                                     verify=self.settings.pixiv.verify_ssl,
@@ -1162,7 +1160,7 @@ class BookmarkNovelSyncService:
                                         try:
                                             paged_url = endpoint.replace("p=1", f"p={page_num}")
                                             logger.info("Fetching page %d/%d: %s", page_num, max_page, paged_url)
-                                            paged_resp = watchlist_get(
+                                            paged_resp = requests.get(
                                                 paged_url, headers=headers, proxies=proxies,
                                                 timeout=self.settings.pixiv.timeout,
                                                 verify=self.settings.pixiv.verify_ssl,
@@ -2043,7 +2041,6 @@ class BookmarkNovelSyncService:
             return None
         remote_ids: set[int] = set()
         try:
-            from .remote.execution import watchlist_get
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json",
@@ -2052,14 +2049,14 @@ class BookmarkNovelSyncService:
             }
             proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
             endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&lang=zh"
-            response = watchlist_get(endpoint, headers=headers, proxies=proxies,
+            response = requests.get(endpoint, headers=headers, proxies=proxies,
                                          timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
             if response.status_code in (401, 403):
                 logger.warning("Web Cookie 已过期 (status=%d)，尝试自动刷新...", response.status_code)
                 new_cookie = self._auto_refresh_web_cookie()
                 if new_cookie:
                     headers["Cookie"] = new_cookie
-                    response = watchlist_get(endpoint, headers=headers, proxies=proxies,
+                    response = requests.get(endpoint, headers=headers, proxies=proxies,
                                                  timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
                 else:
                     logger.warning("Web Cookie 自动刷新失败")
@@ -2078,7 +2075,7 @@ class BookmarkNovelSyncService:
                 # 与 _fetch_remote_bookmark_ids 同一限速通道：直连 www.pixiv.net 的
                 # Cookie 接口此前零间隔连续翻页，是同文件内唯一的无速请求路径
                 self.rate_limiter.wait(stop_requested=self.stop_requested)
-                paged_resp = watchlist_get(paged_url, headers=headers, proxies=proxies,
+                paged_resp = requests.get(paged_url, headers=headers, proxies=proxies,
                                                 timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
                 if paged_resp.status_code != 200:
                     logger.warning("Watchlist page %d returned %s; aborting (incomplete)", page_num, paged_resp.status_code)
@@ -2181,13 +2178,8 @@ class BookmarkNovelSyncService:
         source_type: str,
         source_key: str | None = None,
     ) -> dict[str, int]:
-        from .remote.execution import current_execution
-        execution=current_execution()
-        if execution is not None and execution.location=='remote':
-            fetched=execution.fetch_novel(self.api,novel_id,stop_requested=self.stop_requested)
-        else:
-            fetched = fetch_novel(self.api, novel_id, fallback_novel=novel,
-                                  stop_requested=self.stop_requested)
+        fetched = fetch_novel(self.api, novel_id, fallback_novel=novel,
+                              stop_requested=self.stop_requested)
         if self.stop_requested is not None and self.stop_requested():
             raise InterruptedError('Task stopped by user')
         metadata = fetched.normalized_metadata()
@@ -2231,8 +2223,8 @@ class BookmarkNovelSyncService:
 
         if meta_unchanged and text_unchanged:
             with self.db.transaction():
-                if execution is not None:
-                    execution.check_commit()
+                if self.stop_requested is not None and self.stop_requested():
+                    raise InterruptedError("Task stopped by user")
                 self.db.touch_novel(novel_id)
                 self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
             assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
@@ -2259,8 +2251,8 @@ class BookmarkNovelSyncService:
             self.storage.write_text(novel_dir / "text.md", markdown_text)
 
         with self.db.transaction():
-            if execution is not None:
-                execution.check_commit()
+            if self.stop_requested is not None and self.stop_requested():
+                raise InterruptedError("Task stopped by user")
             if user_id:
                 self.db.upsert_user(
                     UserRecord(

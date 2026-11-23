@@ -23,16 +23,14 @@ writing = sys.argv[2] == "writing"
 sys.path.insert(0, str(root))
 package = importlib.import_module("pixiv_novel_sync")
 assert Path(package.__file__).resolve().is_relative_to(root)
-for module in ("remote.business", "remote.egress", "remote.ai_task", "remote.checkin_task",
-               "storage.preference_sources", "preference_statistics", "sync.rescan"):
+for module in ("storage.preference_sources", "preference_statistics", "sync.rescan", "container"):
     importlib.import_module("pixiv_novel_sync." + module)
 
 runtime = root / "runtime"
 runtime.mkdir()
 os.environ.update(PIXIV_DB_PATH=str(runtime / "library.db"),
                   PIXIV_PUBLIC_DIR=str(runtime / "public"),
-                  PIXIV_PRIVATE_DIR=str(runtime / "private"),
-                  PIXIV_REMOTE_ENABLED="0")
+                  PIXIV_PRIVATE_DIR=str(runtime / "private"))
 from pixiv_novel_sync.webapp import create_app
 app = create_app(config_path=str(runtime / "missing.yaml"),
                  env_path=str(runtime / "missing.env"), start_scheduler=False)
@@ -40,7 +38,7 @@ client = app.test_client()
 checks = 0
 for path in ("/dashboard", "/dashboard/novels", "/dashboard/preferences",
              "/dashboard/preferences?view=work-analysis", "/dashboard/preferences?view=learning",
-             "/dashboard/remote", "/dashboard/settings/sync", "/dashboard/settings/models",
+             "/dashboard/settings/sync", "/dashboard/settings/models",
              "/dashboard/settings/agents", "/dashboard/settings/system"):
     with client.get(path) as response:
         assert response.status_code == 200, (path, response.status_code)
@@ -72,13 +70,7 @@ def main() -> int:
             for name in names:
                 if Path(name).is_absolute() or ".." in Path(name).parts:
                     raise ValueError("Unexpected wheel path")
-            for suffix in (
-                "config/remote-egress.env.example", "config/remote-web.env.example",
-                "deploy/systemd/pixiv-remote-egress.service",
-                "deploy/systemd/pixiv-remote-gc.timer",
-                "config/nginx/remote-worker-location.conf",
-            ):
-                assert any(name.endswith("/share/pixiv-novel-sync/" + suffix) for name in names), suffix
+            assert not any("pixiv_novel_sync/remote/" in name or "pixiv-remote" in name for name in names)
             archive.extractall(directory)
         environment = {
             name: value for name, value in os.environ.items()

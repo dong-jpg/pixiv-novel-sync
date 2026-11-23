@@ -914,6 +914,42 @@ def test_preference_analyze_keeps_manual_fields_when_nothing_new(monkeypatch):
     assert ai_calls == []
 
 
+@pytest.mark.parametrize("signals", [
+    {"incomplete": True, "aborted_reason": "search_errors", "query_errors": 1},
+    {"incomplete": True, "aborted_reason": "candidate_errors", "candidate_errors": 1},
+    {"truncated": True},
+    {},
+])
+def test_recommendation_job_keeps_results_and_reports_partial_search(tmp_path, monkeypatch, signals):
+    from pixiv_novel_sync.jobs.manager import JobManager
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobType
+    from pixiv_novel_sync.jobs.runner import JobRunner
+    from pixiv_novel_sync.webapp import _prune_stats_for_log, _task_log_status_for_stats
+
+    result = {"run_id": 17, "stats": {"saved": 89, **signals}}
+
+    class FakeService:
+        def __init__(self, db, settings):
+            self.stop_requested = None
+
+        def run(self, **kwargs):
+            return result
+
+    monkeypatch.setattr("pixiv_novel_sync.recommendations.RecommendationService", FakeService)
+    settings = SimpleNamespace(storage=SimpleNamespace(db_path=tmp_path / "rec.db"))
+    manager = JobManager()
+    job = manager.submit(JobSpec(source=JobSource.WEB, task_types=["recommendation_run"],
+                                 job_type=JobType.RECOMMENDATION_RUN, params={}))
+    runner = JobRunner(manager, lambda task_type, context: execute_task(task_type, settings, context))
+    state = runner.run(job.job_id)
+    assert state.error is None
+    stats = _prune_stats_for_log(state.stats)
+    assert stats["run_id"] == 17
+    assert stats["stats"] == result["stats"]
+    assert _task_log_status_for_stats(stats) == ("partial" if signals else "succeeded")
+    assert set(result) == {"run_id", "stats"}
+
+
 def test_recommendation_run_task_propagates_interrupted_error(tmp_path, monkeypatch):
     """用户取消推荐任务时 InterruptedError 必须向上传播,由 JobRunner 收口为 cancelled,
     而不是被吞掉返回 {"stopped": True} 让任务显示成功。"""

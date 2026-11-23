@@ -2,12 +2,10 @@
 
 normalized metadata 是消费端使用的封闭字段集；raw_metadata 是有界、只供
 归档和审阅的 JSON 数据，保留旧 meta.json/raw_json/hash 的输入语义。
-摘要用于传输完整性，不代替调用方的身份/任务授权或 expected_novel_id 校验。
+摘要用于本地归档去重，写入前校验小说身份和抓取结果。
 """
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import hmac
 import json
@@ -22,11 +20,8 @@ from .utils_hashing import sha256_text, stable_json_dumps
 from .utils_text import clean_caption, normalize_text
 
 
-PROTOCOL = 1
-KIND = "pixiv.novel.fetch.v1"
 TEXT_LIMIT = 16 * 1024 * 1024
 METADATA_LIMIT = 256 * 1024
-WIRE_LIMIT = 4 * ((TEXT_LIMIT + 2) // 3) + METADATA_LIMIT + 4096
 ASSET_LIMIT = 256
 URL_LIMIT = 4096
 _MISSING = object()
@@ -45,10 +40,6 @@ _NORMAL_FIELDS = frozenset({
     "novel_id", "user_id", "user_name", "account", "series_id", "title", "caption",
     "visible", "x_restrict", "text_length", "total_bookmarks", "total_views",
     "cover_url", "tags_json", "create_date", "user_raw_json",
-})
-_WIRE_FIELDS = frozenset({
-    "protocol", "kind", "novel_id", "metadata", "raw_metadata", "assets",
-    "meta_hash", "text_hash", "text_size", "text_base64", "sha256",
 })
 
 
@@ -324,7 +315,6 @@ class FetchedNovel:
     meta_hash: str
     text_hash: str
     text_size: int
-    protocol: int = PROTOCOL
 
     @property
     def metadata(self) -> dict:
@@ -448,8 +438,8 @@ def _hash(value):
 
 def validate_novel(dto: FetchedNovel, *, expected_novel_id: int) -> FetchedNovel:
     _integer(expected_novel_id, minimum=1, code="invalid_novel_id")
-    if not isinstance(dto, FetchedNovel) or type(dto.protocol) is not int or dto.protocol != PROTOCOL:
-        raise PixivFetchError("unsupported_protocol")
+    if not isinstance(dto, FetchedNovel):
+        raise PixivFetchError("invalid_fetch_result")
     _integer(dto.novel_id, minimum=1, code="invalid_novel_id")
     if dto.novel_id != expected_novel_id:
         raise PixivFetchError("novel_id_mismatch")
@@ -549,52 +539,3 @@ def validate_novel(dto: FetchedNovel, *, expected_novel_id: int) -> FetchedNovel
             or not hmac.compare_digest(_hash(dto.text_hash), hashlib.sha256(body).hexdigest())):
         raise PixivFetchError("hash_mismatch")
     return dto
-
-
-def serialize_novel(dto: FetchedNovel) -> bytes:
-    validate_novel(dto, expected_novel_id=dto.novel_id)
-    payload = {
-        "protocol": PROTOCOL, "kind": KIND, "novel_id": dto.novel_id,
-        "metadata": dto.normalized_metadata(), "raw_metadata": dto.metadata,
-        "assets": [list(asset) for asset in dto.assets],
-        "meta_hash": dto.meta_hash, "text_hash": dto.text_hash, "text_size": dto.text_size,
-        "text_base64": base64.b64encode(dto.text.encode("utf-8")).decode("ascii"),
-    }
-    payload["sha256"] = sha256_text(_canonical(payload))
-    encoded = _canonical(payload).encode("utf-8")
-    if len(encoded) > WIRE_LIMIT:
-        raise PixivFetchError("payload_too_large")
-    return encoded
-
-
-def deserialize_novel(payload: bytes, *, expected_novel_id: int) -> FetchedNovel:
-    value = _decode_json(payload, WIRE_LIMIT)
-    if set(value) != _WIRE_FIELDS:
-        raise PixivFetchError("unexpected_fields")
-    if type(value["protocol"]) is not int or value["protocol"] != PROTOCOL or value["kind"] != KIND:
-        raise PixivFetchError("unsupported_protocol")
-    _integer(expected_novel_id, minimum=1, code="invalid_novel_id")
-    if type(value["novel_id"]) is not int or value["novel_id"] != expected_novel_id:
-        raise PixivFetchError("novel_id_mismatch")
-    actual = sha256_text(_canonical({key: item for key, item in value.items() if key != "sha256"}))
-    if not hmac.compare_digest(_hash(value["sha256"]), actual):
-        raise PixivFetchError("hash_mismatch")
-    size = _integer(value["text_size"], minimum=1, code="invalid_text_size")
-    if size > TEXT_LIMIT:
-        raise PixivFetchError("text_too_large")
-    encoded = value["text_base64"]
-    if not isinstance(encoded, str) or len(encoded) != 4 * ((size + 2) // 3):
-        raise PixivFetchError("invalid_text_size")
-    try:
-        body = base64.b64decode(encoded, validate=True)
-        text = body.decode("utf-8")
-    except (ValueError, UnicodeError, binascii.Error):
-        raise PixivFetchError("invalid_text") from None
-    if (not isinstance(value["assets"], list) or len(value["assets"]) > ASSET_LIMIT
-            or any(not isinstance(asset, list) for asset in value["assets"])):
-        raise PixivFetchError("invalid_assets")
-    dto = FetchedNovel(expected_novel_id, _canonical(value["raw_metadata"]),
-                       _canonical(value["metadata"]), text,
-                       tuple(tuple(asset) for asset in value["assets"]),
-                       value["meta_hash"], value["text_hash"], size)
-    return validate_novel(dto, expected_novel_id=expected_novel_id)

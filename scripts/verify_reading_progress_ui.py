@@ -43,8 +43,7 @@ def main() -> int:
         root = Path(temporary)
         os.environ.update({"DASHBOARD_TOKEN": "fixture-reader-password", "PIXIV_FLASK_SECRET": "fixture-reader-secret",
             "PIXIV_REFRESH_TOKEN": "fixture-token", "PIXIV_DB_PATH": str(root / "library.db"),
-            "PIXIV_PUBLIC_DIR": str(root / "public"), "PIXIV_PRIVATE_DIR": str(root / "private"),
-            "PIXIV_REMOTE_ENABLED": "0"})
+            "PIXIV_PUBLIC_DIR": str(root / "public"), "PIXIV_PRIVATE_DIR": str(root / "private")})
         env_path = root / "empty.env"
         env_path.write_text("", encoding="utf-8")
         db = Database(root / "library.db")

@@ -33,12 +33,6 @@ def _stop_requested_from_context(context: dict[str, Any]) -> Callable[[], bool]:
 
 
 def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    from ..remote.execution import execution_scope
-    with execution_scope(settings,task_type,_stop_requested_from_context(context or {})):
-        return _execute_task(task_type,settings,context)
-
-
-def _execute_task(task_type: str, settings: Any, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     context = context or {}
     reporter = _job_reporter_from_context(context)
     stop_requested = _stop_requested_from_context(context)
@@ -496,8 +490,19 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
             reporter.add_log("info", "推荐任务已停止")
             raise
 
-        saved = int((result.get("stats") or {}).get("saved", 0))
-        reporter.add_log("success", f"推荐完成: 发现 {saved} 部小说")
-        return result
+        summary = result.get("stats") or {}
+        # RecommendationService keeps its counters inside stats, while the
+        # shared task log classifies completion from the outer task result.
+        # Preserve usable recommendations and expose any incomplete search.
+        task_result = dict(result)
+        for key in ("incomplete", "aborted_reason", "truncated"):
+            if summary.get(key):
+                task_result[key] = summary[key]
+        saved = int(summary.get("saved", 0))
+        if any(task_result.get(key) for key in ("incomplete", "aborted_reason", "truncated")):
+            reporter.add_log("warning", f"推荐部分完成: 已保留 {saved} 部小说，部分查询或候选处理未完成")
+        else:
+            reporter.add_log("success", f"推荐完成: 发现 {saved} 部小说")
+        return task_result
     finally:
         db.close()

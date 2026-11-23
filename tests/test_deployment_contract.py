@@ -1,6 +1,6 @@
 """部署契约一致性测试。
 
-deploy.sh 是 Web 部署唯一入口，自行内联生成 systemd unit；
+deploy.sh 是原生 Linux Web 部署入口，自行内联生成 systemd unit；
 deploy/systemd/pixiv-novel-sync.service 仅由 scripts/install_server.sh
 （legacy timer 同步）安装使用。两者必须约定一致的运行用户与安装路径。
 """

@@ -1,0 +1,25 @@
+services:
+  pixiv-novel-sync:
+    build:
+      context: .
+      args:
+        INSTALL_BROWSER: "${INSTALL_BROWSER:-false}"
+    image: pixiv-novel-sync:local
+    init: true
+    restart: unless-stopped
+    user: "${PIXIV_UID:-1000}:${PIXIV_GID:-1000}"
+    ports:
+      - "${PIXIV_BIND_IP:-0.0.0.0}:${PIXIV_PORT:-5010}:5010"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    # 使用自动登录镜像时给 Chromium 足够的共享内存。
+    shm_size: "256mb"
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
