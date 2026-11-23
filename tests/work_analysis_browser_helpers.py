@@ -175,6 +175,7 @@ class OfflineWorkUI(OfflineUI):
         self.lose_before_apply = set()
         self.preview_revision = 0
         self.evidence_status = 200
+        self.unit_overrides = {}
         self.reader_hash = TEXT_HASH
         self.work_agents = [{"id": 7, "name": "Fixture Agent A", "enabled": True},
                             {"id": 8, "name": "Fixture Agent B", "enabled": True},
@@ -364,6 +365,7 @@ class OfflineWorkUI(OfflineUI):
                         "status": "succeeded" if self.work_run["has_report"] else "running", "try_no": 1,
                         "last_error": None, "actual_target": {"provider_id": 3, "model_key": "org/model "},
                         "usage_summary": usage()}
+                item.update(self.unit_overrides)
                 return self._json(route, {"items": [item], "total": 1, "offset": 0, "limit": 20})
             if not self.work_report:
                 return self._error(route, "report_not_ready", 409)

@@ -114,6 +114,7 @@ Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 system
 [scripts/install_server.sh](scripts/install_server.sh) 仅保留给旧 timer 同步部署，不是新版 Web 入口。
 
 - **公网访问**：公网或反向代理部署必须为 `DASHBOARD_TOKEN` 设置强随机访问密码，并使用 HTTPS；留空时仅允许本机访问。HTTPS 下显式配置 `PIXIV_COOKIE_SECURE=1`，不要在公网关闭 Secure cookie。
+- **访客首页**：配置访问密码后，`/` 与 `/dashboard` 的访客入口直接显示，无需 JavaScript、Vue 或登录跳转。打开设置、私人书库或控制台内容时才要求登录；私人正文、偏好、任务接口继续受保护。救援 API 使用独立 Bearer Token，不需要先登录网站。
 - **会话密钥**：固定 `PIXIV_FLASK_SECRET` 并保持稳定，用于会话签名；变更后需要重新登录。
 - **设备登录**：仅在私人设备选择“保持登录 30 天”（默认不勾选）。会话固定到期，不因访问无限续期；密码不保存到浏览器缓存。
 - **敏感数据与备份**：不要公开 `.env`、令牌、数据库、私密备份与日志，也不要提交到仓库。备份应覆盖 `.env`、`config/config.yaml`、SQLite 数据库和归档文件；使用 AI 或救援时，同时妥善保管相应密钥与 Token。

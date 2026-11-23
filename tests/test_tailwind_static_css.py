@@ -277,7 +277,7 @@ def test_stylesheet_is_public_and_long_cached(tmp_path, monkeypatch):
     client = create_app(env_path=str(env_path), start_scheduler=False).test_client()
     remote = {"REMOTE_ADDR": "203.0.113.7"}
 
-    assert client.get("/dashboard", environ_base=remote).status_code == 302
+    assert client.get("/dashboard/settings/sync", environ_base=remote).status_code == 302
     versioned = client.get(f"/static/css/tailwind.css?v={css_version()}", environ_base=remote)
     assert versioned.status_code == 200
     assert versioned.mimetype == "text/css"

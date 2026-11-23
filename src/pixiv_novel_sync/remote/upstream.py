@@ -42,6 +42,13 @@ def _pixiv_call(manifest, credentials, ordinal):
             return plain_result(getattr(api, method)(manifest["novel_id"]))
         params = normalize_call(manifest["method"], params=manifest["params"])
         if manifest["method"] == "user_bookmarks_novel":
+            if params.get("offset"):
+                params.setdefault("restrict", "public")
+                params.setdefault("filter", "for_ios")
+                response = api.no_auth_requests_call(
+                    "GET", "https://app-api.pixiv.net/v1/user/bookmarks/novel", params=params, req_auth=True,
+                )
+                return plain_result(api.parse_result(response))
             params.pop("offset", None)
         return plain_result(getattr(api, manifest["method"])(**params))
     finally:

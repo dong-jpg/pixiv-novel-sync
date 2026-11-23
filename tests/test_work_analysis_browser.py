@@ -42,6 +42,19 @@ def test_no_view_preferences_and_plain_reader_keep_existing_read_only_behavior(u
     assert ui.writes() == []
 
 
+def test_rejected_unit_with_usage_does_not_claim_no_model_call(ui):
+    ui.seed_run("failed")
+    ui.unit_overrides = {"status": "pending", "actual_target": None, "request_count": 1,
+                         "last_error": "validation_failed"}
+    ui.goto("/dashboard/preferences?view=work-analysis&analysis_id=" + RUN)
+    ui.page.get_by_role("button", name="读取单元诊断", exact=True).click()
+    ui.expect(ui.page.get_by_text("已预留模型请求，目标未记录", exact=False)).to_be_visible()
+    assert ui.page.get_by_text("尚未调用模型", exact=False).count() == 0
+    ui.unit_overrides["request_count"] = 0
+    ui.page.get_by_role("button", name="读取单元诊断", exact=True).click()
+    ui.expect(ui.page.get_by_text("尚未调用模型", exact=False)).to_be_visible()
+
+
 def test_series_entry_real_picker_order_budget_and_preview_invalidation(ui):
     page = ui.page
     ui.goto("/dashboard/series/501")
