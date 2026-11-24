@@ -71,7 +71,12 @@ class JobManager:
                 return False
             state.logs.append(JobLogEntry(time=time.strftime("%Y-%m-%d %H:%M:%S"), level=level, message=message))
             if len(state.logs) > self.max_logs:
-                del state.logs[: len(state.logs) - self.max_logs]
+                # 头尾各留一半：熔断的根因常在任务开头（第一批失败从哪里开始），
+                # 只保留尾部会把诊断线索全截掉（生产：800 条轮次的 logs_json
+                # 首行是 [304/800]，前 300 条的分布完全不可见）。
+                keep_head = self.max_logs // 2
+                keep_tail = self.max_logs - keep_head
+                del state.logs[keep_head : len(state.logs) - keep_tail]
             return True
 
     def update_progress(self, job_id: str, message: str | None = None, **progress: object) -> bool:

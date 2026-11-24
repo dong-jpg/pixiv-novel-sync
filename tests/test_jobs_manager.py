@@ -15,7 +15,8 @@ def test_submit_creates_queued_job():
     assert manager.get_job(state.job_id) is state
 
 
-def test_add_log_trims_old_entries():
+def test_add_log_trims_middle_keeps_head_and_tail():
+    """截断保头尾各半：熔断根因常在任务开头，纯保尾会把诊断线索全截掉。"""
     manager = JobManager(max_logs=2, max_jobs=10)
     state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
 
@@ -23,7 +24,23 @@ def test_add_log_trims_old_entries():
     manager.add_log(state.job_id, "info", "two")
     manager.add_log(state.job_id, "info", "three")
 
-    assert [entry.message for entry in state.logs] == ["two", "three"]
+    assert [entry.message for entry in state.logs] == ["one", "three"]
+
+
+def test_add_log_keeps_head_marker_on_long_runs():
+    """长轮次的头部（第一批失败从哪开始）必须可见——生产 800 条轮次
+    logs_json 首行曾是 [304/800]，前 300 条分布完全不可见。"""
+    manager = JobManager(max_logs=4, max_jobs=10)
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+
+    messages = [f"line-{i}" for i in range(1, 11)]
+    for message in messages:
+        manager.add_log(state.job_id, "info", message)
+
+    kept = [entry.message for entry in state.logs]
+    assert kept[0] == "line-1"  # 头部保留
+    assert kept[-1] == "line-10"  # 尾部保留
+    assert len(kept) == 4
 
 
 def test_update_progress_updates_message_when_provided():
