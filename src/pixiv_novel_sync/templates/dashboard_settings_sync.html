@@ -168,6 +168,11 @@
               <input type="number" v-model.number="settings.auto_sync_following_novels_users_limit" min="0" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
               <p class="mt-1 text-xs text-pixiv-light">「全量备份关注用户」复用同一个值，改这里会同时改掉那个任务的每轮批量</p>
             </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">备份最大页数（留空=200）</label>
+              <input type="number" v-model.number="settings.user_backup_max_pages_per_run" min="1" placeholder="200" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">整库导出兜底；留空走 200 页（约 6000 本），不再跟随全局页数上限</p>
+            </div>
           </div>
         </div>
 

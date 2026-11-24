@@ -164,6 +164,7 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
             "max_items_per_run",
             "max_pages_per_run",
             "bookmark_max_pages_per_run",
+            "user_backup_max_pages_per_run",
             "archive_rescan_days",
             "following_max_novels_per_author",
             "series_max_pages_per_run",
@@ -1060,6 +1061,11 @@ class SettingsManager:
         sync_data["max_pages_per_run"] = _normalize_optional_int(payload.get("max_pages_per_run", sync_data.get("max_pages_per_run")))
         sync_data["bookmark_max_pages_per_run"] = _normalize_optional_int(
             payload.get("bookmark_max_pages_per_run", sync_data.get("bookmark_max_pages_per_run"))
+        )
+        # 备份是整库导出，缺省走 jobs/services.USER_BACKUP_MAX_PAGES（200），
+        # 绝不再回退共享的 max_pages_per_run（2026-11 生产事故形态）。
+        sync_data["user_backup_max_pages_per_run"] = _normalize_optional_int(
+            payload.get("user_backup_max_pages_per_run", sync_data.get("user_backup_max_pages_per_run"))
         )
         # 旧配置可直接迁移到本地运行；保存时移除已退役的执行位置选项。
         sync_data.pop("pixiv_execution", None)

@@ -1178,3 +1178,70 @@ def test_run_user_backup_task_page_cap_marks_truncated_and_incomplete(
     assert auth.api.user_novels_calls == [{"user_id": 202}]  # 只请求了第一页
     assert result["truncated"] is True
     assert result["incomplete"] is True
+
+
+def test_user_backup_production_combo_page_cap(tmp_path, monkeypatch):
+    """「专用字段未设 + max_pages_per_run=2」的生产组合：
+    带着自引用 next_url 时应翻满 200 页，而不是 2 页（旧回退链的截断）。"""
+
+    class CountingApi:
+        def __init__(self) -> None:
+            self.user_novels_calls = 0
+
+        def user_novels(self, **query):
+            self.user_novels_calls += 1
+            return SimpleNamespace(novels=[], next_url="loop")
+
+        def parse_qs(self, next_url):
+            return {"user_id": 202, "page": self.user_novels_calls} if next_url == "loop" else None
+
+    counting_api = CountingApi()
+
+    monkeypatch.setattr(
+        services,
+        "PixivAuthManager",
+        lambda pixiv_settings: SimpleNamespace(
+            login=lambda: (counting_api, SimpleNamespace(user_id=999))
+        ),
+    )
+    monkeypatch.setattr(
+        services, "_ensure_storage_dirs", lambda settings: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        services,
+        "Database",
+        lambda db_path: SimpleNamespace(
+            __enter__=lambda s: s,
+            __exit__=lambda s, *a: False,
+            close=lambda: None,
+        ),
+    )
+    monkeypatch.setattr(services, "prepare_schema", lambda db: None)
+    monkeypatch.setattr(
+        services,
+        "BookmarkNovelSyncService",
+        lambda api, db, storage, settings: SimpleNamespace(stop_requested=None),
+    )
+    monkeypatch.setattr(services, "_lookup_user_name", lambda db, user_id: "测试作者")
+    monkeypatch.setattr(services, "_load_full_refresh_marks", lambda db: {})
+    monkeypatch.setattr(
+        services, "_rebuild_rescue_catalog", lambda db, reporter: {}
+    )
+    settings = SimpleNamespace(
+        pixiv=SimpleNamespace(user_id=999),
+        storage=SimpleNamespace(db_path=tmp_path / "t.db"),
+        sync=SimpleNamespace(
+            max_pages_per_run=2,  # 生产共享上限
+            user_backup_max_pages_per_run=None,  # 专用字段未设（生产缺行）
+            delay_seconds_between_items=0,
+            delay_seconds_between_pages=0,
+            download_assets=False,
+            write_markdown=False,
+            write_raw_text=False,
+        ),
+    )
+    reporter = DummyReporter()
+    result = services.run_user_backup_task(settings, user_id=202, reporter=reporter)
+    assert counting_api.user_novels_calls == services.USER_BACKUP_MAX_PAGES
+    assert result["truncated"] is True
+    assert result["incomplete"] is True

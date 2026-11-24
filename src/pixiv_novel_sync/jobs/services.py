@@ -62,6 +62,11 @@ USER_BACKUP_MAX_FAILURE_RATIO = 0.2
 USER_BACKUP_FULL_REFRESH_DAYS = 7
 USER_BACKUP_FULL_REFRESH_WATERMARK = "user_backup_full_refresh"
 
+# user_backup 翻页的专用兜底上限（每页 30 本 ⇒ 200 页 = 6000 本）。历史事故
+# （2026-11 生产）：未配置 user_backup_max_pages_per_run 时回退到共享的
+# max_pages_per_run=2，整库导出被砍成每作者 60 本。绝不复用 max_pages_per_run。
+USER_BACKUP_MAX_PAGES = 200
+
 # 小说状态检查每轮的批大小。全量 6971 篇（每篇间隔 2 秒）单轮要跑满 4 小时，
 # 既占死任务槽又是限流诱因；分批后单轮耗时可控，多轮按 last_checked_at 轮转覆盖全库。
 NOVEL_STATUS_BATCH_SIZE = 800
@@ -196,11 +201,21 @@ def run_user_backup_task(
         truncated_by_page_cap = False
         total_failed_page = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
-        # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环
-        # 备份是整库导出，不能共用 max_pages_per_run=2 那种轻量上限
+        # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环。
+        # 备份是整库导出，绝不能回退到 max_pages_per_run（生产事故 2026-11：
+        # 该字段缺省时回落共享值 2，每作者只备到最新 ~60 本，第 61 本起永久缺失；
+        # 截断又让 full_refresh 水位写不进，同批作者每轮重抓前 60 本）。
+        # 仿 FOLLOWING_LIST_MAX_PAGES 的模式：专用常量兜底，YAML 的
+        # user_backup_max_pages_per_run 仍然可以覆盖。
         max_pages = getattr(getattr(settings, "sync", None), "user_backup_max_pages_per_run", None)
         if max_pages is None:
-            max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
+            max_pages = USER_BACKUP_MAX_PAGES
+        try:
+            max_pages = int(max_pages)
+        except (TypeError, ValueError):
+            max_pages = USER_BACKUP_MAX_PAGES
+        if max_pages <= 0:
+            max_pages = USER_BACKUP_MAX_PAGES
         page_count = 0
 
         _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
