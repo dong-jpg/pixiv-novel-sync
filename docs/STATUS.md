@@ -6,8 +6,8 @@
 
 | 分支 | 范围 | 交付边界 |
 | --- | --- | --- |
-| main | 同步、归档、救援、阅读、推荐、作品分析、偏好学习及共享 AI | 本次修改位于 main 工作区 |
-| ai-writing | 继承书库能力，并增加写作、向导及成人润色 | 本次未合并或验证该分支 |
+| main | 同步、归档、救援、阅读、推荐、作品分析、偏好学习及共享 AI | 远程退役与收尾清理位于本次 main 提交 |
+| ai-writing | 继承书库能力，并增加写作、向导及成人润色 | 已合并 main 退役提交；导航保留创作入口、移除远程页面 |
 
 Web 使用单进程 Flask + Waitress，SQLite 保存业务状态，现有调度器串行执行同步任务。NAS 容器承载同一程序，不能通过多个实例共享书库来横向扩容。模型调用仍访问所配置的 Provider，NAS 不承担模型推理。
 
@@ -50,6 +50,7 @@ Web 使用单进程 Flask + Waitress，SQLite 保存业务状态，现有调度�
 - Windows 全量运行得到 **3261 passed、16 skipped、1 failed**；失败项是调度注册测试仍引用已删除的 `_execute_task` 包装函数，已改为检查公开 `execute_task`。跳过来自流式组合条件及 Windows 符号链接/POSIX 权限限制。
 - 修正旧测试引用并补充本地提交前取消、容器 YAML 错误日志测试后，最新源码的调度、同步、抓取、配置、容器、文档、导航与 Chromium/Firefox 启动定向回归 **227 passed**，包含原失败项；未重复整套全量。
 - 清理 verify_wheel 环境白名单中的旧 `INSTABOX_API_KEY` 后，Windows 全量回归 **3265 passed、16 skipped、0 failed**。本地遗留的退役前 `build/lib` 旧产物会把已删除的远程模块重新打进 wheel；删除后干净构建通过 15 项路由/资源检查且无远程文件。
+- ai-writing 合并退役提交并解决 CLAUDE.md / 导航模板 / 移动端导航测试三处冲突后，Windows 全量回归 **3793 passed、16 skipped、0 failed**；embedding 保留而远程调用点已随合并移除，`pyflakes` 抓回被合并误删的 `os` 导入并已修复。按 `--writing` 模式构建 wheel 通过 15 项路由/资源检查，无远程模块。
 - 本机 WSL2 Ubuntu / Python 3.10，以 canonical LF 独立源码快照验证本地执行、权限、符号链接/归档路径、取消、调度、配置及容器入口，**222 passed、0 skipped**。
 - Linux 实际 Waitress 进程两次启动通过 HTTP 健康、登录、CSRF 设置与 Token 保存、旧远程路由 404，以及重启后配置/Token/会话密钥持久化检查，使用独立临时目录和合成凭据。
 - 最新源码在干净目录构建 wheel，通过 **15 项**独立解包的路由/资源检查，安装包没有远程模块或部署资产。`compileall`、`pyflakes src`、Tailwind 一致性及文档本地链接检查通过。
