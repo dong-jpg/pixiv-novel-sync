@@ -1,6 +1,6 @@
 # 项目现状
 
-更新：2026-11-23。当前代码改为本地执行，NAS / Docker 的实际部署与代码验证分开记录。
+更新：2026-11-24。当前代码改为本地执行，NAS / Docker 的实际部署与代码验证分开记录。
 
 ## 分支与运行边界
 
@@ -49,6 +49,7 @@ Web 使用单进程 Flask + Waitress，SQLite 保存业务状态，现有调度�
 
 - Windows 全量运行得到 **3261 passed、16 skipped、1 failed**；失败项是调度注册测试仍引用已删除的 `_execute_task` 包装函数，已改为检查公开 `execute_task`。跳过来自流式组合条件及 Windows 符号链接/POSIX 权限限制。
 - 修正旧测试引用并补充本地提交前取消、容器 YAML 错误日志测试后，最新源码的调度、同步、抓取、配置、容器、文档、导航与 Chromium/Firefox 启动定向回归 **227 passed**，包含原失败项；未重复整套全量。
+- 清理 verify_wheel 环境白名单中的旧 `INSTABOX_API_KEY` 后，Windows 全量回归 **3265 passed、16 skipped、0 failed**。本地遗留的退役前 `build/lib` 旧产物会把已删除的远程模块重新打进 wheel；删除后干净构建通过 15 项路由/资源检查且无远程文件。
 - 本机 WSL2 Ubuntu / Python 3.10，以 canonical LF 独立源码快照验证本地执行、权限、符号链接/归档路径、取消、调度、配置及容器入口，**222 passed、0 skipped**。
 - Linux 实际 Waitress 进程两次启动通过 HTTP 健康、登录、CSRF 设置与 Token 保存、旧远程路由 404，以及重启后配置/Token/会话密钥持久化检查，使用独立临时目录和合成凭据。
 - 最新源码在干净目录构建 wheel，通过 **15 项**独立解包的路由/资源检查，安装包没有远程模块或部署资产。`compileall`、`pyflakes src`、Tailwind 一致性及文档本地链接检查通过。

@@ -75,7 +75,7 @@ def main() -> int:
         environment = {
             name: value for name, value in os.environ.items()
             if not name.startswith(("PIXIV_", "DASHBOARD_"))
-            and name not in {"ENV_PATH", "INSTABOX_API_KEY", "PYTHONPATH"}
+            and name not in {"ENV_PATH", "PYTHONPATH"}
         }
         result = subprocess.run(
             [sys.executable, "-I", "-c", SMOKE, directory, "writing" if args.writing else "main"],
