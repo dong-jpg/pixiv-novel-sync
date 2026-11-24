@@ -15,6 +15,7 @@ import requests
 from . import pixiv_fetch as _pixiv_fetch
 from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 from .pixiv_fetch import (
+    PixivFetchError,
     _pixiv_content_unavailable_reason,
     fetch_novel,
 )
@@ -42,8 +43,22 @@ _parse_pixiv_error_json = _pixiv_fetch._parse_pixiv_error_json
 _stable_meta_for_hash = _pixiv_fetch._stable_meta_for_hash
 _RATE_LIMIT_ERROR_TOKENS = _pixiv_fetch._RATE_LIMIT_ERROR_TOKENS
 
+# 认证失败错误码（token 过期/被拒）：确定性错误，重试该次调用无意义。
+# 引擎层拿不到重登入口（api 由调用方注入），正确的动作是立即中止本轮并让
+# 任务日志显式写「认证失败」，而不是把剩余章节/系列全刷成 failed / rate_limited。
+_AUTH_FAILED_CODE = "auth_failed"
+
 class RemoteListTruncated(RuntimeError):
     """远端列表翻页触顶，结果不能拿来做差集。"""
+
+
+class SyncAuthFailed(RuntimeError):
+    """Pixiv 认证失败（access token 过期/被拒），本轮同步无法继续。
+
+    与普通失败的区别见 pixiv_fetch._auth_failed：该次调用重试无意义，
+    剩余调用也都会失败，调用方应立即中止本轮并把 aborted_reason 记为
+    ``auth_failed``，而不是继续消耗条目、把失败烧成 rate_limited 误报。
+    """
 
 
 # 关注列表枚举（user_following）专用的翻页上限，每页 30 人 ⇒ 50 页 = 1500 人。
@@ -385,14 +400,21 @@ class BookmarkNovelSyncService:
                         # 间隔不变；取消仍由每条开头的 novel_start 进度回调轮询。
                     else:
                         # 不存在，执行完整同步
-                        counters = self._sync_novel(
-                            novel,
-                            restrict,
-                            download_assets,
-                            write_markdown,
-                            write_raw_text,
-                            source_type=f"bookmark_{restrict}",
-                        )
+                        try:
+                            counters = self._sync_novel(
+                                novel,
+                                restrict,
+                                download_assets,
+                                write_markdown,
+                                write_raw_text,
+                                source_type=f"bookmark_{restrict}",
+                            )
+                        except SyncAuthFailed:
+                            # token 已失效：本轮收藏同步立刻中止，显式记 auth_failed。
+                            stats["incomplete"] = True
+                            stats["aborted_reason"] = "auth_failed"
+                            logger.error("收藏同步中止：Pixiv 认证失败（token 已失效），已处理 %d 篇", processed_items)
+                            return stats
 
                     _merge_stats(stats, counters)
                     if counters.get("failed", 0):
@@ -798,17 +820,24 @@ class BookmarkNovelSyncService:
                         # 同收藏同步：本地跳过不发请求，不等 delay_seconds_between_skips（P20）
                     else:
                         existing_streak = 0
-                        counters = self._sync_novel(
-                            novel,
-                            # 作品自身的 restrict 是作者设的可见性（0/1/2），不是收藏列表；
-                            # 传 None 沿用已归档的 restrict，新作品落 public（S10）
-                            None,
-                            download_assets,
-                            write_markdown,
-                            write_raw_text,
-                            source_type="following_user_scan",
-                            source_key=str(author_id),
-                        )
+                        try:
+                            counters = self._sync_novel(
+                                novel,
+                                # 作品自身的 restrict 是作者设的可见性（0/1/2），不是收藏列表；
+                                # 传 None 沿用已归档的 restrict，新作品落 public（S10）
+                                None,
+                                download_assets,
+                                write_markdown,
+                                write_raw_text,
+                                source_type="following_user_scan",
+                                source_key=str(author_id),
+                            )
+                        except SyncAuthFailed:
+                            # token 已失效：本轮关注扫描立刻中止，显式记 auth_failed。
+                            stats["incomplete"] = True
+                            stats["aborted_reason"] = "auth_failed"
+                            logger.error("关注扫描中止：Pixiv 认证失败（token 已失效）")
+                            raise
 
                     _merge_stats(stats, counters)
                     if counters.get("failed", 0):
@@ -901,6 +930,9 @@ class BookmarkNovelSyncService:
                 finished = _scan_author(user)
             except InterruptedError:
                 raise
+            except SyncAuthFailed:
+                # token 过期不是该作者的问题：不计失败连败，直接交上层中止本轮。
+                raise
             except Exception:
                 _record_author_outcome(author_key, scanned_at, finished=False)
                 raise
@@ -954,7 +986,14 @@ class BookmarkNovelSyncService:
                         stats["truncated"] = True
                         stats["incomplete"] = True
                         break
-                    _sync_author(user)
+                    try:
+                        _sync_author(user)
+                    except SyncAuthFailed:
+                        # token 已失效：本轮关注轮转立刻中止，显式记 auth_failed。
+                        stats["incomplete"] = True
+                        stats["aborted_reason"] = "auth_failed"
+                        logger.error("关注轮转中止：Pixiv 认证失败（token 已失效）")
+                        break
             finally:
                 # 取消/异常也必须把已扫作者的水位落盘，否则下轮又从同一批开始。
                 _save_watermark()
@@ -1518,6 +1557,14 @@ class BookmarkNovelSyncService:
                             # 复用状态检查那套 fail-safe 三态判定（同一份关键词/限流词表），
                             # 不额外发请求：series_data 就是刚拿到的响应。
                             verdict = _classify_series_response(series_data)
+                            if verdict == "auth_failed":
+                                # 认证失败同 unknown 一样拿不到详情，但它是确定性错误：
+                                # 剩余系列也都会失败，立即中止并记 auth_failed。
+                                logger.error("Series %s detail fetch failed: Pixiv 认证失败（token 已失效）", sid)
+                                if progress_callback:
+                                    progress_callback("phase", {"phase": "Pixiv 认证失败（token 已失效），本轮追更同步中止"})
+                                aborted_reason = "auth_failed"
+                                break
                             if verdict == "missing":
                                 dead_series += 1
                                 consecutive_fetch_failures = 0
@@ -1561,6 +1608,15 @@ class BookmarkNovelSyncService:
                 except InterruptedError:
                     # 用户取消必须原样上抛。章节同步里的其它异常不能计入系列熔断。
                     raise
+                except SyncAuthFailed as e:
+                    # 章节抓取遇到认证失败：token 过期是确定性的，本轮不可能再成功，
+                    # 立即中止并显式记 auth_failed（不再把尾部章节刷成 failed、
+                    # 误报 rate_limited）。
+                    logger.error("Series %s chapters aborted: %s", sid, e)
+                    if progress_callback:
+                        progress_callback("phase", {"phase": "Pixiv 认证失败（token 已失效），本轮追更同步中止"})
+                    aborted_reason = "auth_failed"
+                    break
                 except Exception as e:
                     stats["failed"] = stats.get("failed", 0) + 1
                     logger.warning("Series %s processing failed: %s", sid, e)
@@ -2147,6 +2203,11 @@ class BookmarkNovelSyncService:
         except InterruptedError:
             raise
         except Exception as e:
+            if isinstance(e, PixivFetchError) and e.code == _AUTH_FAILED_CODE:
+                # 认证失败：换 InterruptedError 会把任务误记为取消，这里用专用
+                # 异常上抛，调用方据此中止整轮（记 auth_failed 而非堆积 failed）。
+                logger.error("小说 %d 同步失败：Pixiv 认证失败（token 已失效），本轮同步中止", novel_id)
+                raise SyncAuthFailed(str(e)) from e
             unavailable_reason = _pixiv_content_unavailable_reason(e)
             if unavailable_reason:
                 # 正文确实不可获取（作品已删除或设为不可见）：重试没有意义，单独计数，

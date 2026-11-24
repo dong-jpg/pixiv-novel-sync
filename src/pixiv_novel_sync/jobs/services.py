@@ -14,6 +14,7 @@ from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
 from pixiv_novel_sync.sync_engine import (
     BookmarkNovelSyncService,
+    SyncAuthFailed,
     _iso_age_days,
     _recently_confirmed_deleted_novel_ids,
 )
@@ -40,6 +41,11 @@ MAX_CONSECUTIVE_MISSING = 30
 # 判定为「不存在/已删除」的状态取值：小说/系列是 deleted，用户是 suspended，
 # 三者共用同一套熔断逻辑。
 MISSING_STATUSES = frozenset({"deleted", "suspended"})
+
+# 认证失败的状态值（web/utils._check_*_status 在 token 失效时返回）。
+# 与 unknown 的区别：它是确定性错误——该次调用重试无意义，等 15 个条目烧完
+# 「疑似限流」熔断只会让日志归因错误（2026-11-20~23 生产事故即此形态）。
+AUTH_FAILED_STATUS = "auth_failed"
 
 # 全量备份按失败比例中止单个用户之前，至少要处理过这么多本。以前没有最小样本：
 # 第 1 本失败就是 1/1 > 20%，整个用户中止，在轮转里被跳过一整圈。失败累计到
@@ -254,17 +260,26 @@ def run_user_backup_task(
                     )
                     continue
 
-                counters = service._sync_novel(
-                    novel,
-                    # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
-                    # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
-                    None,
-                    settings.sync.download_assets,
-                    settings.sync.write_markdown,
-                    settings.sync.write_raw_text,
-                    source_type="user_backup",
-                    source_key=str(user_id),
-                )
+                try:
+                    counters = service._sync_novel(
+                        novel,
+                        # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
+                        # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
+                        None,
+                        settings.sync.download_assets,
+                        settings.sync.write_markdown,
+                        settings.sync.write_raw_text,
+                        source_type="user_backup",
+                        source_key=str(user_id),
+                    )
+                except InterruptedError:
+                    raise
+                except SyncAuthFailed as exc:
+                    # token 已失效：按中止收口（不堆 failed、不算该作者完成）。
+                    message = f"用户全量备份中止：Pixiv 认证失败（token 已失效）: {user_name} ({user_id})"
+                    logger.error(message)
+                    _report_log(reporter, "error", message)
+                    raise RuntimeError(str(exc)) from exc
                 processed += 1
                 failed = counters.get("failed", 0)
                 if failed:
@@ -592,6 +607,39 @@ def run_pending_deletion_detection_task(
         db.close()
 
 
+def _make_reauth_handler(
+    settings: Any,
+    stop_requested: StopRequested | None,
+    task_label: str,
+) -> tuple[Callable[[], Any], Callable[[], bool]]:
+    """构造可中途重登的 (取 api, 认证失败回调) 对。
+
+    pixivpy3 登录后 access token 硬 1 小时过期且无自动刷新（api.py 只在
+    token 为 None 时抛错），单轮任务逼近 60 分钟就会整体失效。状态检查的
+    ``check_status`` 回调闭包持有旧 api 对象，因此重登必须换新实例并把
+    重试补丁原样打上；回调返回 True 表示已重登、当前条目可重查一次。
+
+    每任务最多重登一次：refresh token 若也失效，第二次 ``auth()`` 同样失败，
+    无限重试只会把熔断额度烧在认证端点上。
+    """
+    state = {"api": _login(settings), "used": False}
+
+    def get_api() -> Any:
+        return state["api"]
+
+    def on_auth_failed() -> bool:
+        if state["used"]:
+            return False
+        state["used"] = True
+        api = _login(settings)
+        apply_pixiv_retry_patch(api, stop_requested=stop_requested)
+        state["api"] = api
+        logger.warning("%s：access token 已失效，已重新登录并继续", task_label)
+        return True
+
+    return get_api, on_auth_failed
+
+
 def _run_user_status_like_task(
     settings: Any,
     reporter: JobReporter | None,
@@ -605,7 +653,8 @@ def _run_user_status_like_task(
     progress_id: Callable[[dict[str, Any]], Any],
     total_key: str,
 ) -> dict[str, Any]:
-    api = _login(settings)
+    get_api, on_auth_failed = _make_reauth_handler(settings, stop_requested, task_label)
+    api = get_api()
     # 状态检查不经过 BookmarkNovelSyncService，取消回调只能在这里绑到重试补丁上，
     # 否则 user_detail 的 429/网络退避是一整段不可取消的 sleep（S7）。
     apply_pixiv_retry_patch(api, stop_requested=stop_requested)
@@ -623,11 +672,12 @@ def _run_user_status_like_task(
             stop_requested=stop_requested,
             db=db,
             items=items,
-            check_status=lambda item: check_status(api, int(progress_id(item))),
+            check_status=lambda item: check_status(get_api(), int(progress_id(item))),
             upsert_status=upsert_status,
             item_label=total_label,
             item_name=progress_name,
             total_key=total_key,
+            on_auth_failed=on_auth_failed,
         )
     finally:
         db.close()
@@ -648,7 +698,8 @@ def _run_status_task(
     finalize_stats: Callable[[Database, dict[str, Any]], None] | None = None,
     build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
-    api = _login(settings)
+    get_api, on_auth_failed = _make_reauth_handler(settings, stop_requested, task_label)
+    api = get_api()
     # 同 _run_user_status_like_task：把任务的取消回调绑到重试补丁上
     apply_pixiv_retry_patch(api, stop_requested=stop_requested)
     _ensure_storage_dirs(settings)
@@ -672,12 +723,13 @@ def _run_status_task(
             stop_requested=stop_requested,
             db=db,
             items=item_ids,
-            check_status=lambda item_id: check_status(api, item_id),
+            check_status=lambda item_id: check_status(get_api(), item_id),
             upsert_status=upsert_status,
             item_label=total_label,
             item_name=lambda item_id: str(item_id),
             total_key=total_key,
             already_missing=already_missing,
+            on_auth_failed=on_auth_failed,
         )
         if finalize_stats is not None:
             # 批次统计只是运维观测信息，失败不应拖垮整轮任务
@@ -767,6 +819,7 @@ def _process_status_items(
     item_name: Callable[[Any], str],
     total_key: str,
     already_missing: Callable[[Any], bool] | None = None,
+    on_auth_failed: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     checked_count = 0
     status_counts: dict[str, int] = {}
@@ -785,6 +838,31 @@ def _process_status_items(
             break
 
         status = check_status(item)
+        if status == AUTH_FAILED_STATUS:
+            # access token 过期是确定性错误：重试该次调用无意义。给调用方一次
+            # 重登机会（成功则重查当前条目），否则立即中止——不再烧 15 个条目
+            # 走「疑似限流」熔断（2026-11-20~23 生产事故的误报形态）。
+            _report_log(reporter, "warning", f"[{checked_count + 1}/{total}] {item_label} {item_name(item)}: 认证失败（token 已失效）")
+            reauthenticated = False
+            if on_auth_failed is not None:
+                try:
+                    reauthenticated = bool(on_auth_failed())
+                except InterruptedError:
+                    raise
+                except Exception as exc:  # pragma: no cover - 重登失败按中止处理
+                    logger.warning("%s重新登录失败: %s", item_label, exc)
+            if reauthenticated:
+                status = check_status(item)
+            if status == AUTH_FAILED_STATUS:
+                message = (
+                    f"Pixiv 认证失败（access token 已失效），已中止本轮{item_label}检查"
+                    f"（已检查 {checked_count}/{total}，未检查的保持原状态）"
+                )
+                logger.warning(message)
+                _report_log(reporter, "error", message)
+                aborted_reason = "auth_failed"
+                stopped = True
+                break
         upsert_status(db, item, status)
         checked_count += 1
         status_counts[status] = status_counts.get(status, 0) + 1

@@ -30,6 +30,20 @@ _VOLATILE_NOVEL_FIELDS = frozenset({
     "total_comment", "comment_count",
 })
 _RATE_LIMIT_ERROR_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+# 认证失败（access token 过期/被拒）的错误特征；与 web/utils._AUTH_ERROR_TOKENS
+# 保持一致的判定语义。pixivpy3 拿到 OAuth 层错误体不抛异常，若不单独分类，
+# 引擎会把 token 过期后的一切失败归为普通 error_page/failed（2026-11-20~23
+# 生产事故：长系列章节同步推进 60 分钟后尾部全失败、误报 rate limited）。
+_AUTH_ERROR_TOKENS = (
+    "invalid_grant",
+    "invalid token",
+    "invalid_token",
+    "oauth process",
+    "check your access token",
+    "token expired",
+    "unauthorized",
+    "access token",
+)
 _UNAVAILABLE_REASON = "尚无此页或当前不可见"
 _UNSAFE_METADATA_FIELDS = frozenset({
     "access_token", "refresh_token", "authorization", "cookie", "web_cookie",
@@ -172,6 +186,23 @@ def _unavailable(error: Any) -> bool:
     return bool(fields[0].strip()) and not any(token in blob for token in _RATE_LIMIT_ERROR_TOKENS)
 
 
+def _auth_failed(error: Any) -> bool:
+    """错误体是否为认证失败（token 过期/被拒）。
+
+    Pixiv 的 OAuth 错误体形如
+    ``{"user_message": "", "message": "Error occurred at the OAuth process...
+    invalid_grant", "reason": ""}`；与限流/不存在不同，它是确定性的：
+    这一次重试无意义，剩余调用也都会失败，上层应当立即中止本轮。
+    """
+    if not isinstance(error, dict):
+        return False
+    fields = [error.get(name) or "" for name in ("user_message", "message", "reason")]
+    if any(not isinstance(value, str) or len(value) > 16384 for value in fields):
+        return False
+    blob = " ".join(fields).lower()
+    return any(token in blob for token in _AUTH_ERROR_TOKENS)
+
+
 def _pixiv_content_unavailable_reason(exc: BaseException) -> str | None:
     if isinstance(exc, PixivFetchError):
         return _UNAVAILABLE_REASON if exc.code == "content_unavailable" else None
@@ -182,8 +213,14 @@ class PixivErrorPage(PixivFetchError):
     """保留旧导入名称，但错误不再回显上游 JSON。"""
 
     def __init__(self, endpoint: str, body: Any):
-        unavailable = _unavailable(_get(body, "error"))
-        super().__init__("content_unavailable" if unavailable else "pixiv_error_page")
+        error = _get(body, "error")
+        if _auth_failed(error):
+            # 认证失败单独成码：它不是临时风控，重试该次调用无意义，
+            # 上层应当立即中止本轮（而不是把尾部章节全部刷成 failed）。
+            super().__init__("auth_failed")
+        else:
+            unavailable = _unavailable(error)
+            super().__init__("content_unavailable" if unavailable else "pixiv_error_page")
 
 
 def _asset_url(value: Any) -> str:
@@ -368,6 +405,8 @@ def fetch_novel(api: Any, novel_id: int, *, fallback_novel=None,
         raise
     except Exception as exc:
         _check_cancel(stop_requested)
+        if _auth_failed(_parse_pixiv_error_json(exc)):
+            raise PixivFetchError("auth_failed") from None
         code = "content_unavailable" if _pixiv_content_unavailable_reason(exc) else "pixiv_request_failed"
         raise PixivFetchError(code) from None
 

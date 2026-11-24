@@ -1790,3 +1790,79 @@ def test_sync_following_novels_cancellation_saves_watermark(tmp_path: Path) -> N
     last = db.watermark_updates[-1]
     assert "1" in last["user_last_synced"]
 
+
+
+# --------------------------------------------------------------------------
+# 认证失败（access token 过期）的引擎侧语义，T-auth-01~04
+#
+# 生产事故（2026-11-20~23）：token 1 小时 TTL 过期后，长轮任务的尾部调用
+# 全部失败，旧实现把它们堆成 failed / 触发 rate_limited 熔断——归因错误且
+# 浪费一整轮预算。auth_failed 是确定性错误：立即中止本轮并显式记因。
+# --------------------------------------------------------------------------
+
+
+class _AuthFailApi:
+    """novel_detail 返回 OAuth 错误体（token 过期的真实形态）。"""
+
+    def novel_detail(self, novel_id: int) -> dict:
+        return {
+            "error": {
+                "user_message": "",
+                "message": (
+                    "Error occurred at the OAuth process. Please check your "
+                    "Access Token to fix this. Error Message: invalid_grant"
+                ),
+                "reason": "",
+            }
+        }
+
+    def webview_novel(self, novel_id: int) -> dict:
+        return {"text": ""}
+
+
+def test_fetch_novel_invalid_grant_raises_auth_failed_code(tmp_path: Path) -> None:
+    """fetch_novel：认证失败错误页必须带着 auth_failed 码抛出（而非 pixiv_error_page）。"""
+    err = None
+    try:
+        sync_engine.fetch_novel(_AuthFailApi(), 100)
+    except Exception as exc:
+        err = exc
+    assert isinstance(err, sync_engine.PixivFetchError)
+    assert err.code == "auth_failed"
+
+
+def test_sync_novel_auth_failed_raises_sync_auth_failed(tmp_path: Path) -> None:
+    """_sync_novel：认证失败转抛 SyncAuthFailed，调用方据此中止（而非计 failed）。"""
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    service = BookmarkNovelSyncService(_AuthFailApi(), db, _Storage(), settings)
+    with pytest.raises(sync_engine.SyncAuthFailed):
+        service._sync_novel(_Novel(), "public", True, True, True, source_type="bookmark_public")
+
+
+class _AuthFailBookmarkApi(_AuthFailApi):
+    """user_bookmarks_novel 正常返回两本，novel_detail 全部认证失败。"""
+
+    def user_bookmarks_novel(self, **kwargs):
+        return SimpleNamespace(
+            novels=[SimpleNamespace(id=100), SimpleNamespace(id=101)], next_url=None
+        )
+
+    def parse_qs(self, next_url):
+        return None
+
+
+def test_bookmark_sync_aborts_with_auth_failed_reason(tmp_path: Path) -> None:
+    """收藏同步：token 失效立即中止并记 auth_failed，不把错误页堆成 failed。"""
+    settings = _settings(tmp_path)
+    settings.sync.max_items_per_run = 10
+    settings.sync.max_pages_per_run = 2
+    settings.sync.bookmark_max_pages_per_run = None
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    service = BookmarkNovelSyncService(_AuthFailBookmarkApi(), db, _Storage(), settings)
+    stats = service.sync(user_id=1, restricts=["public"], write_raw_text=True)
+    assert stats.get("aborted_reason") == "auth_failed"
+    assert stats.get("incomplete") is True
+    assert stats.get("failed", 0) == 0
