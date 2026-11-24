@@ -319,3 +319,18 @@ class SeriesMixin:
             params = (int(limit),)
         rows = self.conn.execute(sql, params).fetchall()
         return [row[0] for row in rows]
+
+    def get_known_missing_series_ids(self) -> set[int]:
+        """返回数据库里已经标记为 deleted/suspended 的系列 ID 集合。
+
+        给 series_status 的「连续大量 deleted」熔断做去噪，与小说侧的
+        ``get_known_missing_novel_ids`` 同一语义：Pixiv 再次确认一个本来就是
+        deleted 的系列，是一致的结论而不是「限流伪装成不存在」的证据。生产事故
+        （2026-11）：45 个已删系列按 last_checked_at 聚集成连续块，每轮复查都凑满
+        30 连触发 suspicious_missing_streak 假熔断——中止点在 278/279（99%），
+        基本跑完的整轮被打成黄色。
+        """
+        rows = self.conn.execute(
+            "SELECT series_id FROM series WHERE status IN ('deleted', 'suspended')"
+        ).fetchall()
+        return {int(row[0]) for row in rows}

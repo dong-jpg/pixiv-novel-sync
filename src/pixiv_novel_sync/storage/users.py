@@ -110,6 +110,19 @@ class UsersMixin:
             )
         self._commit_if_needed()
 
+    def get_known_suspended_user_ids(self) -> set[int]:
+        """返回数据库里已经标记为 suspended 的用户 ID 集合。
+
+        给 user_status 的「连续大量 suspended」熔断做去噪（``MISSING_STATUSES``
+        含 suspended）：Pixiv 再次确认一个本来就是 suspended 的账号，是持续的
+        结论而不是「限流伪装成不存在」的证据。与小说/系列侧的 known-missing
+        快照同一语义。
+        """
+        rows = self.conn.execute(
+            "SELECT user_id FROM users WHERE status = 'suspended'"
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+
     # 本人账号资料的水位线存储键。users 表只存「被关注的作者」，本人账号不在其中，
     # 所以侧边栏不能靠 users 表取自己的信息（会退化成"最近同步的作者"）。
     SELF_PROFILE_WATERMARK = "self_profile"

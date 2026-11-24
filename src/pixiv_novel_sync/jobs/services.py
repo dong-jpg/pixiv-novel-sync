@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import time
 from time import perf_counter
@@ -53,6 +53,10 @@ AUTH_FAILED_STATUS = "auth_failed"
 USER_BACKUP_FAILURE_MIN_SAMPLE = 10
 USER_BACKUP_MAX_FAILED_NOVELS = 10
 USER_BACKUP_MAX_FAILURE_RATIO = 0.2
+
+# 已确认 deleted 的系列多久复查一次（天）。与小说侧 KNOWN_DELETED_RECHECK_DAYS
+# 同语义——降频而非永久跳过：作者可能重新上传或恢复系列。
+KNOWN_DELETED_SERIES_RECHECK_DAYS = 7
 
 # 全量备份平时只补没归档完整的作品，每位作者每 7 天全部重抓一次（审查性能 P19）。
 # 全部重抓保留为唯一会重抓已归档正文的路径：作者改了正文、或 S2 那种被错误页覆写成
@@ -407,6 +411,14 @@ def run_user_status_task(
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
 ) -> dict[str, Any]:
+    def build_already_missing(db: Database) -> Callable[[Any], bool]:
+        # 已知 suspended 的再次确认是持续结论，不该推进 30 连熔断（MISSING_STATUSES
+        # 同时含 suspended；series 侧 2026-11 同类假熔断的泛化修复）。生产上封禁
+        # 用户零星（1-2 个）凑不满 30 连，但豁免保证边界形态（批量封禁聚集）下
+        # 也不误报。
+        known = db.get_known_suspended_user_ids()
+        return lambda user: int(user["user_id"]) in known
+
     return _run_user_status_like_task(
         settings=settings,
         reporter=reporter,
@@ -419,6 +431,7 @@ def run_user_status_task(
         progress_name=lambda user: str(user.get("name") or user.get("user_id")),
         progress_id=lambda user: user.get("user_id"),
         total_key="total_users",
+        build_already_missing=build_already_missing,
     )
 
 
@@ -483,18 +496,56 @@ def run_series_status_task(
     *,
     claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
+    # 已删系列 7 天内复查过的不进本批；deferred 同时进 stats 供运维观测
+    deferred: set[int] = set()
+
+    def list_ids(db: Database) -> list[int]:
+        # 已删系列 7 天内复查过的不进本批（与 novel_status 的 P21 降频同语义）。
+        # 这同时省掉重复确认的请求：生产上 45 个已删系列每轮都吃 ~15% 检查量。
+        # 查询失败退回全查（fail-safe），与小说侧一致。
+        try:
+            cutoff = (
+                datetime.now(timezone.utc)
+                - timedelta(days=KNOWN_DELETED_SERIES_RECHECK_DAYS)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            rows = db.conn.execute(
+                "SELECT series_id FROM series "
+                "WHERE status IN ('deleted', 'suspended') "
+                "AND datetime(last_checked_at) >= datetime(?)",
+                (cutoff,),
+            ).fetchall()
+            deferred.update(int(row[0]) for row in rows)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            logger.warning("读取近期已确认删除的系列失败，本轮全部重查: %s", exc)
+        ids = db.get_series_ids_for_status_check()
+        return [series_id for series_id in ids if int(series_id) not in deferred]
+
+    def finalize_stats(db: Database, stats: dict[str, Any]) -> None:
+        if deferred:
+            stats["deleted_recheck_deferred"] = len(deferred)
+
+    def build_already_missing(db: Database) -> Callable[[Any], bool]:
+        # known-deleted 再次确认是一致结论，不能推进 30 连熔断（生产 2026-11 事故：
+        # 45 个已删系列聚集凑满 30 连，99% 完成度处把整轮打成 suspicious_missing_streak）。
+        known = db.get_known_missing_series_ids()
+        return lambda series_id: int(series_id) in known
+
     return _run_status_task(
         settings=settings,
         reporter=reporter,
         stop_requested=stop_requested,
         task_label="系列状态检查",
         total_label="系列",
-        list_ids=lambda db: db.get_series_ids_for_status_check(),
+        list_ids=list_ids,
         check_status=_check_series_status,
         upsert_status=lambda db, item_id, status: db.upsert_series_status(item_id, status),
         total_key="total_series",
         rebuild_catalog=True,
         claim_finalization=claim_finalization,
+        finalize_stats=finalize_stats,
+        build_already_missing=build_already_missing,
     )
 
 
@@ -667,6 +718,7 @@ def _run_user_status_like_task(
     progress_name: Callable[[dict[str, Any]], str],
     progress_id: Callable[[dict[str, Any]], Any],
     total_key: str,
+    build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
     get_api, on_auth_failed = _make_reauth_handler(settings, stop_requested, task_label)
     api = get_api()
@@ -681,6 +733,13 @@ def _run_user_status_like_task(
         items = list_items(db)
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(items)} 个{total_label}需要检查")
+        already_missing: Callable[[Any], bool] | None = None
+        if build_already_missing is not None:
+            # 快照失败不该拖垮整轮：退化成 None 即恢复旧的严格熔断行为
+            try:
+                already_missing = build_already_missing(db)
+            except Exception as exc:
+                logger.warning("%s已知封禁快照失败，熔断退回严格模式: %s", task_label, exc)
         return _process_status_items(
             settings=settings,
             reporter=reporter,
@@ -692,6 +751,7 @@ def _run_user_status_like_task(
             item_label=total_label,
             item_name=progress_name,
             total_key=total_key,
+            already_missing=already_missing,
             on_auth_failed=on_auth_failed,
         )
     finally:

@@ -58,6 +58,8 @@ class FakeConn:
     def __init__(self, users: list[tuple[int, str]]) -> None:
         self.users = users
         self.executed: list[tuple[str, tuple[object, ...]]] = []
+        # 已删/已封禁且「近期复查过」的条目：模拟 series_status 的 7 天降频查询
+        self.recently_rechecked: set[int] = set()
 
     def execute(self, query: str, params: tuple[object, ...] = ()):
         self.executed.append((query, params))
@@ -69,6 +71,10 @@ class FakeConn:
                 if user_id == target_id:
                     return SimpleNamespace(fetchone=lambda: (name,))
             return SimpleNamespace(fetchone=lambda: None)
+        if "SELECT series_id FROM series" in query and "status IN ('deleted', 'suspended')" in query:
+            return SimpleNamespace(
+                fetchall=lambda: [(sid,) for sid in sorted(self.recently_rechecked)]
+            )
         raise AssertionError(f"Unexpected query: {query}")
 
 
@@ -86,6 +92,8 @@ class FakeDatabase:
         self.user_status_upserts: list[tuple[int, str]] = []
         self.novel_ids = [11, 22]
         self.known_missing_novel_ids: set[int] = set()
+        self.known_missing_series_ids: set[int] = set()
+        self.known_suspended_user_ids: set[int] = set()
         self.novel_status_upserts: list[tuple[int, str]] = []
         self.status_batch_calls: list[int | None] = []
         self.pending_count_calls: list[str | None] = []
@@ -118,6 +126,12 @@ class FakeDatabase:
 
     def get_known_missing_novel_ids(self) -> set[int]:
         return set(self.known_missing_novel_ids)
+
+    def get_known_missing_series_ids(self) -> set[int]:
+        return set(self.known_missing_series_ids)
+
+    def get_known_suspended_user_ids(self) -> set[int]:
+        return set(self.known_suspended_user_ids)
 
     def get_all_novel_ids(self) -> list[int]:
         return list(self.novel_ids)
@@ -1245,3 +1259,96 @@ def test_user_backup_production_combo_page_cap(tmp_path, monkeypatch):
     assert counting_api.user_novels_calls == services.USER_BACKUP_MAX_PAGES
     assert result["truncated"] is True
     assert result["incomplete"] is True
+
+
+def test_series_status_known_deleted_block_no_false_missing_streak(settings, service_env, monkeypatch):
+    """生产事故回归（2026-11）：已知 deleted 系列连号复查不得触发 30 连熔断。
+
+    生产形态：45 个已删系列按 last_checked_at 聚集，每轮 99% 完成度处凑满
+    30 连把整轮打成 suspicious_missing_streak。豁免后这批应计 confirmed_missing。
+    """
+    # 45 个已知 deleted 系列 + 2 个正常系列，顺序模拟「已删块在队列尾部」
+    known_deleted = list(range(100, 145))
+    db = FakeDatabase(settings.storage.db_path)
+    db.known_missing_series_ids = set(known_deleted)
+    db.series_ids = [200, 201] + known_deleted
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+
+    status_map: dict[int, str] = {sid: "normal" for sid in (200, 201)}
+    status_map.update({sid: "deleted" for sid in known_deleted})
+
+    monkeypatch.setattr(services, "_check_series_status", lambda api, sid: status_map[sid])
+    monkeypatch.setattr(services, "_rebuild_rescue_catalog", lambda db, reporter: {})
+
+    result = services.run_series_status_task(settings)
+
+    assert result["stopped"] is False
+    assert "aborted_reason" not in result
+    assert result["status_counts"]["deleted"] == 45
+    # 45 个全部是「早已知删除的再次确认」，不推进 consecutive_missing
+    assert result.get("confirmed_missing") == 45
+    assert result["checked_count"] == 47
+
+
+def test_series_status_new_missing_still_triggers_streak_guard(settings, service_env, monkeypatch):
+    """豁免只对已知 deleted 生效：未知系列的连续删除仍是异常信号，30 连照常熔断。"""
+    db = FakeDatabase(settings.storage.db_path)
+    db.known_missing_series_ids = set()
+    db.series_ids = list(range(300, 340))  # 40 个全新「消失」的系列
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+
+    monkeypatch.setattr(
+        services, "_check_series_status", lambda api, sid: "deleted"
+    )
+    monkeypatch.setattr(services, "_rebuild_rescue_catalog", lambda db, reporter: {})
+
+    result = services.run_series_status_task(settings)
+
+    assert result["stopped"] is True
+    assert result["aborted_reason"] == "suspicious_missing_streak"
+    assert result["checked_count"] == 30  # 到 30 连即中止
+
+
+def test_series_status_recently_rechecked_deleted_deferred(settings, service_env, monkeypatch):
+    """7 天内复查过的已删系列不进本批（省请求），并计入 deleted_recheck_deferred。"""
+    db = FakeDatabase(settings.storage.db_path)
+    db.conn.recently_rechecked = {100, 101}
+    db.series_ids = [100, 101, 200]
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+
+    def fake_check(api, sid: int) -> str:
+        assert sid == 200, "已降频的系列不得发检查请求"
+        return "normal"
+
+    monkeypatch.setattr(services, "_check_series_status", fake_check)
+    monkeypatch.setattr(services, "_rebuild_rescue_catalog", lambda db, reporter: {})
+
+    result = services.run_series_status_task(settings)
+
+    assert result["checked_count"] == 1
+    assert result["status_counts"] == {"normal": 1}
+    assert result.get("deleted_recheck_deferred") == 2
+
+
+def test_user_status_known_suspended_confirmed_not_streak(settings, service_env, monkeypatch):
+    """已知 suspended 用户再次确认不计入 30 连（MISSING_STATUSES 含 suspended）。"""
+    db = FakeDatabase(settings.storage.db_path)
+    db.known_suspended_user_ids = {101}
+
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+    monkeypatch.setattr(
+        services,
+        "_check_pixiv_user_status",
+        lambda api, uid: "suspended",
+    )
+
+    # 单页 101/202 两人：101 已知 suspended，202 不在名单
+    db.user_pages = [
+        {"items": [{"user_id": 101, "name": "Alice"}, {"user_id": 202, "name": "Bob"}], "total_pages": 1},
+    ]
+
+    result = services.run_user_status_task(settings)
+    assert result["stopped"] is False
+    assert result["status_counts"]["suspended"] == 2
+    # 只有 202 是新确认；101 是已知封禁的再次确认
+    assert result.get("confirmed_missing") == 1
