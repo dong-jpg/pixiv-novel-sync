@@ -145,7 +145,6 @@ def web(tmp_path, monkeypatch):
     monkeypatch.setenv('DASHBOARD_TOKEN', 'progress-test-password')
     monkeypatch.setenv('PIXIV_FLASK_SECRET', 'progress-test-flask-secret')
     monkeypatch.setenv('PIXIV_REFRESH_TOKEN', 'progress-test-refresh')
-    monkeypatch.delenv('PIXIV_REMOTE_ENABLED', raising=False)
     env = tmp_path / 'empty.env'
     env.write_text('')
     db = Database(Path(os.environ['PIXIV_DB_PATH']))
