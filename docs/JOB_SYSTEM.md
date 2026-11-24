@@ -166,7 +166,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 **让位**(`_run_and_watch_for_preemption`):可让位任务不再同步阻塞调度线程,而是丢到 `auto-sync-<task>` 线程跑,主线程每 `SCHEDULER_PREEMPT_POLL_SECONDS = 5s` 轮询"有没有更高优先级的任务到点"。命中且护栏允许时,`_request_yield` 先往 job 日志里写一条 warning 说明原因(`_run_shared_web_job` 在任务终结后才把内存日志刷进 `task_logs`,所以这条说明会跟着落库,运维不会看到一条无缘无故的"已取消"),再调 `cancel_task`。被让位的任务走的是既有协作式取消路径,`task_logs` 记 `cancelled`。
 
-`preemptible=True` 只给「按水位轮转、下轮能接着跑」的任务:`following_novels`(`user_last_synced`)、三个 status 检查(`last_checked_at`)、`user_backup`(`offset`)、`preference_analyze`(累加器)。`subscribed_series` 每轮从 watchlist 头部重走一遍、不是水位式续跑,打断等于白跑;`bookmarks` / `following_list` / `pending_deletion_detection` 本身只跑几十秒到几分钟;`recommendation_run` 跑一半的结果没有意义。
+`preemptible=True` 只给「按水位轮转、下轮能接着跑」的任务:`following_novels`(`user_last_synced`)、三个 status 检查(`last_checked_at`)、`user_backup`(`offset`)、`preference_analyze`(累加器)。`subscribed_series` 自 2026-11 起也按 `series.last_checked_at` 轮转(熔断后下轮从断点续跑,详见 sync_engine 的 `_order_subscribed_series_for_rotation`),但注册表里暂保持 `preemptible=False`:追更单轮时长仍达数十分钟,让位收益要结合调度实测再评估;`bookmarks` / `following_list` / `pending_deletion_detection` 本身只跑几十秒到几分钟;`recommendation_run` 跑一半的结果没有意义。
 
 **护栏**(`_may_preempt`),防止 P1 频繁到点把长任务永久饿死:
 
@@ -261,7 +261,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 2. 长任务(`following_novels`、`novel_status`)避开收藏时刻 ±30 分钟,减少无谓让位。
 3. 状态检查轮转覆盖与用户取消收藏/追更检测是不同任务，调整频率时分别核对覆盖周期。
 4. `following_novels` 有单作者配额与轮转水位，应看最久未覆盖作者而不是单轮剩余数判断进度。
-5. `subscribed_series` 每轮从 watchlist 头部重走，不是水位续跑，不应为提高抢占频率把它设为可让位。
+5. `subscribed_series` 按 `series.last_checked_at` 轮转，熔断后下轮从断点续跑；注册表里仍为 `preemptible=False`，让位前先评估追更单轮时长的中断成本。
 
 设置 API 拒绝非法时区和非空非法 cron；直接编辑 YAML 绕过该校验时，调度计算失败会回落到 interval。改完必须逐条验算下次时刻：
 
