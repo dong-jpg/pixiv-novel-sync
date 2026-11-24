@@ -1,0 +1,14 @@
+# 构建只需要源码和包元数据，避免把书库、凭据、备份或本地探针送入镜像。
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!README.md
+!LICENSE
+!src/
+!src/pixiv_novel_sync/
+!src/pixiv_novel_sync/**
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/

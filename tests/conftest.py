@@ -41,8 +41,7 @@ FlaskClient.open = _open_with_local_csrf
 
 @pytest.fixture(autouse=True)
 def isolate_runtime_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # create_app also registers the opt-in remote service. Isolate every test,
-    # not just tests/remote, from host credentials and dotenv left by other tests.
+    # 清理旧部署或迁移兼容测试留下的环境变量。
     for name in tuple(os.environ):
         if name.startswith("PIXIV_REMOTE_") or name == "INSTABOX_API_KEY":
             monkeypatch.delenv(name, raising=False)

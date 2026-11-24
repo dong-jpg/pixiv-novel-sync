@@ -162,6 +162,16 @@ def test_run_bookmark_sync_rebuilds_catalog_once_after_success(settings, quick_s
     assert quick_sync_env["db"].closed is True
 
 
+def test_bookmark_sync_uses_local_api_with_retired_remote_flags(settings, quick_sync_env, monkeypatch):
+    monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "1")
+    settings.sync.pixiv_execution = "remote"
+    result = quick_sync.run_bookmark_sync(settings)
+    assert result["novels"] == 1
+    assert quick_sync_env["service"].api is quick_sync_env["auth"].api
+    assert quick_sync_env["db"].rebuild_catalog_calls == 1
+    assert quick_sync_env["db"].closed is True
+
+
 def test_run_bookmark_sync_keeps_stats_when_catalog_rebuild_fails(
     settings, quick_sync_env, monkeypatch, caplog
 ):

@@ -45,6 +45,20 @@ def make_config(provider_id: int = 1, api_key: str = "key") -> AIProviderConfig:
     )
 
 
+def test_retired_remote_flags_do_not_wrap_or_replace_provider(monkeypatch, tmp_path):
+    provider = FakeProvider(make_config())
+    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda config: provider)
+    service = AIWritingService(tmp_path / "local.db")
+    try:
+        first = service._get_provider(make_config())
+        monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "1")
+        monkeypatch.setenv("PIXIV_REMOTE_AI_EXECUTION", "remote")
+        assert service._get_provider(make_config()) is first is provider
+        assert not provider.closed
+    finally:
+        service.close()
+
+
 def test_get_provider_reuses_cached_provider(monkeypatch, tmp_path: Path) -> None:
     created: list[FakeProvider] = []
 

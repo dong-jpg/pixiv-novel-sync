@@ -7,6 +7,50 @@ import pytest
 from pixiv_novel_sync.storage_files import FileStorage
 
 
+@pytest.mark.parametrize("existing", [False, True], ids=["new-archive", "unchanged-archive"])
+def test_local_cancellation_before_commit_prevents_database_publication(tmp_path, monkeypatch, existing):
+    from types import SimpleNamespace
+
+    from pixiv_novel_sync.settings import load_settings
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
+    from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
+
+    env = tmp_path / ".env"
+    env.write_text("", encoding="utf-8")
+    settings = load_settings(tmp_path / "missing.yaml", env)
+    metadata = {"id": 42, "title": "local fixture", "user": {"id": 7, "name": "author"}, "tags": []}
+    api = SimpleNamespace(novel_detail=lambda novel_id: {"novel": metadata},
+                          webview_novel=lambda novel_id: {"id": novel_id, "text": "fixture body"})
+    db = prepare_schema(Database(settings.storage.db_path))
+    storage = FileStorage(settings)
+    cancelled = False
+    service = BookmarkNovelSyncService(api, db, storage, settings, stop_requested=lambda: cancelled)
+    arguments = dict(novel_id=42, novel=metadata, restrict="public", download_assets=False,
+                     write_markdown=True, write_raw_text=True, source_type="bookmark_public")
+    try:
+        if existing:
+            service._sync_novel_inner(**arguments)
+        original = storage.resolve_archive_dir if existing else storage.write_text
+
+        def cancel_after_io(*args, **kwargs):
+            nonlocal cancelled
+            result = original(*args, **kwargs)
+            cancelled = True
+            return result
+
+        monkeypatch.setattr(storage, "resolve_archive_dir" if existing else "write_text", cancel_after_io)
+
+        def forbidden_touch(*args):
+            pytest.fail("cancelled result must not touch the existing novel")
+
+        monkeypatch.setattr(db, "touch_novel", forbidden_touch)
+        with pytest.raises(InterruptedError, match="Task stopped by user"):
+            service._sync_novel_inner(**arguments)
+        assert db.conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0] == int(existing)
+    finally:
+        db.close()
+
+
 def test_sync_engine_does_not_swallow_interrupted_error() -> None:
     """宽泛的 except Exception 之前，同一 try 必须先显式重抛 InterruptedError。
 

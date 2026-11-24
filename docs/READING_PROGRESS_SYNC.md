@@ -1,6 +1,6 @@
 # 跨设备阅读进度
 
-阅读位置由 VPS 保存，浏览器保留未确认的离线修改。此功能不依赖云电脑在线，不向远程 worker 发送阅读进度。用户可以回退、重读或重置，冲突时不能简单采用较大的百分比。
+阅读位置由部署主机（包括 NAS）保存，浏览器保留未确认的离线修改。用户可以回退、重读或重置，冲突时不能简单采用较大的百分比。
 
 当前代码支持版本化阅读进度、离线修改和冲突选择。最新代码验证与生产边界见 [项目现状](STATUS.md)；浏览器模拟不代替真实手机体验。
 
@@ -39,6 +39,6 @@ DELETE 接受 `base_version` 和 `mutation_id`，写入 `progress=0/status=unrea
 
 旧 `reading_progress` 行保留内容，新增 `version=1` 和 `is_reset=0`。新 `reading_progress_mutations` 表按小说保存最近 32 份请求摘要与原应用版本，与进度写入在同一短事务中提交。旧回执被淘汰后，旧版本请求仍被 CAS 拒绝。删除小说时回执随进度清理；普通阅读页重置保留版本标记。
 
-迁移只增加字段和表，不重写小说正文、归档或远程控制库。升级需先在私有副本核对旧进度与重复迁移结果，再启用新页面。回退到不识别版本的旧后端时应暂时阻断进度写入，保留 GET 与浏览器离线队列，不能让旧接口忽略新版前置条件。
+迁移只增加字段和表，不重写小说正文或归档。升级需先在私有副本核对旧进度与重复迁移结果，再启用新页面。回退到不识别版本的旧后端时应暂时阻断进度写入，保留 GET 与浏览器离线队列，不能让旧接口忽略新版前置条件。
 
 实现与验证入口：`storage/reading_progress.py`、`web/reading_progress.py`、`static/js/reading_progress_sync.js`；并发/重放/重置/认证测试见 `tests/test_reading_progress_sync.py`，浏览器与跨标签页用例见对应 Node 测试和 `scripts/verify_reading_progress_ui.py`。最新上线与验证状态见 [STATUS](STATUS.md)。

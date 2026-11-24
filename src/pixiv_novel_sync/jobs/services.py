@@ -726,8 +726,7 @@ def _login(settings: Any) -> Any:
     # 构造时会再打一次但不会叠加；这里不带取消回调，调用方随后重绑
     # （service 构造或 apply_pixiv_retry_patch(api, stop_requested=...)）。
     apply_pixiv_retry_patch(api)
-    from ..remote.execution import bind_api
-    return bind_api(api)
+    return api
 
 
 def _persist_self_profile(settings: Any, auth_result: Any) -> None:

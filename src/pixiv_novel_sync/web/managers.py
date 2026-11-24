@@ -165,7 +165,6 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
             "max_pages_per_run",
             "bookmark_max_pages_per_run",
             "archive_rescan_days",
-            "pixiv_execution",
             "following_max_novels_per_author",
             "series_max_pages_per_run",
             "series_sync_limit",
@@ -1062,8 +1061,8 @@ class SettingsManager:
         sync_data["bookmark_max_pages_per_run"] = _normalize_optional_int(
             payload.get("bookmark_max_pages_per_run", sync_data.get("bookmark_max_pages_per_run"))
         )
-        from ..settings import _execution_location
-        sync_data['pixiv_execution'] = _execution_location(payload.get('pixiv_execution',sync_data.get('pixiv_execution','local')))
+        # 旧配置可直接迁移到本地运行；保存时移除已退役的执行位置选项。
+        sync_data.pop("pixiv_execution", None)
         days = _normalize_int(payload.get('archive_rescan_days',sync_data.get('archive_rescan_days',7)),7)
         if not 0 <= days <= 365:
             raise ValueError('回扫间隔必须为 0–365 天')

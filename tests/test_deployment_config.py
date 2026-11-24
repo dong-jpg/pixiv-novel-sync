@@ -34,6 +34,16 @@ def test_update_script_reports_public_https_url() -> None:
     assert 'echo "访问地址: ${PUBLIC_URL}"' in script
 
 
+def test_deploy_and_update_do_not_install_retired_worker_transport() -> None:
+    template = (ROOT / "config/nginx/pixiv-novel-sync.conf").read_text(encoding="utf-8")
+    assert "pixiv_remote_sessions" not in template
+    assert "remote-worker-location" not in template
+    for name in ("deploy.sh", "update.sh"):
+        script = (ROOT / name).read_text(encoding="utf-8")
+        assert "remote-worker-location" not in script
+        assert script.index("\nenvsubst ") < script.index("\nsudo nginx -t")
+
+
 def test_preflight_body_limit_is_route_specific() -> None:
     import re
 

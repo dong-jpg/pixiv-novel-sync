@@ -65,7 +65,6 @@ def test_authenticated_pages_boot_without_cdn(bootstrap_browser, width, tmp_path
 
     monkeypatch.setenv("DASHBOARD_TOKEN", "fixture-bootstrap-password")
     monkeypatch.setenv("PIXIV_REFRESH_TOKEN", "fixture-token")
-    monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "0")
     env = tmp_path / "empty.env"
     env.write_text("", encoding="utf-8")
     db = Database(tmp_path / "state/test.db")
@@ -139,7 +138,6 @@ def test_guest_home_and_password_form_load_without_private_requests(
     from pixiv_novel_sync.webapp import create_app
 
     monkeypatch.setenv("DASHBOARD_TOKEN", "fixture-bootstrap-password")
-    monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "0")
     env = tmp_path / "empty.env"
     env.write_text("", encoding="utf-8")
     app = create_app(config_path=str(tmp_path / "missing.yaml"), env_path=str(env), start_scheduler=False)
@@ -189,7 +187,6 @@ def test_boot_failure_explains_blocked_scripts(bootstrap_browser, failure, tmp_p
     from pixiv_novel_sync.webapp import create_app
 
     monkeypatch.setenv("DASHBOARD_TOKEN", "fixture-bootstrap-password")
-    monkeypatch.setenv("PIXIV_REMOTE_ENABLED", "0")
     env = tmp_path / "empty.env"
     env.write_text("", encoding="utf-8")
     app = create_app(config_path=str(tmp_path / "missing.yaml"), env_path=str(env), start_scheduler=False)
@@ -218,7 +215,7 @@ def test_boot_failure_explains_blocked_scripts(bootstrap_browser, failure, tmp_p
     context.route("**/*", dispatch)
     page = context.new_page()
     try:
-        page.goto(origin + "/dashboard/remote", wait_until="networkidle")
+        page.goto(origin + "/dashboard/settings/sync", wait_until="networkidle")
         page.wait_for_function("expected => document.getElementById('library-bootstrap-status').dataset.failure === expected", arg=failure)
         assert page.locator(".library-bootstrap").is_visible()
         assert page.get_by_role("link", name="重新加载本页").is_visible()

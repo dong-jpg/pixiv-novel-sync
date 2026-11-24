@@ -6,15 +6,14 @@
 
 ```python
 dto = fetch_novel(api, novel_id, fallback_novel=novel, stop_requested=stop_requested)
-payload = serialize_novel(dto)
-received = deserialize_novel(payload, expected_novel_id=novel_id)
+validate_novel(dto, expected_novel_id=novel_id)
 ```
 
 `fetch_novel()` 仅调用注入客户端的 `novel_detail` 与 `webview_novel`，不读取凭据/配置，不打开数据库或写归档。每个网络边界都检查取消；重试、认证及调用预算仍归原调度者和客户端负责。
 
-传输对象为 `protocol=1/kind=pixiv.novel.fetch.v1`，包含目标小说 ID、封闭的规范化字段、仅供归档审阅的有界原始元数据、固定资产清单以及正文/元数据/整包摘要。正文以 base64 传输，原始 UTF-8 正文上限 16 MiB，全部元数据和资产清单合计上限 256 KiB，整包上限小于 32 MiB。大小按字节检查，不截断。
+本地 `FetchedNovel` 对象包含目标小说 ID、封闭的规范化字段、有界原始元数据、固定资产清单以及正文/元数据摘要。UTF-8 正文上限 16 MiB，全部元数据和资产清单合计上限 256 KiB；大小按字节检查，不截断。已移除远程传输的 base64 封装和协议编解码。
 
-解码拒绝额外字段、重复 JSON 键、容器洪泛、过深嵌套、跨小说 ID、伪摘要和不受支持的资产 URL。摘要证明传输一致性，不证明上游身份；调用方仍必须验证任务授权和期望的小说 ID。
+结果校验拒绝额外规范化字段、重复 JSON 键、容器洪泛、过深嵌套、跨小说 ID、伪摘要和不受支持的资产 URL。摘要服务于归档一致性及去重，不能代替期望小说 ID 的核对。
 
 ## 本地行为保持
 
@@ -22,10 +21,8 @@ received = deserialize_novel(payload, expected_novel_id=novel_id)
 
 错误页和跨小说响应在写库前失败，取消继续传播为 `InterruptedError`。明确不可获取的内容保留对应分类；未知网络错误不冒充已删除或成功。错误对象仅包含固定错误码，不带正文、令牌或完整上游响应。
 
-## 远程接入
+## 执行位置
 
-`pixiv.novel.v1` 通过固定任务、租约和两次受限上游读取，在 worker 构造同一 DTO，再由 VPS 校验并进入原 `_sync_novel_inner()` 归档流程。重复内容沿用 hash 幂等，不覆盖私密来源。`pixiv.api.v1` 只允许收藏/关注/作者/系列/状态/搜索和追更列表的固定参数，拒绝任意 URL、代码和路径。账号租约与请求间隔共用，未知执行不自动重放。
+抓取、附件下载及归档均由部署主机直接执行，保留原客户端代理、重试、限速和取消机制。远程分发、上游转发及云出口服务已移除；NAS 的网络配置见 [Docker 部署](DOCKER.md)。
 
-Pixiv 凭据留在 VPS，默认公网请求也从 VPS 发出。可选 HTTPS CONNECT 服务可使远程请求经过可信云出口，凭据仍在上游端到端 TLS 内，worker 不取得上游通用凭据；未配置时保持原模式。附件与登录仍由现有 VPS 路径处理。完整状态、出口配置与外部验收见 [远程执行](REMOTE_EXECUTION.md)。
-
-测试见 `tests/test_pixiv_fetch.py` 和已有同步、增量、归档与备份回归。最新实施状态见 [STATUS](STATUS.md)，远程接线依赖与验收标准见 [实施计划 R2–R4](IMPLEMENTATION_PLAN.md)。
+测试见 `tests/test_pixiv_fetch.py` 和已有同步、增量、归档与备份回归。最新实施状态见 [STATUS](STATUS.md)。

@@ -50,7 +50,6 @@ class SyncSettings:
     # max_pages_per_run=2 时每轮只看最新约 60 条收藏就标 truncated，历史收藏永远补不齐。
     bookmark_max_pages_per_run: int | None = None
     archive_rescan_days: int = 7
-    pixiv_execution: str = 'local'
     # 单个关注作者在一轮 following_novels 里最多同步多少篇。None = 不限（旧行为）。
     # 必须有这道闸门：max_items_per_run 只在切换作者之前检查，单个作者内部完全没有上限，
     # 于是第一个高产作者就把整轮预算吃光——生产实测 256 个关注作者每轮只覆盖 1 个，
@@ -224,7 +223,6 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             series_sync_limit=max(_coerce_int(sync_raw.get("series_sync_limit"), 0), 0),
             bookmark_max_pages_per_run=_coerce_optional_int(sync_raw.get("bookmark_max_pages_per_run")),
             archive_rescan_days=max(0, _coerce_int(sync_raw.get("archive_rescan_days"), 7)),
-            pixiv_execution=_execution_location(sync_raw.get('pixiv_execution','local')),
             following_max_novels_per_author=_coerce_optional_int(sync_raw.get("following_max_novels_per_author")),
             series_max_pages_per_run=_coerce_optional_int(sync_raw.get("series_max_pages_per_run")),
             user_backup_max_pages_per_run=_coerce_optional_int(sync_raw.get("user_backup_max_pages_per_run")),
@@ -358,12 +356,6 @@ def _coerce_float(value: Any, default: float) -> float:
         return result if math.isfinite(result) else float(default)
     except (ValueError, TypeError, OverflowError):
         return float(default)
-
-
-def _execution_location(value):
-    if value not in ('local','remote'):
-        raise ValueError('pixiv_execution must be local or remote')
-    return value
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:

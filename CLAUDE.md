@@ -4,7 +4,7 @@ Current capabilities, test baseline and deployment boundaries: [docs/STATUS.md](
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **分支分工**：长期仅维护 `main` 与 `ai-writing`。main 包含书库全部功能、共享 AI 配置与关键词清洗、作品全文分析、个人偏好学习、全库自动分析和远程执行试点；ai-writing 合并 main 后额外提供创作项目 / 章节 / 向导 / 蒸馏 / 检索 / 成人润色。共享修复先进入 main，再合并到 ai-writing，禁止用旧写作分支整树覆盖 main。迁移保留存量写作表及通用 owner/idempotency 列。11-12 偏好学习扩展已覆盖旧的个人画像 OUT 决策，详见统一需求 §12.6。
+> **分支分工**：长期仅维护 `main` 与 `ai-writing`。main 包含书库全部功能、共享 AI 配置与关键词清洗、作品全文分析、个人偏好学习、全库自动分析和 NAS / Docker 本地部署；ai-writing 合并 main 后额外提供创作项目 / 章节 / 向导 / 蒸馏 / 检索 / 成人润色。共享修复先进入 main，再合并到 ai-writing，禁止用旧写作分支整树覆盖 main。迁移保留存量写作表及通用 owner/idempotency 列。11-12 偏好学习扩展已覆盖旧的个人画像 OUT 决策，详见统一需求 §12.6。
 
 ## Commands
 
@@ -97,7 +97,7 @@ Rotation slots — not time — are the scarce resource in `sync_following_novel
 
 ### Storage
 
-One `Database` class (`storage_db.py`) composes domain mixins on top of `DatabaseConnection`: library, synchronization, recommendations, rescue, reading progress, authentication, shared AI, work analysis, preference learning and library analysis. The business SQLite file (`data/state/pixiv_sync.db`) includes the `novel_fts` FTS5 index; remote control has its own database. Tables created by `ai-writing` — drafts / documents / profiles / prompt templates / adult polish — survive in existing databases; `init_schema()` on main never drops them.
+One `Database` class (`storage_db.py`) composes domain mixins on top of `DatabaseConnection`: library, synchronization, recommendations, rescue, reading progress, authentication, shared AI, work analysis, preference learning and library analysis. The business SQLite file (`data/state/pixiv_sync.db`) includes the `novel_fts` FTS5 index. Tables created by `ai-writing` — drafts / documents / profiles / prompt templates / adult polish — survive in existing databases; `init_schema()` on main never drops them.
 
 - **Connections are thread-local** (`storage/connection.py`): WAL, `busy_timeout=30000`, `foreign_keys=ON` per connection. Writes go through `db.transaction()` (`BEGIN IMMEDIATE`, safely nestable); grouped reads use `db.read_transaction()`. `close()` bumps a generation counter so other threads rebuild rather than reuse a closed handle. Instances are short-lived: construct → `init_schema()` → work → `close()` in a `finally`.
 - **Migrations are idempotent DDL re-run on every `init_schema()`** — no version table, no migration files. Add a column by extending the relevant `_migrate_*` method in `storage/schema.py` with a `PRAGMA table_info` guard plus `ALTER TABLE ... ADD COLUMN`. `init_schema()` deliberately does *not* clean stale `running` task logs (concurrent web requests would kill live jobs); `create_app` calls `fail_stale_task_logs()` once at startup instead.
@@ -173,7 +173,7 @@ The AI writing pages (`/dashboard/ai` project list and its chapters/notes subpag
 
 Writing jobs with an eligible v1 snapshot and an untried candidate expose `can_continue=True`; generic metadata_only analysis remains ineligible. The durable dashboard gate supplies verified authentication time to adult owner checks; a signed cookie alone is insufficient. All writing template scripts require the shared CSP nonce.
 
-Generation flows through `ai/services/core.py` (`_start_route_job` → `_stream_route` → `_finish_route_job`). main disables generic job continue; work analysis resumes through its owned checkpoints without resetting cumulative budgets. `remote/` has a separate schema-v2 control database and session/lease protocol for diagnostic, EPUB, fixed Pixiv calls, AI text and check-in tasks. Credentials and durable upstream receipts stay on the VPS; optional HTTPS CONNECT egress changes the public exit without decrypting upstream TLS. Deployment remains a separate acceptance step. See `docs/MODEL_ROUTING_GUIDE.md` and `docs/REMOTE_EXECUTION.md`.
+Generation flows through `ai/services/core.py` (`_start_route_job` → `_stream_route` → `_finish_route_job`). main disables generic job continue; work analysis resumes through its owned checkpoints without resetting cumulative budgets. All jobs run on the deployment host, and AI calls use the configured Provider directly. Remote controller/worker/egress/check-in code and routes have been removed; legacy execution flags are ignored. See `docs/MODEL_ROUTING_GUIDE.md` and `docs/DOCKER.md`.
 
 ## Conventions
 
@@ -182,8 +182,10 @@ Generation flows through `ai/services/core.py` (`_start_route_job` → `_stream_
 - Prefer heavy, deferred imports inside functions (as `cli.py` and `jobs/tasks.py` do) to keep CLI startup fast.
 - Some tests assert on non-Python files, so behaviour changes can require doc/asset edits to stay green: `test_ai_model_docs.py` (README + `docs/`), `test_frontend_library_os.py` (templates + style guide), `test_rescue_userscript.py` (userscript), `test_deployment_contract.py` (`deploy/systemd/*` vs `scripts/install_server.sh`), `test_recommendation_scheduling.py` (every scheduler task has a web label), `test_sync_engine_incremental.py` (greps `sync_engine.py` source for raw sleeps), `test_main_readme_branding.py` (README sections, wording and local links), `test_rescue_userscript_install.py` (install links in README + `docs/RESCUE_USER_GUIDE.md`), `test_tailwind_static_css.py` (template classes vs the committed `tailwind.css`).
 - Source-of-truth order when docs disagree (from `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.2): code and tests > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md` / `docs/library-os-style-guide.md` > this file. `docs/INDEX.md` maps the active guides, designs and plan.
-- `docs/AI_ROUTING_DESIGN.md`, `docs/WORK_ANALYSIS_DESIGN.md` and `docs/REMOTE_EXECUTION_DESIGN.md` preserve current design constraints. The excluded items remain **OUT** in unified requirements §1.3; do not reintroduce `refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` or `explanation_source`. Update the single implementation plan and STATUS in place. Writing/adult tasks remain on ai-writing. Keep generated verification output outside tracked documentation.
+- `docs/AI_ROUTING_DESIGN.md` and `docs/WORK_ANALYSIS_DESIGN.md` preserve current design constraints; `docs/DOCKER.md` owns NAS deployment and migration. The excluded items remain **OUT** in unified requirements §1.3; do not reintroduce `refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` or `explanation_source`. Update the single implementation plan and STATUS in place. Writing/adult tasks remain on ai-writing. Keep generated verification output outside tracked documentation.
 
 ## Deploy
 
-`./deploy.sh` is the single supported web deploy entry (venv + Nginx + systemd, service `pixiv-novel-sync` on 127.0.0.1 behind Nginx); `./update.sh` is the in-place update path on an already-deployed host (pull, reinstall, refresh Nginx/systemd, restart). `scripts/install_server.sh` is legacy timer-based sync only. `DASHBOARD_TOKEN` must be set for any non-localhost exposure; tokenless loopback mode still enforces Host and CSRF checks.
+NAS deployment uses `Dockerfile` and `compose.yaml`: one Waitress process and scheduler, with writable directory mounts for `/app/config` and `/app/data`. App credentials are loaded from `/app/config/.env`, not Compose `env_file`, so saved tokens survive recreation without stale environment overrides. Default UID/GID is 1000; `INSTALL_BROWSER=true` adds Chromium for optional automatic login. See `docs/DOCKER.md` for migration and network details.
+
+`./deploy.sh` remains the native Linux web deploy entry (venv + Nginx + systemd); `./update.sh` updates that installation. Do not run either for Docker deployments. `scripts/install_server.sh` is legacy timer-based sync only. `DASHBOARD_TOKEN` must be set for non-localhost access; tokenless loopback mode still enforces Host and CSRF checks.

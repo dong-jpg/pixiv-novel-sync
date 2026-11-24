@@ -308,12 +308,6 @@ Used by: 小说阅读页阅读进度恢复。每次打开都核对服务端版�
 
 重置请求必须携带 `base_version` 和 `mutation_id`，在同一事务写入版本递增的 `progress=0/status=unread/is_reset=true` 标记，防止旧设备恢复旧位置。成功及冲突响应与 POST 相同。失败保留当前位置及离线修改。完整重试、冲突和回退语义见[阅读进度契约](READING_PROGRESS_SYNC.md)。
 
-### 远程执行试点 API
-
-用户入口为 `POST/GET /api/dashboard/remote/runs`、`GET /api/dashboard/remote/runs/<run_id>`、`POST .../<run_id>/cancel`、`GET .../<run_id>/download`、`GET /api/dashboard/remote/machine` 与 `POST .../machine/hold`。全部沿用 Dashboard 登录；写操作校验 CSRF。提交要求 `Idempotency-Key`，只允许 `diagnostic.v1` 或带 novel_id 的 `epub.single.v1`。状态与下载不隐式唤醒实例；原同步 EPUB 接口保持原响应。
-
-`/api/remote-worker/v1/*` 使用独立 Bearer 凭据，拒绝 Dashboard Cookie、Origin 和 query token；worker 凭据不能访问用户 API。bootstrap 仅注册会话，领取、输入、心跳、上传和发布按持久 attempt、epoch、fence 与输入摘要核验。用户与 worker 响应均禁止缓存，详情见 [远程执行手册](REMOTE_EXECUTION.md)及 [协议设计](REMOTE_EXECUTION_DESIGN.md)。
-
 ### POST /api/dashboard/novels/export-epub
 
 导出 EPUB。Body：

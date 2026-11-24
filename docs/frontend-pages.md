@@ -45,7 +45,6 @@ Vue 3.4.38 与 Tailwind 从同站点安装包读取，内容版本与 SRI 固定
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 任务日志 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/remote` | `src/pixiv_novel_sync/templates/dashboard_remote.html` | 显式诊断/单本 EPUB、任务状态、结果下载与人工保留 | 复用 Library OS；默认关闭时显示说明 |
 | `/dashboard/settings/sync` | `src/pixiv_novel_sync/templates/dashboard_settings_sync.html` | 同步开关、限速分组、调度表与手动触发 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/models` | `src/pixiv_novel_sync/templates/dashboard_settings_models.html` | Provider、模型目录、模型池 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
@@ -66,6 +65,10 @@ Vue 3.4.38 与 Tailwind 从同站点安装包读取，内容版本与 SRI 固定
 - 引用仓库里预生成的 Tailwind 样式 `/static/css/tailwind.css?v=<内容哈希>`（放在 `<head>` 最后；改模板类名后运行 `python scripts/build_tailwind_css.py` 重生成）。
 - 在 `<head>` 预加载随包提供的 Vue 3.4.38，正文末尾执行。预加载和执行使用同一个内容版本 URL 与 SRI 校验值，首屏不等待第三方 CDN。
 - 页面还未挂载时，保留可见的重新加载入口；若本地脚本下载或完整性验证失败、脚本执行被 CSP 拦截、初始化抛错或超过 15 秒，显示对应提示。遇到 Firefox 白屏，先看网络面板中的主文档、登录跳转、`/static/vendor/vue-3.4.38.global.prod.js` 和控制台首条错误。不要关闭浏览器的证书或内容安全校验。
+
+手机 Firefox 偶发打不开时，先在新建的隐私标签页分别打开 `/` 与 `/api/auth/login`。当前访客首页和密码表单均使用内联样式、不依赖 Vue；已登录会话的首页会进入控制台，不能拿它代替匿名入口验证。如果两个匿名入口也打不开，优先记录浏览器错误码、失败时刻和所用网络，并核对 DNS、TLS、Cloudflare 与源站日志；只在登录后的页面失败时，再查看同源 CSS/JS、CSP/SRI、会话跳转及页面启动错误。切换 Wi-Fi/移动网络或新配置文件的对照只用于缩小范围，不能单凭恢复一次认定根因。桌面 Firefox 的窄屏测试不等于 Android GeckoView 真机验收。
+
+`error_net_timeout` 属于请求超时，应先核对同一设备上两浏览器使用的代理、DNS 和网络是否一致。分开测试 IPv4/IPv6、直连与已有代理，并记录连接、TLS、首字节耗时；直连超时但代理成功只能定位到访问路径差异，不能直接推断是 IPv6 或渲染引擎缺陷。需要 VPS/Nginx/Cloudflare 对应时刻日志确认请求是否到达源站。
 - 定义 Library OS 全局 CSS tokens。
 - 提供 `library-shell`、`library-sidebar`、`library-main`。
 - 保留 `window.initVueApp(setupFunc)`。

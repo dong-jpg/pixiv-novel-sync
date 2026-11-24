@@ -60,6 +60,14 @@ def test_missing_key_is_not_hidden_as_a_capacity_problem(configured_db):
     assert caught.value.code == "configuration_unavailable"
 
 
+@pytest.mark.parametrize("legacy_value", ["remote", "invalid"])
+def test_retired_execution_flag_does_not_change_local_configuration(configured_db, monkeypatch, legacy_value):
+    db, provider, agent = configured_db
+    before = work_configuration_identity(db.conn, agent, 100)
+    monkeypatch.setenv("PIXIV_REMOTE_AI_EXECUTION", legacy_value)
+    assert work_configuration_identity(db.conn, agent, 100) == before
+
+
 def test_returned_scope_mutation_cannot_change_preflight_after_database_close(configured_db):
     db, provider, agent = configured_db
     configuration, prompt, preflight = snapshot_work_configuration(db.conn, agent, 100)
