@@ -633,6 +633,60 @@ class NovelsMixin:
             )
         self._commit_if_needed()
 
+    def record_novel_fetch_failure(self, novel_id: int, cooldown_days: int, fail_streak: int = 3) -> None:
+        """记一次抓取失败；连败达到阈值进入冷却窗口。
+
+        失败退避的写入面：``fetch_fail_count`` 累加，满 ``fail_streak`` 次把
+        ``fetch_fail_until`` 设为 now + cooldown_days。content_unavailable
+        （真删/私密）由调用方单独计数，不走这里——那是终局结论，由现有语义跳过。
+        """
+        self.conn.execute(
+            """
+            UPDATE novels
+            SET fetch_fail_count = COALESCE(fetch_fail_count, 0) + 1
+            WHERE novel_id = ?
+            """,
+            (novel_id,),
+        )
+        row = self.conn.execute(
+            "SELECT fetch_fail_count FROM novels WHERE novel_id = ?", (novel_id,)
+        ).fetchone()
+        count = int(row[0]) if row else 1
+        if count >= int(fail_streak):
+            self.conn.execute(
+                """
+                UPDATE novels
+                SET fetch_fail_until = datetime('now', ?)
+                WHERE novel_id = ?
+                """,
+                (f"+{int(cooldown_days)} days", novel_id),
+            )
+        self._commit_if_needed()
+
+    def clear_novel_fetch_failures(self, novel_id: int) -> None:
+        """同步成功后清零失败计数并解除冷却。"""
+        self.conn.execute(
+            """
+            UPDATE novels
+            SET fetch_fail_count = 0, fetch_fail_until = NULL
+            WHERE novel_id = ? AND (COALESCE(fetch_fail_count, 0) != 0 OR fetch_fail_until IS NOT NULL)
+            """,
+            (novel_id,),
+        )
+        self._commit_if_needed()
+
+    def novel_in_fetch_cooldown(self, novel_id: int) -> bool:
+        """该作品是否处于抓取失败冷却窗口内（调用方本轮应跳过重试）。"""
+        row = self.conn.execute(
+            "SELECT fetch_fail_until FROM novels WHERE novel_id = ?",
+            (novel_id,),
+        ).fetchone()
+        if not row or not row[0]:
+            return False
+        until = str(row[0])
+        current = self.conn.execute("SELECT datetime('now')").fetchone()
+        return bool(current) and until > str(current[0])
+
     def get_novel_ids_for_status_check(self, limit: int | None = None) -> list[int]:
         """按 last_checked_at 升序返回待状态检查的小说 ID（从未检查过的排最前）。
 

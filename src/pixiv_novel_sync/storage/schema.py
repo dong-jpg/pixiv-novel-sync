@@ -431,6 +431,14 @@ class SchemaMixin:
         # 负责维护。它给「Pixiv 原站还在不在」提供一个不依赖 status 推断的判定入口。
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN source_url TEXT")
+        # 抓取失败退避（2026-11 生产）：error_page 反复失败的作品零持久化，每轮
+        # 原样重试烧掉整轮预算（10 天 279 条失败日志、238 个 ID 日内重复）。
+        # 连败 3 次进 3 天冷却窗口；成功即清零。content_unavailable（真删/私密）
+        # 不走这里——它是终局结论，每轮照常跳过不重试。
+        if "fetch_fail_count" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN fetch_fail_count INTEGER NOT NULL DEFAULT 0")
+        if "fetch_fail_until" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN fetch_fail_until TEXT")
         if "archive_dir" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
         # P12：下面两个回填探针以前各全表扫描一次（novels 的 raw_json 在这两列前面，

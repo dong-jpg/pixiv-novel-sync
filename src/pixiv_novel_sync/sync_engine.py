@@ -72,6 +72,12 @@ FOLLOWING_LIST_MAX_PAGES = 50
 # 占用从每天约 6.6 个槽位压到约 2.8 个，省下的槽位归真实作者。
 NO_NOVELS_RECHECK_DAYS = 30
 
+# 抓取失败退避：连续失败几次进入冷却、冷却多少天。降频而非永久跳过：
+# error_page 多为瞬时风控（生产实测跨日零重叠、隔日自愈），失败章节在窗口
+# 过后照常重试。计数与窗口存在 novels.fetch_fail_count / fetch_fail_until。
+NOVEL_FETCH_FAIL_STREAK = 3
+NOVEL_FETCH_COOLDOWN_DAYS = 3
+
 # 已确认 deleted 的小说多久复查一次（天）。降频而非永久跳过（仿 NO_NOVELS_RECHECK_DAYS）：
 # 作品可能被恢复。状态检查与待删检测以前每轮都对它们重查 novel_detail，novel_status
 # 每批约 10% 是这种重复确认（审查性能 P21）。
@@ -603,6 +609,42 @@ class BookmarkNovelSyncService:
                 _sleep_with_progress_cancel(page_delay, progress_callback)
 
         return collected, incomplete, fetch_failed
+
+    def _order_subscribed_series_for_rotation(self, series_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """按「最久未检查优先」给订阅系列排序，熔断后从断点续跑而非从队头重来。
+
+        生产事故（2026-11）：旧实现按 watchlist 固定顺序（更新近度）线性遍历，
+        head 处失败烧 1-1.7 小时熔断后，队尾 193/216 个系列连续 3.5 天零访问。
+        series.last_checked_at 由 series_status 与本任务的 win 路径维护（无
+        时间戳的排最前），轮转后中止轮没跑到的系列天然排到下一轮队首。
+
+        DB 读取失败时退回原顺序（fail-safe），与 following 轮转的保护一致。
+        """
+        try:
+            rows = self.db.conn.execute(
+                "SELECT series_id, last_checked_at FROM series WHERE is_subscribed = 1"
+            ).fetchall()
+            last_checked: dict[int, str] = {
+                int(row[0]): (row[1] or "")
+                for row in rows
+            }
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            logger.warning("读取系列轮转时间戳失败，退回 watchlist 顺序: %s", exc)
+            return series_queue
+
+        def _checked_at(item: dict[str, Any]) -> tuple[int, str, str]:
+            try:
+                sid = int(item.get("series_id") or 0)
+            except (TypeError, ValueError):
+                # 无效条目原样保留在尾部，顺序键用最大值兜底
+                return (1, "", str(item.get("series_id") or ""))
+            stamp = last_checked.get(sid, "")
+            # (有最终排序需求, 时间戳, id 文本) ：time 升序轮转，同刻按 id 稳定
+            return (0, stamp, str(sid))
+
+        return sorted(series_queue, key=_checked_at)
 
     @staticmethod
     def _order_following_users_for_rotation(
@@ -1301,7 +1343,7 @@ class BookmarkNovelSyncService:
             _first_logged = False
             synced_series_count = 0  # 实际有新内容的系列数（跳过的不算）
             # 使用 while 循环以支持顺延：当 limit > 0 时，全部跳过的系列不计入 limit
-            series_queue = list(series_list)
+            series_queue = self._order_subscribed_series_for_rotation(list(series_list))
             queue_idx = 0
             consecutive_fetch_failures = 0
             max_consecutive_fetch_failures = 5
@@ -1398,6 +1440,17 @@ class BookmarkNovelSyncService:
                                 series_id=int(sid), title=title, description=desc,
                                 user_id=user_id, cover_url=cover, total_novels=total or 0,
                             )
+                            # 轮转水位：详情拿到的系列视为本轮已访问（"unknown" 在
+                            # upsert_series_status 里只刷新 last_checked_at、不改写
+                            # status——状态归属 series_status 任务，这里不能越权改写，
+                            # 否则已判 deleted 的系列会被追更同步翻回 normal）。
+                            # 写失败只影响轮转顺序，不影响同步本身。
+                            try:
+                                self.db.upsert_series_status(int(sid), "unknown")
+                            except InterruptedError:
+                                raise
+                            except Exception:
+                                logger.debug("记录系列 %s 轮转时间戳失败", sid, exc_info=True)
                             if user_id:
                                 self.db.upsert_user(UserRecord(
                                     user_id=user_id, name=user_name,
@@ -1515,6 +1568,12 @@ class BookmarkNovelSyncService:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
                                         if skip_delay > 0:
                                             _sleep_with_progress_cancel(skip_delay, progress_callback)
+                                        continue
+
+                                    # 抓取失败冷却窗口：连败作品本轮跳过重试（不发请求、
+                                    # 不烧 30s/章预算），窗口过后照常重试（瞬时风控隔日自愈）。
+                                    if self._novel_in_fetch_cooldown(novel_id):
+                                        stats["failed_cooldown"] = stats.get("failed_cooldown", 0) + 1
                                         continue
 
                                     if progress_callback:
@@ -2154,6 +2213,22 @@ class BookmarkNovelSyncService:
         target = self.storage.asset_path(novel_dir, asset_type, _filename_from_url(asset_url))
         return bool(checker(target))
 
+    def _novel_in_fetch_cooldown(self, novel_id: int) -> bool:
+        """作品是否处于抓取失败冷却窗口（2026-11 生产事故：连败章节每轮重试烧预算）。
+
+        db 没有该查询面（老库/测试替身）时按「不在冷却」处理，退回旧行为。
+        """
+        checker = getattr(self.db, "novel_in_fetch_cooldown", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(novel_id))
+        except InterruptedError:
+            raise
+        except Exception:
+            logger.debug("查询小说 %s 失败冷却失败", novel_id, exc_info=True)
+            return False
+
     def _archive_complete_on_disk(self, novel_id: int, require_assets: bool) -> bool:
         """跳过判定：库里归档完整，且（需要资源时）封面文件确实在磁盘上。
 
@@ -2199,7 +2274,15 @@ class BookmarkNovelSyncService:
     ) -> dict[str, int]:
         novel_id = int(novel.id)
         try:
-            return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+            result = self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+            # 成功（或纯本地跳过）即解除失败冷却：单次瞬时错误不累积惩罚。
+            try:
+                self.db.clear_novel_fetch_failures(novel_id)
+            except InterruptedError:
+                raise
+            except Exception:
+                logger.debug("清零小说 %s 失败计数失败", novel_id, exc_info=True)
+            return result
         except InterruptedError:
             raise
         except Exception as e:
@@ -2225,7 +2308,17 @@ class BookmarkNovelSyncService:
                     "views": 0,
                     "assets_downloaded": 0,
                 }
+            # 普通失败（网络/限流/异常）：记入失败退避。三连败进入 3 天冷却，
+            # 消息层在 read 路径查询 novel_in_fetch_cooldown 决定是否跳过重试——
+            # 没有这层退避，固定一批失败章节每轮烧 30s/章的预算（2026-11 生产：
+            # 单轮 48-75 个失败≈1500-2250s 纯烧在重复失败上）。写库失败不影响计数。
             logger.error("Failed to sync novel %d: %s", novel_id, e)
+            try:
+                self.db.record_novel_fetch_failure(novel_id, NOVEL_FETCH_COOLDOWN_DAYS, NOVEL_FETCH_FAIL_STREAK)
+            except InterruptedError:
+                raise
+            except Exception:
+                logger.debug("记录小说 %s 失败退避失败", novel_id, exc_info=True)
             return {"failed": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
 
     def _sync_novel_inner(

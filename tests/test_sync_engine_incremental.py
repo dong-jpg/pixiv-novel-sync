@@ -264,7 +264,13 @@ def test_failed_or_cancelled_fetch_cannot_overwrite_an_existing_archive(tmp_path
         else:
             assert service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")["failed"] == 1
         assert storage.text_writes == initial_writes
-        assert dict(db.conn.execute("SELECT * FROM novels WHERE novel_id=100").fetchone()) == original
+        # 归档内容字段不得被失败改动；fetch_fail_* 是新增的失败退避列，
+        # 普通失败累加计数属预期行为，从「覆写归档」断言中排除。
+        after = dict(db.conn.execute("SELECT * FROM novels WHERE novel_id=100").fetchone())
+        for key in ("fetch_fail_count", "fetch_fail_until"):
+            after.pop(key, None)
+            original.pop(key, None)
+        assert after == original
         assert db.conn.execute("SELECT text_raw FROM novel_texts WHERE novel_id=100").fetchone()[0] == "body\n"
     finally:
         db.close()
@@ -1866,3 +1872,74 @@ def test_bookmark_sync_aborts_with_auth_failed_reason(tmp_path: Path) -> None:
     assert stats.get("aborted_reason") == "auth_failed"
     assert stats.get("incomplete") is True
     assert stats.get("failed", 0) == 0
+
+
+# --------------------------------------------------------------------------
+# 订阅系列轮转与小说失败退避，T-rot-01~02
+#
+# 生产事故（2026-11）：队列按 watchlist 固定顺序从头线性走，熔断后 193/216
+# 个系列连续 3.5 天零访问；连败章节无失败记忆，每轮原样重试烧掉整轮预算。
+# --------------------------------------------------------------------------
+
+
+def test_order_subscribed_series_rotates_by_last_checked(tmp_path: Path) -> None:
+    """已检查过的系列排到队尾：熔断后下一轮从断点续跑而非从队头重来。"""
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    db.upsert_subscribed_series(1, "A", "", 1, None, 2)
+    db.upsert_subscribed_series(2, "B", "", 1, None, 2)
+    # 1 号刚刚检查过，2 号从未检查（NULL 排最前），3 号早一点检查过
+    db.conn.execute("UPDATE series SET last_checked_at = '2026-11-24 10:00:00' WHERE series_id = 1")
+    db.conn.execute("UPDATE series SET last_checked_at = '2026-11-20 10:00:00' WHERE series_id = 3")
+    service = BookmarkNovelSyncService(_Api(), db, _Storage(), settings)
+
+    queue = [{"series_id": "1"}, {"series_id": "3"}, {"series_id": "2"}]
+    ordered = service._order_subscribed_series_for_rotation(queue)
+    assert [item["series_id"] for item in ordered] == ["2", "3", "1"]
+
+
+def test_order_subscribed_series_falls_back_on_db_error(tmp_path: Path) -> None:
+    """轮转时间戳读取失败时原样退回（fail-safe），不阻同步。"""
+    settings = _settings(tmp_path)
+
+    class _BrokenDb:
+        @property
+        def conn(self):
+            raise RuntimeError("conn unavailable")
+
+    service = BookmarkNovelSyncService(_Api(), _BrokenDb(), _Storage(), settings)
+    queue = [{"series_id": "5"}, {"series_id": "6"}]
+    assert service._order_subscribed_series_for_rotation(queue) == queue
+
+
+def test_sync_novel_failure_records_cooldown(tmp_path: Path) -> None:
+    """三连败进入冷却：_novel_in_fetch_cooldown 变真；成功后清零。"""
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    db.upsert_user(UserRecord(user_id=1, name="author", account="acc", raw_json="{}"))
+    db.upsert_novel(
+        NovelRecord(
+            novel_id=100, user_id=1, series_id=None, title="t", caption="",
+            visible=True, restrict="public", x_restrict=0, text_length=4,
+            total_bookmarks=0, total_views=0, cover_url=None, tags_json="[]",
+            create_date="2026-01-01T00:00:00+00:00", raw_json="{}", meta_hash="h",
+        )
+    )
+    # 每次调用都报错页的 API
+    class _FailApi:
+        def novel_detail(self, novel_id: int) -> dict:
+            return {"error": {"user_message": "", "message": "Rate Limit", "reason": ""}}
+
+        def webview_novel(self, novel_id: int) -> dict:
+            return {"text": ""}
+
+    service = BookmarkNovelSyncService(_FailApi(), db, _Storage(), settings)
+    for _ in range(3):
+        service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
+    assert db.novel_in_fetch_cooldown(100) is True
+    row = db.conn.execute(
+        "SELECT fetch_fail_count FROM novels WHERE novel_id = 100"
+    ).fetchone()
+    assert row[0] == 3
