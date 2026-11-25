@@ -46,8 +46,7 @@ def test_sync_settings_exposes_recommendation_auto_sync_triple(tmp_path: Path):
         "定时推荐默认必须关闭：它会消耗 Pixiv 搜索配额，且依赖已存在的默认偏好画像"
     )
     assert settings.sync.auto_sync_recommendation_run_interval_hours == 24
-    # 阶段二：默认 cron 从空串（走 interval）改为每天 08:50 一次
-    assert settings.sync.auto_sync_recommendation_run_cron == "50 8 * * *"
+    assert settings.sync.auto_sync_recommendation_run_cron == "0 11 * * *"
 
 
 def test_recommendation_auto_sync_reads_from_yaml(tmp_path: Path):
@@ -297,3 +296,34 @@ def test_scheduler_skips_recommendation_run_when_disabled(tmp_path: Path, monkey
     """默认关闭时不得提交，否则会白耗 Pixiv 搜索配额。"""
     submitted = _run_one_scheduler_pass(tmp_path, monkeypatch, _SyncStub())
     assert submitted == []
+
+
+def test_recommendation_backlog_only_suppresses_automatic_network_work(tmp_path, monkeypatch):
+    from pixiv_novel_sync.jobs.tasks import execute_task
+    from pixiv_novel_sync.storage_db import Database
+    from test_recommendations import make_settings
+
+    settings = make_settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        profile = db.create_preference_profile({"name": "offline", "is_default": True})
+        run = db.create_recommendation_run(profile, {})
+        db.conn.executemany("INSERT INTO recommendation_items(run_id,profile_id,item_type,novel_id,title,tags_json,matched_json) "
+                            "VALUES(?,?,'novel',?,'offline','[]','{}')", [(run, profile, novel) for novel in range(1, 201)])
+        calls = []
+
+        def generate(self, **kwargs):
+            calls.append(True)
+            return {"run_id": 7, "stats": {"saved": 1}}
+
+        monkeypatch.setattr("pixiv_novel_sync.recommendations.RecommendationService.run", generate)
+        context = {"job": SimpleNamespace(spec=SimpleNamespace(source=JobSource.SCHEDULER))}
+        assert execute_task("recommendation_run", settings, context)["searched"] == 0
+        assert calls == []
+        assert execute_task("recommendation_run", settings, {})["run_id"] == 7
+        db.conn.execute("UPDATE recommendation_items SET status='interested' WHERE novel_id=1")
+        assert execute_task("recommendation_run", settings, context)["run_id"] == 7
+        assert len(calls) == 2
+    finally:
+        db.close()

@@ -215,6 +215,21 @@ def retry_on_pixiv_error(
     return decorator
 
 
+def next_user_page_query(api: Any, next_url: str | None, current: dict[str, Any]) -> dict[str, Any] | None:
+    if next_url is None:
+        return None
+    try:
+        params = api.parse_qs(next_url)
+        offset = int(params["offset"])
+        same_user = int(params.get("user_id", current["user_id"])) == current["user_id"]
+        same_scope = "restrict" not in current or params.get("restrict", current["restrict"]) == current["restrict"]
+        if same_user and same_scope and offset > current.get("offset", 0):
+            return {**current, "offset": offset}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+    raise ValueError("Invalid Pixiv user pagination cursor")
+
+
 def _to_plain(value: Any) -> Any:
     """将 Pixiv API 对象转为普通 dict/list/str/int/float/bool。
 

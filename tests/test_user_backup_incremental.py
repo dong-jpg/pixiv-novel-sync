@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from pixiv_novel_sync.jobs import quick_sync, services
 from pixiv_novel_sync.storage_db import Database
 from pixiv_novel_sync.storage_files import FileStorage
+from pixiv_novel_sync.sync.following_snapshot import save_following_snapshot
 
 AUTHOR_ID = 7
 NOVEL_IDS = [4242, 4243]
@@ -72,6 +73,7 @@ def _env(tmp_path: Path, monkeypatch, item_delay: float = 0.0):
             max_pages_per_run=None,
             user_backup_max_pages_per_run=None,
             auto_sync_following_novels_users_limit=0,
+            user_backup_users_per_run=5,
             download_assets=True,
             write_markdown=True,
             write_raw_text=True,
@@ -87,6 +89,7 @@ def _env(tmp_path: Path, monkeypatch, item_delay: float = 0.0):
     db.init_schema()
     db.conn.execute("INSERT INTO users(user_id, name, raw_json) VALUES(?, 'author', '{}')", (AUTHOR_ID,))
     db.conn.commit()
+    save_following_snapshot(db, 999, [SimpleNamespace(id=AUTHOR_ID)])
     db.close()
     api = _Api()
     monkeypatch.setattr(services, "_login", lambda s: api)
@@ -171,5 +174,5 @@ def test_scheduled_backup_reports_which_mode_each_round_used(tmp_path, monkeypat
     first = quick_sync.run_scheduled_user_backup(settings)
     second = quick_sync.run_scheduled_user_backup(settings)
 
-    assert first["full_refresh_users"] == 1 and first["skipped_archived"] == 0
+    assert first["full_refresh_users"] == 0 and first["novels"] == 2
     assert second["full_refresh_users"] == 0 and second["skipped_archived"] == 2

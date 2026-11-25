@@ -559,7 +559,7 @@ def test_sync_subscribed_series_marks_abort_reason_after_consecutive_failures(tm
         db.close()
 
     assert api.calls == 5  # 连续失败达到阈值立即中止，剩余 3 个系列没被触碰
-    assert stats["aborted_reason"] == "rate_limited"
+    assert stats["aborted_reason"] == "series_detail_unavailable"
     assert stats["incomplete"] is True
     assert stats["series_synced"] == 0
     assert stats["series_total"] == 8
@@ -732,7 +732,7 @@ def test_sync_subscribed_series_marks_abort_reason_on_empty_responses(tmp_path: 
         db.close()
 
     assert api.calls == 5
-    assert stats["aborted_reason"] == "rate_limited"
+    assert stats["aborted_reason"] == "series_detail_unavailable"
     assert stats["incomplete"] is True
 
 
@@ -1474,7 +1474,7 @@ def test_following_list_pagination_keeps_self_referencing_loop_guard(tmp_path: P
 
         def parse_qs(self, next_url):
             if next_url == "loop":
-                return {"user_id": 1, "restrict": "public", "page": self.following_calls + 1}
+                return {"user_id": 1, "restrict": "public", "offset": self.following_calls * 30}
             return None
 
     settings = _settings(tmp_path)
@@ -1882,21 +1882,116 @@ def test_bookmark_sync_aborts_with_auth_failed_reason(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_order_subscribed_series_rotates_by_last_checked(tmp_path: Path) -> None:
+def test_order_subscribed_series_ignores_status_checks(tmp_path: Path) -> None:
     """已检查过的系列排到队尾：熔断后下一轮从断点续跑而非从队头重来。"""
     settings = _settings(tmp_path)
     db = Database(settings.storage.db_path)
     db.init_schema()
     db.upsert_subscribed_series(1, "A", "", 1, None, 2)
     db.upsert_subscribed_series(2, "B", "", 1, None, 2)
-    # 1 号刚刚检查过，2 号从未检查（NULL 排最前），3 号早一点检查过
-    db.conn.execute("UPDATE series SET last_checked_at = '2026-11-24 10:00:00' WHERE series_id = 1")
-    db.conn.execute("UPDATE series SET last_checked_at = '2026-11-20 10:00:00' WHERE series_id = 3")
+    db.upsert_series_status(2, "normal")
+    db.update_watermark("subscribed_series_visit", {}, key="1")
     service = BookmarkNovelSyncService(_Api(), db, _Storage(), settings)
 
     queue = [{"series_id": "1"}, {"series_id": "3"}, {"series_id": "2"}]
     ordered = service._order_subscribed_series_for_rotation(queue)
     assert [item["series_id"] for item in ordered] == ["2", "3", "1"]
+
+
+def test_partial_follow_refresh_preserves_complete_snapshot(tmp_path: Path):
+    from types import SimpleNamespace
+    from pixiv_novel_sync.sync.following_snapshot import read_following_snapshot, save_following_snapshot
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 99
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1, name="first")])
+        api = SimpleNamespace(user_following=lambda **query: {"error": {"message": "failed"}})
+        service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+        assert service.sync_following_list()["incomplete"]
+        assert [user.id for user in read_following_snapshot(db, 99)] == [1]
+        assert read_following_snapshot(db, 100) is None
+        db.update_watermark("following_public:99", {"observed_at": "2020-01-01T00:00:00+00:00", "members": {"1": "first"}})
+        assert read_following_snapshot(db, 99) is None
+        save_following_snapshot(db, 99, [])
+        assert read_following_snapshot(db, 99) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("continuation", [{}, {"offset": 0}, {"offset": 30, "user_id": 100},
+                                         {"offset": 30, "restrict": "private"}])
+def test_invalid_public_list_continuation_cannot_replace_snapshot(tmp_path, continuation):
+    from pixiv_novel_sync.sync.following_snapshot import read_following_snapshot, save_following_snapshot
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 99
+    requests = []
+
+    def user_following(**query):
+        requests.append(query)
+        return SimpleNamespace(user_previews=[SimpleNamespace(id=2)], next_url="next" if len(requests) == 1 else None)
+
+    api = SimpleNamespace(user_following=user_following, parse_qs=lambda url: continuation if url else None)
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1)])
+        stats = BookmarkNovelSyncService(api, db, _Storage(), settings).sync_following_list()
+        assert stats.get("aborted_reason") == "fetch_failed"
+        assert requests == [{"user_id": 99, "restrict": "public"}]
+        assert [user.id for user in read_following_snapshot(db, 99)] == [1]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("entry", ["list", "novels"])
+def test_cancelled_public_list_cannot_publish_snapshot(tmp_path, entry):
+    from pixiv_novel_sync.sync.following_snapshot import read_following_snapshot
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 99
+    stopped = False
+
+    def user_following(**query):
+        nonlocal stopped
+        stopped = True
+        return SimpleNamespace(user_previews=[SimpleNamespace(id=1)], next_url=None)
+
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        api = SimpleNamespace(user_following=user_following, parse_qs=lambda url: None)
+        service = BookmarkNovelSyncService(api, db, _Storage(), settings, lambda: stopped)
+        with pytest.raises(InterruptedError):
+            if entry == "list":
+                service.sync_following_list()
+            else:
+                service.sync_following_novels(users_limit=1)
+        assert read_following_snapshot(db, 99) is None
+    finally:
+        db.close()
+
+
+def test_following_novels_reuses_list_without_repeating_network_fetch(tmp_path):
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        api = _PagedFollowingApi(author_count=70)
+        service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+        service.sync_following_list()
+        calls_after_list = api.following_calls
+        for iteration in range(3):
+            result = service.sync_following_novels(users_limit=5)
+            assert result["following_snapshot_used"] is True
+        assert api.following_calls == calls_after_list == 3
+        assert len(set(api.scanned_user_ids)) == 15
+    finally:
+        db.close()
 
 
 def test_order_subscribed_series_falls_back_on_db_error(tmp_path: Path) -> None:

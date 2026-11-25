@@ -24,8 +24,10 @@ from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
+from .sync.following_snapshot import read_following_snapshot, save_following_snapshot
 from .sync.utils import (
     apply_pixiv_retry_patch,
+    next_user_page_query,
     response_is_pixiv_error_page,
     _to_plain,
     _filename_from_url,
@@ -251,9 +253,11 @@ def _classify_series_response(series_data: Any) -> str:
     重依赖的处理方式一致。判定本身出任何异常都保守返回 unknown。
     """
     try:
-        from .web.utils import _classify_pixiv_response
+        from .web.utils import _classify_pixiv_response, _pixiv_error_text
 
         verdict, _detail = _classify_pixiv_response(series_data, ("novel_series_detail",))
+        if verdict == "unknown" and any(token in _pixiv_error_text(series_data).lower() for token in _RATE_LIMIT_ERROR_TOKENS):
+            return "rate_limited"
         return str(verdict)
     except InterruptedError:
         raise
@@ -474,7 +478,7 @@ class BookmarkNovelSyncService:
 
         return stats
 
-    def sync_following_list(self, progress_callback: Any = None) -> dict[str, int]:
+    def sync_following_list(self, progress_callback: Any = None) -> dict[str, Any]:
         """同步关注用户列表（只更新用户信息，不同步小说）"""
         stats = {"users": 0, "following_users_scanned": 0}
         page_delay = self.settings.sync.delay_seconds_between_pages
@@ -484,64 +488,26 @@ class BookmarkNovelSyncService:
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
 
-        existing_user_count = self.db.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        logger.debug(f"Existing users before sync: {existing_user_count}")
-
-        next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
-        following_page_count = 0
-        # 关注列表专用上限：复用 max_pages_per_run 会把关注人数截断在 60 人
-        safety_limit = FOLLOWING_LIST_MAX_PAGES
-
-        while next_following_query:
-            if following_page_count >= safety_limit:
-                logger.info("Reached page safety limit=%s for following list, stopping pagination", safety_limit)
-                stats["truncated"] = True
-                stats["incomplete"] = True
-                break
-            following_result = self.api.user_following(**next_following_query)
-            following_page_count += 1
+        users, incomplete, failed = self._collect_following_users(
+            current_user_id, FOLLOWING_LIST_MAX_PAGES, page_delay, progress_callback
+        )
+        for user in users:
+            author_id = int(user.id)
+            name = getattr(user, "name", str(author_id))
+            self.db.upsert_user(UserRecord(user_id=author_id, name=name, account=getattr(user, "account", None),
+                                           raw_json=stable_json_dumps(_to_plain(user))))
+            stats["users"] += 1
+            stats["following_users_scanned"] += 1
             if progress_callback:
-                progress_callback("page", {"page": following_page_count})
-
-            if response_is_pixiv_error_page(following_result):
-                # 错误页按失败处理，不能当空页继续（见 sync() 的同类守卫）
-                logger.error("user_following 返回错误页，按失败处理: %s", following_result)
-                stats["failed"] = int(stats.get("failed") or 0) + 1
-                stats["incomplete"] = True
-                stats["aborted_reason"] = "fetch_failed"
-                break
-            users = getattr(following_result, "user_previews", []) or []
-            for user_preview in users:
-                user = getattr(user_preview, "user", user_preview)
-                author_id = getattr(user, "id", None)
-                if author_id is None:
-                    continue
-                author_id = int(author_id)
-                author_name = getattr(user, "name", str(author_id))
-                stats["following_users_scanned"] += 1
-                
-                account = getattr(user, "account", None)
-                self.db.upsert_user(UserRecord(
-                    user_id=author_id,
-                    name=author_name,
-                    account=account,
-                    raw_json=stable_json_dumps(_to_plain(user)),
-                ))
-                stats["users"] += 1
-                
-                if progress_callback:
-                    progress_callback("user_synced", {
-                        "user_id": author_id,
-                        "name": author_name,
-                        "total": stats["users"],
-                    })
-            
-            next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
-            if next_following_query and page_delay > 0:
-                if progress_callback:
-                    progress_callback("rate_limit", {"seconds": page_delay})
-                _sleep_with_progress_cancel(page_delay, progress_callback)
-
+                progress_callback("user_synced", {"user_id": author_id, "name": name, "total": stats["users"]})
+        if failed:
+            stats.update(failed=1, incomplete=True, aborted_reason="fetch_failed")
+        elif incomplete:
+            stats.update(truncated=True, incomplete=True)
+        else:
+            if self.stop_requested is not None and self.stop_requested():
+                raise InterruptedError("Task stopped by user")
+            save_following_snapshot(self.db, current_user_id, users)
         return stats
 
     def _collect_following_users(
@@ -564,6 +530,8 @@ class BookmarkNovelSyncService:
         fetch_failed = False
 
         while next_query:
+            if self.stop_requested is not None and self.stop_requested():
+                raise InterruptedError("Task stopped by user")
             if page_count >= safety_limit:
                 logger.warning(
                     "Reached page safety limit=%s for following list, stopping pagination",
@@ -591,23 +559,32 @@ class BookmarkNovelSyncService:
                 fetch_failed = True
                 break
 
-            for user_preview in (getattr(following_result, "user_previews", []) or []):
+            previews = getattr(following_result, "user_previews", None)
+            if not isinstance(previews, (list, tuple)):
+                return collected, True, True
+            for user_preview in previews:
                 user = getattr(user_preview, "user", user_preview)
                 author_id = getattr(user, "id", None)
                 if author_id is None:
-                    continue
+                    return collected, True, True
                 author_id = int(author_id)
                 if author_id in seen_ids:
                     continue
                 seen_ids.add(author_id)
                 collected.append(user)
 
-            next_query = self.api.parse_qs(getattr(following_result, "next_url", None))
+            try:
+                next_query = next_user_page_query(self.api, getattr(following_result, "next_url", None), next_query)
+            except ValueError:
+                logger.warning("公开关注名单第 %d 页的下一页无效，未发布快照", page_count)
+                return collected, True, True
             if next_query and page_delay > 0:
                 if progress_callback:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 _sleep_with_progress_cancel(page_delay, progress_callback)
 
+        if self.stop_requested is not None and self.stop_requested():
+            raise InterruptedError("Task stopped by user")
         return collected, incomplete, fetch_failed
 
     def _order_subscribed_series_for_rotation(self, series_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -615,14 +592,13 @@ class BookmarkNovelSyncService:
 
         生产事故（2026-11）：旧实现按 watchlist 固定顺序（更新近度）线性遍历，
         head 处失败烧 1-1.7 小时熔断后，队尾 193/216 个系列连续 3.5 天零访问。
-        series.last_checked_at 由 series_status 与本任务的 win 路径维护（无
-        时间戳的排最前），轮转后中止轮没跑到的系列天然排到下一轮队首。
+        使用追更专用访问水位，状态复查不能把未同步的系列推到队尾。
 
         DB 读取失败时退回原顺序（fail-safe），与 following 轮转的保护一致。
         """
         try:
             rows = self.db.conn.execute(
-                "SELECT series_id, last_checked_at FROM series WHERE is_subscribed = 1"
+                "SELECT key, updated_at FROM sync_watermarks WHERE sync_type = 'subscribed_series_visit'"
             ).fetchall()
             last_checked: dict[int, str] = {
                 int(row[0]): (row[1] or "")
@@ -986,12 +962,15 @@ class BookmarkNovelSyncService:
             # 限量模式：先取回完整关注列表，再按"最久未同步优先"挑本轮要跑的作者。
             # 直接顺着 user_following 的顺序取前 N 个，会让后面的作者永远轮不到
             # （生产上关注 53 人、users_limit=5，连续 9 轮都只同步了最前面 5 个）。
-            candidates, list_incomplete, list_fetch_failed = self._collect_following_users(
-                current_user_id,
-                following_list_page_limit,
-                page_delay,
-                progress_callback,
-            )
+            candidates = read_following_snapshot(self.db, current_user_id)
+            list_incomplete = list_fetch_failed = False
+            stats["following_snapshot_used"] = candidates is not None
+            if candidates is None:
+                candidates, list_incomplete, list_fetch_failed = self._collect_following_users(
+                    current_user_id, following_list_page_limit, page_delay, progress_callback
+                )
+                if not list_incomplete:
+                    save_following_snapshot(self.db, current_user_id, candidates)
             if list_fetch_failed:
                 stats["failed"] = int(stats.get("failed") or 0) + 1
                 stats["incomplete"] = True
@@ -1372,18 +1351,19 @@ class BookmarkNovelSyncService:
 
                 if progress_callback:
                     progress_callback("phase", {"phase": f"同步系列 {series_idx} (已同步 {synced_series_count}{f'/{limit}' if limit > 0 else ''}) (ID: {sid})"})
+                self.db.update_watermark("subscribed_series_visit", {}, key=str(sid))
                 try:
                     series_data = self.api.novel_series(int(sid))
                 except InterruptedError:
                     raise
                 except Exception as e:
                     consecutive_fetch_failures += 1
-                    stats["failed"] = stats.get("failed", 0) + 1
+                    stats["series_detail_errors"] = stats.get("series_detail_errors", 0) + 1
                     logger.warning("Failed to fetch series %s: %s", sid, e)
                     if progress_callback:
                         progress_callback("phase", {"phase": f"系列 {sid}: 获取失败，已连续失败 {consecutive_fetch_failures} 次"})
                     if consecutive_fetch_failures >= max_consecutive_fetch_failures:
-                        aborted_reason = "rate_limited"
+                        aborted_reason = "series_detail_unavailable"
                         break
                     continue
                 try:
@@ -1440,17 +1420,6 @@ class BookmarkNovelSyncService:
                                 series_id=int(sid), title=title, description=desc,
                                 user_id=user_id, cover_url=cover, total_novels=total or 0,
                             )
-                            # 轮转水位：详情拿到的系列视为本轮已访问（"unknown" 在
-                            # upsert_series_status 里只刷新 last_checked_at、不改写
-                            # status——状态归属 series_status 任务，这里不能越权改写，
-                            # 否则已判 deleted 的系列会被追更同步翻回 normal）。
-                            # 写失败只影响轮转顺序，不影响同步本身。
-                            try:
-                                self.db.upsert_series_status(int(sid), "unknown")
-                            except InterruptedError:
-                                raise
-                            except Exception:
-                                logger.debug("记录系列 %s 轮转时间戳失败", sid, exc_info=True)
                             if user_id:
                                 self.db.upsert_user(UserRecord(
                                     user_id=user_id, name=user_name,
@@ -1638,31 +1607,34 @@ class BookmarkNovelSyncService:
                                     progress_callback("phase", {"phase": f"系列 {sid}: Pixiv 已删除，标记后跳过"})
                             else:
                                 consecutive_fetch_failures += 1
+                                stats["series_detail_errors"] = stats.get("series_detail_errors", 0) + 1
                                 logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                                 if progress_callback:
                                     progress_callback("phase", {"phase": f"系列 {sid}: 获取详情失败，已连续失败 {consecutive_fetch_failures} 次"})
                                 if consecutive_fetch_failures >= max_consecutive_fetch_failures:
                                     logger.warning(
-                                        "Stopping subscribed series sync after %d consecutive series detail failures; likely rate limited or blocked",
+                                        "Stopping subscribed series sync after %d consecutive series detail failures: %s",
                                         consecutive_fetch_failures,
+                                        verdict,
                                     )
                                     if progress_callback:
-                                        progress_callback("phase", {"phase": "连续获取系列详情失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
-                                    aborted_reason = "rate_limited"
+                                        progress_callback("phase", {"phase": "连续获取系列详情失败，已暂停追更系列同步"})
+                                    aborted_reason = "rate_limited" if verdict == "rate_limited" else "series_detail_unavailable"
                                     break
                     else:
                         consecutive_fetch_failures += 1
+                        stats["series_detail_errors"] = stats.get("series_detail_errors", 0) + 1
                         logger.warning("Empty response for series %s", sid)
                         if progress_callback:
                             progress_callback("phase", {"phase": f"系列 {sid}: 获取详情为空，已连续失败 {consecutive_fetch_failures} 次"})
                         if consecutive_fetch_failures >= max_consecutive_fetch_failures:
                             logger.warning(
-                                "Stopping subscribed series sync after %d consecutive empty series responses; likely rate limited or blocked",
+                                "Stopping subscribed series sync after %d consecutive empty series responses",
                                 consecutive_fetch_failures,
                             )
                             if progress_callback:
-                                progress_callback("phase", {"phase": "连续获取系列详情为空，疑似触发 Pixiv 风控，已暂停追更系列同步"})
-                            aborted_reason = "rate_limited"
+                                progress_callback("phase", {"phase": "连续获取系列详情为空，已暂停追更系列同步"})
+                            aborted_reason = "series_detail_unavailable"
                             break
                 except InterruptedError:
                     # 用户取消必须原样上抛。章节同步里的其它异常不能计入系列熔断。
@@ -1690,6 +1662,8 @@ class BookmarkNovelSyncService:
             stats["series_total"] = len(series_queue)
             stats["series_processed"] = queue_idx
             stats["series_remaining"] = max(len(series_queue) - queue_idx, 0)
+            if stats.get("series_detail_errors"):
+                stats["failed"] = stats.get("failed", 0) + stats["series_detail_errors"]
             # 已删系列是正常结论而非异常，单独计数：它既不该让本轮变成 incomplete，
             # 也需要在任务日志里看得见（否则 series_total 和实际同步量的差额无从解释）。
             if dead_series:

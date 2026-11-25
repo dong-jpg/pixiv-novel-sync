@@ -165,6 +165,7 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
             "max_pages_per_run",
             "bookmark_max_pages_per_run",
             "user_backup_max_pages_per_run",
+            "user_backup_users_per_run",
             "archive_rescan_days",
             "following_max_novels_per_author",
             "series_max_pages_per_run",
@@ -1167,6 +1168,7 @@ class SettingsManager:
         sync_data["auto_sync_user_backup_enabled"] = bool(payload.get("auto_sync_user_backup_enabled", sync_data.get("auto_sync_user_backup_enabled", False)))
         sync_data["auto_sync_user_backup_interval_hours"] = _save_int("auto_sync_user_backup_interval_hours", 24)
         sync_data["auto_sync_user_backup_cron"] = _save_cron("auto_sync_user_backup_cron")
+        sync_data["user_backup_users_per_run"] = _save_int("user_backup_users_per_run", 5)
         sync_data["auto_sync_pending_detection_enabled"] = bool(payload.get("auto_sync_pending_detection_enabled", sync_data.get("auto_sync_pending_detection_enabled", True)))
         sync_data["auto_sync_pending_detection_interval_hours"] = _save_int("auto_sync_pending_detection_interval_hours", 12)
         sync_data["auto_sync_pending_detection_cron"] = _save_cron("auto_sync_pending_detection_cron")
@@ -1178,7 +1180,7 @@ class SettingsManager:
         sync_data["auto_sync_recommendation_run_interval_hours"] = _save_int("auto_sync_recommendation_run_interval_hours", 24)
         # 回落默认值必须与 SyncSettings 的默认值一致：这里若回落成空串，"什么都没改就点
         # 保存"会把新默认 cron 写成空，任务悄悄退回按 interval 跑。
-        sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron", "50 8 * * *")
+        sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron", "0 11 * * *")
         sync_data["pending_deletion_cleanup_confirmed_days"] = _save_int("pending_deletion_cleanup_confirmed_days", 7)
         sync_data["task_log_retention_days"] = _save_int("task_log_retention_days", 14)
         # 顺手擦掉历史遗留的空设置：它从来没被任何代码读过，留在 YAML 里只会让人

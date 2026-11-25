@@ -1,6 +1,6 @@
 # Frontend API Contract
 
-更新：2026-11-17。本页维护当前分支的接口契约；代码验证与生产启用边界见 [项目现状](STATUS.md)。
+更新：2026-11-25。本页维护当前分支的接口契约；代码验证与生产启用边界见 [项目现状](STATUS.md)。
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
@@ -576,6 +576,10 @@ Body 是该分区的部分设置对象；夹带别区字段会被忽略而不是
 未知 `section`（包括 `models` / `agents`，这两页的配置在数据库里、走 AI 配置接口）以及字段校验失败都返回 `400 { "ok": false, "error": "保存设置失败", "detail": "具体原因" }`，界面应展示 `detail`。变更类请求需带 `X-CSRF-Token`。
 
 保存成功后，调度器只重算 cron、间隔或时区发生变化的任务的下次运行时间，其余任务保持原时刻。
+
+`sync.user_backup_users_per_run` 默认 5，控制定时备份每轮作者数，与 `auto_sync_following_novels_users_limit` 独立。`user_backup_max_pages_per_run` 留空按 200 页处理；定时备份额外限制每作者最多 2 页并保存续页。推荐默认 cron 为 `0 11 * * *`，按 `auto_sync_timezone` 求值，已保存的自定义 cron 不会自动覆盖。
+
+任务日志中，`pages_read` 是本轮请求页数（可能包含失败页），`resumed_users` 是从已有页游标恢复的作者数，`authors_with_more_pages` 是待续跑或重试的作者数。正常分批带 `rotation_pending`；真实失败仍显示部分完成。自动推荐库存达到 200 时返回 `skipped_reason=recommendation_backlog`、`backlog` 和 `searched=0`，手动生成不受此限制。
 
 ### POST /api/dashboard/settings/cron-preview
 

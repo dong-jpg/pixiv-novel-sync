@@ -707,6 +707,8 @@
 
       const ABORT_REASON_LABELS = {
         'rate_limited': '疑似 Pixiv 限流，已中止本轮',
+        'series_detail_unavailable': '连续未取得系列详情，原因未确认',
+        'following_snapshot_unavailable': '未取得完整公开关注名单，已跳过备份',
         'suspicious_missing_streak': '连续大量判定为已删除，疑似限流伪装，已中止本轮',
         'auth_failed': 'Pixiv 认证失败（token 已失效），已中止本轮'
       };
@@ -732,6 +734,8 @@
         if (log.stats) {
           const s = log.stats;
           const parts = [];
+          if (s.skipped_reason === 'recommendation_backlog') return `待阅读 ${s.backlog} 条，本轮未检索`;
+          if (s.authors_with_more_pages) parts.push(`${s.authors_with_more_pages} 位作者待续页`);
           if (s.novels_synced ?? s.novels) parts.push(`${s.novels_synced ?? s.novels}本`);
           if (s.users_synced ?? s.users) parts.push(`${s.users_synced ?? s.users}人`);
           if (s.series_synced) parts.push(`${s.series_synced}系列`);

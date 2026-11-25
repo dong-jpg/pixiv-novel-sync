@@ -11,7 +11,7 @@ from pixiv_novel_sync.auth import PixivAuthManager
 from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
-from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
+from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, next_user_page_query, response_is_pixiv_error_page
 from pixiv_novel_sync.sync_engine import (
     BookmarkNovelSyncService,
     SyncAuthFailed,
@@ -58,7 +58,7 @@ USER_BACKUP_MAX_FAILURE_RATIO = 0.2
 # 同语义——降频而非永久跳过：作者可能重新上传或恢复系列。
 KNOWN_DELETED_SERIES_RECHECK_DAYS = 7
 
-# 全量备份平时只补没归档完整的作品，每位作者每 7 天全部重抓一次（审查性能 P19）。
+# 手动作者备份每 7 天允许全部重抓一次；定时备份始终只补缺失归档。
 # 全部重抓保留为唯一会重抓已归档正文的路径：作者改了正文、或 S2 那种被错误页覆写成
 # 占位数据（title=novel_<id>、user_id=0，正文仍在所以 archive_complete 为真）的作品，
 # 只能靠它修回。上次全部重抓的时间按作者记在这个水位里，只有该作者那一轮完整跑完
@@ -163,6 +163,8 @@ def run_user_backup_task(
     *,
     rebuild_catalog: bool = True,
     claim_finalization: ClaimFinalization | None = None,
+    scheduled_owner: int | None = None,
+    api: Any = None,
 ) -> dict[str, Any]:
     if stop_requested is not None and stop_requested():
         _report_log(reporter, "info", "用户全量备份已停止")
@@ -174,7 +176,8 @@ def run_user_backup_task(
             "stopped": True,
         }
 
-    api = _login(settings)
+    if api is None:
+        api = _login(settings)
     storage = _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -188,7 +191,7 @@ def run_user_backup_task(
         )
         service.stop_requested = stop_requested
         user_name = _lookup_user_name(db, user_id)
-        full_refresh = _needs_full_refresh(_load_full_refresh_marks(db), user_id)
+        full_refresh = scheduled_owner is None and _needs_full_refresh(_load_full_refresh_marks(db), user_id)
         mode_label = "全部重抓" if full_refresh else "增量：已归档的跳过"
         _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})（{mode_label}）")
         item_delay = float(getattr(settings.sync, "delay_seconds_between_items", 0) or 0)
@@ -205,6 +208,14 @@ def run_user_backup_task(
         truncated_by_page_cap = False
         total_failed_page = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
+        cursor_key = f"{scheduled_owner}:{user_id}"
+        resumed = False
+        if scheduled_owner is not None:
+            checkpoint = db.get_watermark("user_backup_page", cursor_key) or {}
+            offset = checkpoint.get("offset")
+            if type(offset) is int and offset > 0:
+                next_query["offset"] = offset
+                resumed = True
         # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环。
         # 备份是整库导出，绝不能回退到 max_pages_per_run（生产事故 2026-11：
         # 该字段缺省时回落共享值 2，每作者只备到最新 ~60 本，第 61 本起永久缺失；
@@ -220,6 +231,8 @@ def run_user_backup_task(
             max_pages = USER_BACKUP_MAX_PAGES
         if max_pages <= 0:
             max_pages = USER_BACKUP_MAX_PAGES
+        if scheduled_owner is not None:
+            max_pages = min(max_pages, 2)
         page_count = 0
 
         _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
@@ -237,7 +250,12 @@ def run_user_backup_task(
 
             result = api.user_novels(**next_query)
             page_count += 1
-            if response_is_pixiv_error_page(result):
+            if response_is_pixiv_error_page(result) or not isinstance(getattr(result, "novels", None), (list, tuple)):
+                from pixiv_novel_sync.web.utils import _is_auth_error, _pixiv_error_text
+
+                if _is_auth_error(_pixiv_error_text(result)):
+                    _report_log(reporter, "error", "用户备份中止：Pixiv 认证失败（token 已失效）")
+                    raise SyncAuthFailed("Pixiv authentication failed while listing user novels")
                 # A14-01：Pixiv 限流/鉴权失败时 pixivpy 不抛异常而是回
                 # {"error": {...}}。旧代码 getattr(result, "novels", []) 把它当
                 # 「空的最后一页」记成功，备份没拉到数据却是绿灯。错误页必须按
@@ -293,12 +311,12 @@ def run_user_backup_task(
                     )
                 except InterruptedError:
                     raise
-                except SyncAuthFailed as exc:
+                except SyncAuthFailed:
                     # token 已失效：按中止收口（不堆 failed、不算该作者完成）。
                     message = f"用户全量备份中止：Pixiv 认证失败（token 已失效）: {user_name} ({user_id})"
                     logger.error(message)
                     _report_log(reporter, "error", message)
-                    raise RuntimeError(str(exc)) from exc
+                    raise
                 processed += 1
                 failed = counters.get("failed", 0)
                 if failed:
@@ -326,10 +344,26 @@ def run_user_backup_task(
                     stopped = True
                     break
 
-            if stopped:
+            if stopped or (scheduled_owner is not None and total_failed):
                 break
 
-            next_query = api.parse_qs(getattr(result, "next_url", None))
+            next_url = getattr(result, "next_url", None)
+            if scheduled_owner is None:
+                next_query = api.parse_qs(next_url)
+            else:
+                if stop_requested is not None and stop_requested():
+                    stopped = True
+                    break
+                try:
+                    next_query = next_user_page_query(api, next_url, next_query)
+                except ValueError:
+                    total_failed_page = True
+                    break
+                checkpoint = {"offset": next_query["offset"]} if next_query else {}
+                db.update_watermark("user_backup_page", checkpoint, cursor_key)
+                if next_query and page_count >= max_pages:
+                    truncated_by_page_cap = True
+                    break
             if next_query and settings.sync.delay_seconds_between_pages > 0:
                 if _sleep_with_cancel(settings.sync.delay_seconds_between_pages, stop_requested):
                     stopped = True
@@ -344,7 +378,9 @@ def run_user_backup_task(
             mode_label = f"增量：跳过已归档 {total_skipped_archived} 本"
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
-        elif total_failed or total_failed_page:
+        elif truncated_by_page_cap and scheduled_owner is not None and not total_failed and not total_failed_page:
+            _report_log(reporter, "info", f"本轮完成 {page_count} 页，下轮续页: {user_name} ({user_id})")
+        elif total_failed or total_failed_page or truncated_by_page_cap:
             _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本（{mode_label}）")
         else:
             _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本（{mode_label}）")
@@ -364,9 +400,13 @@ def run_user_backup_task(
             # 上游错误页：数据没拉全却没有任何单本失败，必须单独标记
             stats.update(incomplete=True, aborted_reason="upstream_error_page")
         if truncated_by_page_cap:
-            # 触顶翻页上限属于异常截断，必须让任务日志显示 partial
-            stats["truncated"] = True
             stats["incomplete"] = True
+            if scheduled_owner is not None and not total_failed and not total_failed_page:
+                stats.update(rotation_pending=True, more_pages=True)
+            else:
+                stats["truncated"] = True
+        if scheduled_owner is not None:
+            stats.update(pages_read=page_count, resumed=resumed)
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped") and _catalog_inputs_changed(stats):

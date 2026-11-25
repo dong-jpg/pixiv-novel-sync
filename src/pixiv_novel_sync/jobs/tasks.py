@@ -465,6 +465,16 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
     db = Database(settings.storage.db_path)
     try:
         prepare_schema(db)
+        from .models import JobSource
+        job = context.get("job")
+        if job is not None and job.spec.source == JobSource.SCHEDULER:
+            backlog = db.conn.execute(
+                "SELECT COUNT(*) FROM recommendation_items WHERE status='new' AND profile_id="
+                "(SELECT id FROM preference_profiles WHERE is_default=1 ORDER BY updated_at DESC LIMIT 1)"
+            ).fetchone()[0]
+            if backlog >= 200:
+                reporter.add_log("info", f"待阅读推荐已有 {backlog} 条，本轮不检索")
+                return {"backlog": backlog, "skipped_reason": "recommendation_backlog", "searched": 0}
         service = RecommendationService(db, settings)
         service.stop_requested = stop_requested
         params = context.get("params", {})

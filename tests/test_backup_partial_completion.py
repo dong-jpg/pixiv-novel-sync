@@ -12,7 +12,8 @@ from pixiv_novel_sync.jobs.runner import JobRunner
 from pixiv_novel_sync.jobs.tasks import execute_task
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
 from pixiv_novel_sync.storage_db import Database
-from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
+from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService, SyncAuthFailed
+from pixiv_novel_sync.sync.following_snapshot import save_following_snapshot
 from pixiv_novel_sync.webapp import _task_log_status_for_stats
 
 
@@ -21,7 +22,7 @@ def backup_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     settings = Settings(
         pixiv=PixivSettings(
             refresh_token="", access_token=None, proxy=None,
-            timeout=30, verify_ssl=True, user_id=None,
+            timeout=30, verify_ssl=True, user_id=99,
         ),
         sync=SyncSettings(
             enabled=True, initial_manual_only=False, download_assets=False,
@@ -38,6 +39,7 @@ def backup_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     try:
         db.init_schema()
         db.conn.execute("INSERT INTO users(user_id, name, raw_json) VALUES(1, 'test', '{}')")
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1)])
     finally:
         db.close()
     case = SimpleNamespace(
@@ -90,6 +92,110 @@ def run_backup(case, entry):
     return quick_sync.run_scheduled_user_backup(case.settings, **kwargs)
 
 
+def test_scheduled_backup_resumes_third_page_and_retries_failed_page(backup_case, monkeypatch):
+    offsets = []
+
+    def user_novels(*, user_id, offset=0):
+        offsets.append(offset)
+        return SimpleNamespace(novels=[SimpleNamespace(id=offset + 1)], next_url=str(offset + 1) if offset < 2 else None)
+
+    api = SimpleNamespace(user_novels=user_novels, parse_qs=lambda url: {"offset": url, "user_id": "1"} if url else None)
+    monkeypatch.setattr(services, "_login", lambda settings: api)
+    first = run_backup(backup_case, "scheduled")
+    assert first["authors_with_more_pages"] == 1 and first["rotation_pending"]
+    assert _task_log_status_for_stats(first) == "succeeded"
+    backup_case.failed_ids = {3}
+    second = run_backup(backup_case, "scheduled")
+    assert second["failed"] == 1 and _task_log_status_for_stats(second) == "partial"
+    assert second["authors_with_more_pages"] == 1
+    backup_case.failed_ids.clear()
+    third = run_backup(backup_case, "scheduled")
+    assert third["resumed_users"] == 1 and not third["authors_with_more_pages"]
+    assert offsets == [0, 1, 2, 2]
+
+
+def test_scheduled_backup_rejects_cross_author_or_repeated_offset(backup_case, monkeypatch):
+    for next_query in ({"offset": "1", "user_id": "2"}, {"offset": "0", "user_id": "1"}):
+        api = SimpleNamespace(user_novels=lambda **kwargs: SimpleNamespace(novels=[], next_url="next"),
+                              parse_qs=lambda url: next_query)
+        monkeypatch.setattr(services, "_login", lambda settings: api)
+        result = run_backup(backup_case, "scheduled")
+        assert _task_log_status_for_stats(result) == "partial"
+        assert result["pages_read"] == 1
+
+
+def test_failed_first_page_retries_without_starving_other_authors(backup_case, monkeypatch):
+    backup_case.settings.sync.user_backup_users_per_run = 1
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1), SimpleNamespace(id=2)])
+    finally:
+        db.close()
+    requests = []
+
+    def user_novels(*, user_id, offset=0):
+        requests.append((user_id, offset))
+        return SimpleNamespace(novels=[SimpleNamespace(id=user_id)], next_url="next" if not offset else None)
+
+    api = SimpleNamespace(user_novels=user_novels, parse_qs=lambda url: {"offset": 30} if url else None)
+    monkeypatch.setattr(services, "_login", lambda settings: api)
+    backup_case.failed_ids = {1}
+    first = run_backup(backup_case, "scheduled")
+    assert requests == [(1, 0)]
+    assert first["authors_with_more_pages"] == 1
+    assert _task_log_status_for_stats(first) == "partial"
+    run_backup(backup_case, "scheduled")
+    run_backup(backup_case, "scheduled")
+    assert requests == [(1, 0), (1, 0), (2, 0), (2, 30)]
+
+
+def test_cold_backup_shares_one_login_with_list_and_authors(backup_case, monkeypatch):
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        db.update_watermark("following_public:99", {})
+    finally:
+        db.close()
+    logins = []
+    api = SimpleNamespace(
+        user_following=lambda **query: SimpleNamespace(user_previews=[SimpleNamespace(id=1), SimpleNamespace(id=2)], next_url=None),
+        user_novels=lambda **query: SimpleNamespace(novels=[], next_url=None),
+        parse_qs=lambda url: None,
+    )
+
+    def login(settings):
+        logins.append(settings)
+        return api
+
+    monkeypatch.setattr(services, "_login", login)
+    result = run_backup(backup_case, "scheduled")
+    assert result["users_total"] == result["pages_read"] == 2
+    assert logins == [backup_case.settings]
+
+
+@pytest.mark.parametrize("entry", ["direct", "scheduled"])
+def test_backup_auth_failure_does_not_continue_to_next_author(backup_case, monkeypatch, entry):
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1), SimpleNamespace(id=2)])
+    finally:
+        db.close()
+    requests = []
+
+    def user_novels(**query):
+        requests.append(query)
+        return {"error": {"message": "invalid_grant"}}
+
+    monkeypatch.setattr(services, "_login", lambda settings: SimpleNamespace(user_novels=user_novels))
+    if entry == "direct":
+        with pytest.raises(SyncAuthFailed):
+            run_backup(backup_case, entry)
+    else:
+        result = run_backup(backup_case, entry)
+        assert result["aborted_reason"] == "auth_failed"
+        assert _task_log_status_for_stats(result) == "partial"
+    assert requests == [{"user_id": 1}]
+
+
 @pytest.mark.parametrize("entry", ["direct", "scheduled"])
 def test_four_successes_then_one_failure_marks_backup_partial(backup_case, entry):
     backup_case.failed_ids = {5}
@@ -123,6 +229,7 @@ def test_scheduled_backup_sums_failed_novels_across_users(backup_case):
     db = Database(backup_case.settings.storage.db_path)
     try:
         db.conn.execute("INSERT INTO users(user_id, name, raw_json) VALUES(2, 'test', '{}')")
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1), SimpleNamespace(id=2)])
     finally:
         db.close()
     backup_case.failed_ids = {5}
@@ -297,7 +404,7 @@ class _ErrorPageApi:
         return {"error": {"message": "Rate Limit"}}
 
     def parse_qs(self, value):
-        return {"user_id": 1, "page": 2} if value == "page-2" else None
+        return {"user_id": 1, "offset": 5} if value == "page-2" else None
 
 
 @pytest.mark.parametrize("entry", ["direct", "scheduled"])
