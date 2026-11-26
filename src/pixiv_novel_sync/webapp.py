@@ -20,6 +20,7 @@ import requests as http_requests
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, send_file, url_for
 
 from . import __version__
+from .illustrations import asset_urls, export_images
 from .jobs.manager import JobManager
 from .jobs.models import JobSource, JobSpec, JobState, JobStatus, JobType
 from .jobs.runner import JobRunner
@@ -1523,6 +1524,7 @@ def create_app(
         try:
             payload = db.get_novel_detail(novel_id)
             if payload is not None:
+                payload["illustrations"] = asset_urls(db, novel_id)
                 payload["rescue"] = db.evaluate_rescue_novel(novel_id)
         finally:
             db.close()
@@ -1569,7 +1571,8 @@ def create_app(
                 if novel_data.get("cover_url"):
                     cover_path = storage.get_novel_cover_path(novel_data)
 
-                epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path)
+                epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path,
+                                                    inline_images=export_images(db, current_settings, novel_id))
                 filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
 
                 return send_file(
@@ -1597,7 +1600,11 @@ def create_app(
                         if novel_data.get("cover_url"):
                             cover_path = storage.get_novel_cover_path(novel_data)
 
-                        epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
+                        epub_bytes = create_epub_from_novel(
+                            novel_data, novel_data["text_raw"], cover_path,
+                            inline_images=export_images(db, current_settings, novel_id),
+                            image_budget=(32 * 1024**2) // min(len(novel_ids), 50),
+                        )
                         # 文件名带 _{novel_id}：同名作品（同一系列的「番外」、不同作者的同题作）不再互相覆盖
                         title = str(novel_data.get("title") or "").strip()
                         stem = f"{safe_name(title, str(novel_id))}_{novel_id}" if title else str(novel_id)
@@ -1642,7 +1649,17 @@ def create_app(
         search = str(request.args.get("search", "") or "").strip()
         db = _open_database(current_settings)
         try:
-            payload = db.list_users(page=page, page_size=page_size, status=status, search=search)
+            from .sync.following_snapshot import known_following_members
+            members = known_following_members(db, current_settings.pixiv.user_id)
+            scope = request.args.get("scope", "all")
+            if scope not in ("all", "following"):
+                return jsonify({"error": "无效作者范围"}), 400
+            if scope == "following" and members is None:
+                return jsonify({"error": "请先同步完整关注名单"}), 409
+            payload = db.list_users(page=page, page_size=page_size, status=status, search=search,
+                                    member_ids=set(members) if scope == "following" else None)
+            for item in payload["items"]:
+                item["following_scopes"] = members.get(item["user_id"], []) if members is not None else None
         finally:
             db.close()
         return jsonify(payload)

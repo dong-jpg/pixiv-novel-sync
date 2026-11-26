@@ -226,6 +226,7 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
     ),
     "system": frozenset(
         {
+            "rescue_archive_read_enabled",
             "pending_deletion_cleanup_confirmed_days",
             "task_log_retention_days",
         }
@@ -1040,6 +1041,10 @@ class SettingsManager:
         config_data = _load_yaml_file(config_path)
         sync_data = config_data.setdefault("sync", {})
 
+        if "rescue_archive_read_enabled" in payload:
+            if type(payload["rescue_archive_read_enabled"]) is not bool:
+                raise ValueError("扩展救援阅读权限必须为布尔值")
+            sync_data["rescue_archive_read_enabled"] = payload["rescue_archive_read_enabled"]
         sync_data["enabled"] = bool(payload.get("enabled", sync_data.get("enabled", False)))
         sync_data["initial_manual_only"] = bool(payload.get("initial_manual_only", sync_data.get("initial_manual_only", True)))
         sync_data["download_assets"] = bool(payload.get("download_assets", sync_data.get("download_assets", True)))

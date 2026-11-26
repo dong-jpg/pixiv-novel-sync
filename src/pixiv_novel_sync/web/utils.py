@@ -79,6 +79,7 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "bookmark_max_pages_per_run": settings.sync.bookmark_max_pages_per_run,
         "user_backup_max_pages_per_run": settings.sync.user_backup_max_pages_per_run,
         "user_backup_users_per_run": settings.sync.user_backup_users_per_run,
+        "rescue_archive_read_enabled": settings.sync.rescue_archive_read_enabled,
         "archive_rescan_days": settings.sync.archive_rescan_days,
         "following_max_novels_per_author": settings.sync.following_max_novels_per_author,
         "series_max_pages_per_run": settings.sync.series_max_pages_per_run,

@@ -95,6 +95,7 @@ def run_scheduled_user_backup(
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
     claim_finalization: ClaimFinalization | None = None,
+    include_private: bool = False,
 ) -> dict[str, Any]:
     """Back up a rotating batch of followed users through the shared runner."""
     db = Database(settings.storage.db_path)
@@ -116,29 +117,57 @@ def run_scheduled_user_backup(
             members = read_following_snapshot(db, owner)
             if refreshed.get("incomplete") or members is None:
                 return {"incomplete": True, "aborted_reason": "following_snapshot_unavailable", "novels": 0}
-        user_ids = sorted(user.id for user in members)
+        public_ids = {user.id for user in members}
+        user_ids = sorted(public_ids)
+        if include_private:
+            private_members = read_following_snapshot(db, owner, "private")
+            if private_members is None:
+                if api is None:
+                    api = job_services._login(settings)
+                service = BookmarkNovelSyncService(api, db, FileStorage(settings), settings, stop_requested)
+                refreshed = service.sync_following_list(_build_cancel_progress_callback(stop_requested), "private")
+                private_members = read_following_snapshot(db, owner, "private")
+                if refreshed.get("incomplete") or private_members is None:
+                    return {"incomplete": True, "aborted_reason": "following_snapshot_unavailable", "novels": 0}
+            user_ids = sorted(set(user_ids) | {user.id for user in private_members})
         total_users = len(user_ids)
         watermark = db.get_watermark("user_backup_rotation_v2", str(owner)) or {}
         offset = bisect_right(user_ids, watermark.get("last_author", 0))
-        if offset >= total_users:
-            offset = 0
-
         users_limit = settings.sync.user_backup_users_per_run
         member_ids = set(user_ids)
+        completed_ids = set()
+        enumerated_ids = set()
+        complete_archive_ids = set()
+        if include_private:
+            records = db.conn.execute(
+                "SELECT key,json_extract(value_json,'$.completed_at'),json_extract(value_json,'$.last_enumerated_at'),"
+                "json_extract(value_json,'$.last_archive_complete') FROM sync_watermarks "
+                "WHERE sync_type='user_backup_page' AND key LIKE ?", (f"{owner}:%",)
+            )
+            for key, completed_at, last_enumerated, archive_complete in records:
+                author_id = int(key.split(":")[1])
+                if last_enumerated or completed_at:
+                    enumerated_ids.add(author_id)
+                    if archive_complete:
+                        complete_archive_ids.add(author_id)
+                if completed_at and job_services._iso_age_days(completed_at) < 30:
+                    completed_ids.add(author_id)
+            member_ids -= completed_ids
         pending = [author for author in watermark.get("pending", []) if author in member_ids]
         resume_author = pending[0] if pending and (users_limit > 1 or not watermark.get("resumed_first")) else None
         rotating = user_ids[offset:] + user_ids[:offset]
-        batch = ([resume_author] if resume_author is not None else []) + [author for author in rotating if author != resume_author]
+        batch = ([resume_author] if resume_author is not None else []) + [author for author in rotating if author != resume_author and author in member_ids]
         batch = batch[:users_limit]
 
         if reporter is not None and batch:
             reporter.add_log(
                 "info",
                 "=== 全量备份关注用户小说: "
-                f"公开关注 {total_users} 人，本轮 {len(batch)} 人 ===",
+                f"关注 {total_users} 人，本轮 {len(batch)} 人 ===",
             )
 
         totals = {"novels": 0, "skipped": 0, "skipped_archived": 0, "assets_downloaded": 0, "failed_users": 0}
+        totals.update({name: 0 for name in ("novels_created", "metadata_updated", "texts_updated", "failed_assets", "assets_repaired", "unavailable_count", "body_rechecks")})
         full_refresh_users = 0
         stopped = False
         failed_users = 0
@@ -168,6 +197,8 @@ def run_scheduled_user_backup(
                     rebuild_catalog=False,
                     scheduled_owner=owner,
                     api=api,
+                    private_author=include_private and user_id not in public_ids,
+                    body_recheck_budget=max(0, 10 - totals["body_rechecks"]) if include_private else 0,
                 )
             except InterruptedError:
                 stopped = True
@@ -195,6 +226,13 @@ def run_scheduled_user_backup(
                 incomplete = True
                 incomplete_reasons.add(str(stats.get("aborted_reason") or "user_backup_incomplete"))
             failed_novels += int(stats.get("failed", 0) or 0)
+            if stats.get("history_enumerated"):
+                completed_ids.add(user_id)
+                enumerated_ids.add(user_id)
+                if stats.get("history_complete"):
+                    complete_archive_ids.add(user_id)
+                else:
+                    complete_archive_ids.discard(user_id)
             if stats.get("full_refresh"):
                 full_refresh_users += 1
             for key in totals:
@@ -216,6 +254,10 @@ def run_scheduled_user_backup(
         # full_refresh_users：本轮里走「全部重抓」的作者数，其余作者只补没归档完整的
         result: dict[str, Any] = {**totals, "full_refresh_users": full_refresh_users, "stopped": stopped}
         result.update(pages_read=pages_read, resumed_users=resumed_users, authors_with_more_pages=len(pending), users_total=total_users)
+        if include_private:
+            result["authors_enumerated_30d"] = len(completed_ids.intersection(user_ids))
+            result["authors_ever_enumerated"] = len(enumerated_ids.intersection(user_ids))
+            result["authors_complete_at_last_scan"] = len(complete_archive_ids.intersection(user_ids))
         if pending and not incomplete:
             result.update(incomplete=True, rotation_pending=True)
         if failed_novels:

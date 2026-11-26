@@ -79,6 +79,13 @@ class FakeConn:
 
 
 class FakeDatabase:
+    def get_watermark(self, sync_type, key="_"):
+        if sync_type.startswith("following_public:"):
+            return {"members": {str(item["user_id"]): "" for page in self.user_pages for item in page["items"]}}
+        if sync_type.startswith("following_private:"):
+            return {"members": {}}
+        return None
+
     def __init__(self, db_path) -> None:
         self.db_path = db_path
         self.init_schema_called = False
@@ -412,6 +419,28 @@ def test_novel_status_task_batch_size_comes_from_settings(settings, service_env,
     assert result["batch_size"] == 1
 
 
+def test_series_status_limits_new_migrated_series_per_round(settings, service_env, monkeypatch):
+    monkeypatch.setattr(FakeDatabase, "get_series_ids_for_status_check", lambda self: list(range(1, 502)))
+    checked = []
+
+    def check(api, series_id):
+        checked.append(series_id)
+        return "normal"
+
+    monkeypatch.setattr(services, "_check_series_status", check)
+    result = services.run_series_status_task(settings)
+    assert checked == list(range(1, 301))
+    assert result["series_status_remaining"] == 201 and result["rotation_pending"]
+
+
+def test_user_status_without_complete_membership_does_not_scan_other_authors(settings, service_env, monkeypatch):
+    monkeypatch.setattr(FakeDatabase, "get_watermark", lambda *args: None)
+    monkeypatch.setattr(services, "_check_pixiv_user_status", lambda *args: pytest.fail("No complete membership"))
+    result = services.run_user_status_task(settings)
+    assert result["checked_count"] == 0
+    assert result["aborted_reason"] == "following_snapshot_unavailable"
+
+
 def test_novel_status_task_aborts_and_skips_catalog_when_rate_limited(settings, service_env, monkeypatch):
     """连续 unknown 触发熔断：中止本轮、标记原因，且不重建救援目录。"""
     monkeypatch.setattr(services, "_check_novel_status", lambda api, novel_id: "unknown")
@@ -686,6 +715,8 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
     assert db.closed is True
     assert result == {
         "user_id": 202,
+        "novels_created": 0, "metadata_updated": 0, "texts_updated": 0,
+        "failed_assets": 0, "assets_repaired": 0, "body_rechecks": 0,
         "novels": 2,
         "skipped": 0,
         # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
@@ -1054,6 +1085,8 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
     assert result == {
         "user_id": 101,
         "novels": 2,
+        "novels_created": 0, "metadata_updated": 0, "texts_updated": 0,
+        "failed_assets": 0, "assets_repaired": 0, "body_rechecks": 0,
         "skipped": 0,
         # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
         "skipped_archived": 0,
@@ -1076,6 +1109,8 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
     assert result == {
         "user_id": 101,
         "novels": 1,
+        "novels_created": 0, "metadata_updated": 0, "texts_updated": 0,
+        "failed_assets": 0, "assets_repaired": 0, "body_rechecks": 0,
         "skipped": 0,
         # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
         "skipped_archived": 0,

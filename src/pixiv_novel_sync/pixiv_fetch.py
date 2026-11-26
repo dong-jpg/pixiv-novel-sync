@@ -352,6 +352,7 @@ class FetchedNovel:
     meta_hash: str
     text_hash: str
     text_size: int
+    illustrations: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
     @property
     def metadata(self) -> dict:
@@ -389,11 +390,15 @@ def fetch_novel(api: Any, novel_id: int, *, fallback_novel=None,
         if len(text) > TEXT_LIMIT or len(text.encode("utf-8")) > TEXT_LIMIT:
             raise PixivFetchError("text_too_large")
         text = normalize_text(text)
+        from .illustrations import collect_mapping
+        assets = _collect_assets(normalized, webview)
+        illustrations = tuple(item for item in collect_mapping(text, webview) if ("inline_image", item[1]) in assets)
         dto = FetchedNovel(
             novel_id, _canonical(raw), _canonical(normalized), text,
-            _collect_assets(normalized, webview),
+            assets,
             sha256_text(stable_json_dumps(_stable_meta_for_hash(raw))),
             sha256_text(text), len(text.encode("utf-8")),
+            illustrations,
         )
         validate_novel(dto, expected_novel_id=novel_id)
         _check_cancel(stop_requested)
@@ -562,8 +567,15 @@ def validate_novel(dto: FetchedNovel, *, expected_novel_id: int) -> FetchedNovel
         seen.add(asset)
     if len(_canonical({"metadata": normal, "raw_metadata": raw, "assets": dto.assets}).encode("utf-8")) > METADATA_LIMIT:
         raise PixivFetchError("metadata_too_large")
+    if type(dto.illustrations) is not tuple or len(dto.illustrations) > ASSET_LIMIT:
+        raise PixivFetchError("invalid_assets")
     if not isinstance(dto.text, str) or len(dto.text) > TEXT_LIMIT:
         raise PixivFetchError("text_too_large")
+    for item in dto.illustrations:
+        if (type(item) is not tuple or len(item) != 2 or not all(isinstance(value, str) for value in item)
+                or not re.fullmatch(r"(?:uploadedimage|pixivimage):[0-9]{1,20}(?:-[0-9]{1,10})?", item[0])
+                or ("inline_image", item[1]) not in dto.assets or f"[{item[0]}]" not in dto.text):
+            raise PixivFetchError("invalid_assets")
     try:
         body = dto.text.encode("utf-8")
     except UnicodeError:

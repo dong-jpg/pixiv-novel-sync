@@ -1,6 +1,6 @@
 # Frontend API Contract
 
-更新：2026-11-25。本页维护当前分支的接口契约；代码验证与生产启用边界见 [项目现状](STATUS.md)。
+更新：2026-11-26。本页维护当前分支的接口契约；代码验证与生产启用边界见 [项目现状](STATUS.md)。
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
@@ -10,7 +10,7 @@
 
 - 页面由 Flask/Jinja 渲染，业务页面使用随安装包提供的 Vue 3 增强交互，访客首页和登录表单不需要 JavaScript。
 - 导航仍使用服务端路由和普通 `<a>` 跳转，不是 SPA router。
-- 图片资源统一通过 `GET /proxy/image?url=...` 代理加载。
+- 远端封面通过 `GET /proxy/image?url=...` 代理加载；归档正文插图使用下述授权本地资源接口。
 - Core dashboard 接口存在 raw JSON 与 envelope 混用。
 - AI 与偏好推荐接口主要使用 `{ ok: true, data: ... }` 与 `{ ok: false, error: string }`。
 
@@ -281,6 +281,7 @@ Expected detail fields include:
 - `source_url`：Pixiv 原站地址（`https://www.pixiv.net/novel/show.php?id=<novel_id>`），由主键派生，前端不必自己拼。`series` 表同名列用 `https://www.pixiv.net/novel/series/<series_id>`。
 - bookmark/view counts where available。
 - `rescue`：实时救援评估、远端状态、完整度和人工纠错状态。
+- `illustrations`：已建立映射的 `uploadedimage:ID` / `pixivimage:ID` 到 `/api/dashboard/novels/<novel_id>/assets/<asset_id>` 的路径字典。资源接口要求 Dashboard 权限、作品归属和书库路径校验；缺失文件返回 404。
 
 ### GET /api/dashboard/novels/{novel_id}/progress
 
@@ -319,7 +320,7 @@ Used by: 小说阅读页阅读进度恢复。每次打开都核对服务端版�
 - `novel_ids` 缺失或不是数组时返回 `400 { "error": "novel_ids required" }`。
 - 单本：直接返回 `application/epub+zip` 附件；小说不存在返回 `404`，正文缺失返回 `400`。
 - 多本：最多处理前 50 个 ID（重复 ID 只导一次），跳过无正文条目，返回 `application/zip` 附件 `novels.zip`；条目名为 `{标题}_{novel_id}.epub`（无标题时为 `{novel_id}.epub`），同名作品不再互相覆盖。
-- EPUB 内容：正文按 Pixiv 标记解析（`pixiv_markup.py`）。`[newpage]` 与 `[chapter:]` 各起一个 XHTML 文件并进目录（超过 500 个文件后，其余分页并入最后一个文件，页内锚点仍可跳转）；`[[rb:]]` 转 `<ruby><rt>`；`[[jumpuri:]]` 只保留 http(s) 链接，其余只留文字；`[jump:N]` 链到第 N 页所在文件；插图标记降级为文字说明（备份未收录插图与正文的对应关系）。语言按正文判断（ja / zh / ko / en）；封面按文件头识别 JPEG / PNG / GIF / WebP，认不出就不放封面。
+- EPUB 内容：正文按 Pixiv 标记解析（`pixiv_markup.py`）。`[newpage]` 与 `[chapter:]` 各起一个 XHTML 文件并进目录（超过 500 个文件后，其余分页并入最后一个文件，页内锚点仍可跳转）；`[[rb:]]` 转 `<ruby><rt>`；`[[jumpuri:]]` 只保留 http(s) 链接，其余只留文字；`[jump:N]` 链到第 N 页所在文件。有明确映射且文件有效的插图直接嵌入，单图最多 8 MiB，单本总计最多 32 MiB，批量导出共享 32 MiB 插图预算；缺失或无法映射时保留文字说明。语言按正文判断（ja / zh / ko / en）；封面和插图按文件头识别 JPEG / PNG / GIF / WebP。
 
 ### GET /api/dashboard/export/stats
 
@@ -423,6 +424,8 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`。限流�
 
 返回可救援单篇或失效父系列中的完整章节。字段白名单包括：
 
+小说、系列、章节目录和插图接口均可带 `archive=1`，但仅当系统设置 `rescue_archive_read_enabled=true` 才允许读取尚未判失效的归档。该设置默认关闭，始终要求救援 Bearer Token，并尊重人工 `exclude`；不会扩大目录列表或 lookup 的收录条件。脚本只在明确救援意图或原站确认失效后、普通读取返回 404 时回退到扩展读取。
+
 - `novel_id`、`title`、`caption`、`user_id`、`author_name`、`series_id`
 - `cover_url`、`tags`、`create_date`、`text_raw`
 - `rescue_state`、`remote_status`、`eligibility_reason`
@@ -430,6 +433,7 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`。限流�
 - `last_checked_at`、`updated_at`、`personal_hold`、`source_notice`
 - `total_bookmarks`、`total_views`（同步时的快照）、`x_restrict`、`is_original`、`ai_type`
 - `series_nav`：所属系列可救援时为 `{series_id, series_title, chapter_number, chapter_total, prev, next}`（`prev`/`next` 为 `{novel_id, title, chapter_number}` 或 `null`），否则为 `null`。章节序号与目录接口同一口径。
+- `illustrations`：标记到 `/api/rescue/v1/novels/<novel_id>/assets/<asset_id>` 的路径字典。图片请求仍须携带 Authorization 头；不在 URL 传 Token，不允许跨小说资产或越出归档根目录。
 
 ### GET /api/rescue/v1/novels/<novel_id>/cover 与 GET /api/rescue/v1/series/<series_id>/cover
 
@@ -441,7 +445,7 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`。限流�
 
 ### GET /api/rescue/v1/series/<series_id>/chapters
 
-查询参数：`page`、`page_size`。返回有完整正文的章节目录（按发布时间排序）；目录项包含 `novel_id`、`title`、`chapter_number`、`create_date`、`remote_status`、`text_length`、`tags`、`total_bookmarks`、`total_views`、`x_restrict`、`is_original`、`ai_type`、`has_cover` 与 `api_path`，正文通过小说接口按需读取。分页之外另给全部已备份章节的 `total_text_length` 与 `last_create_date`（系列页头部「共N话 · 更新 · 字数 · 时长」用）。
+查询参数：`page`、`page_size`、可选 `archive=1`。返回有完整正文的章节目录，优先按已观测的远端章序、未知章按发布时间和 ID 排在后面，与阅读页上下章一致。目录项包含 `novel_id`、`title`、`chapter_number`、`create_date`、`remote_status`、`text_length`、`tags`、`total_bookmarks`、`total_views`、`x_restrict`、`is_original`、`ai_type`、`has_cover` 与 `api_path`，正文通过小说接口按需读取。分页之外另给全部已备份章节的 `total_text_length` 与 `last_create_date`。
 
 ### GET /api/rescue/v1/series
 
@@ -491,7 +495,7 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`。限流�
 
 Used by: follows page。
 
-Query params include status/page/search-style filters currently used by template.
+查询支持 `status`、`page`、`page_size`、`search`，以及 `scope=all|following`（默认 all）。关注页使用 following，仅返回当前账号完整公开/私密名单中的作者；未取得完整名单时返回 409。条目的 `following_scopes` 表示 public/private 关系，名单未知时为 null。取消关注不删除作者及作品归档。
 
 ### GET /api/dashboard/users/{user_id}
 

@@ -219,8 +219,11 @@
       }
     }).join('');
 
-    // 备份没有存「插图 ID → 图片文件」的对应关系，如实给占位，不猜图
-    const renderImage = (block) => {
+    const renderImage = (block, images) => {
+      const path = images && images[block.kind + ':' + block.id];
+      if (typeof path === 'string' && /^\/api\/dashboard\/novels\/\d+\/assets\/\d+$/.test(path)) {
+        return `<img src="${escapeHtml(path)}" alt="正文插图" loading="lazy" style="max-width:100%;height:auto">`;
+      }
       const note = '此处原有插图（私人备份未收录插图）';
       const artwork = block.kind === 'pixivimage' ? pixivArtworkId(block.id) : null;
       if (!artwork) return `<div class="pns-image-missing">${note}</div>`;
@@ -229,7 +232,7 @@
     };
 
     // 段落仍是「一行一个 <p>、空行一个 empty-line」，缩进交给 .reader-body p 的 text-indent
-    const renderBlock = (block, pageCount) => {
+    const renderBlock = (block, pageCount, images) => {
       switch (block.type) {
         case 'paragraph':
           return `<p>${renderInline(block.content, pageCount, false)}</p>`;
@@ -238,20 +241,20 @@
         case 'chapter':
           return `<h2 class="pns-chapter">${renderInline(block.content, pageCount, false)}</h2>`;
         case 'image':
-          return renderImage(block);
+          return renderImage(block, images);
         default:
           return '';
       }
     };
 
     // 阅读页是整篇连续滚动（进度按滚动位置算），[newpage] 画成分隔条，不拆成翻页
-    const renderHtml = (text) => {
+    const renderHtml = (text, images) => {
       const pages = parse(text);
       const total = pages.length;
       const parts = ['<div class="pns-page-anchor" id="pns-page-1" aria-hidden="true"></div>'];
       pages.forEach((blocks, index) => {
         if (index > 0) parts.push(`<div class="pns-page-break" id="pns-page-${index + 1}">${index + 1} / ${total} 页</div>`);
-        blocks.forEach(block => parts.push(renderBlock(block, total)));
+        blocks.forEach(block => parts.push(renderBlock(block, total, images)));
       });
       return parts.join('\n');
     };

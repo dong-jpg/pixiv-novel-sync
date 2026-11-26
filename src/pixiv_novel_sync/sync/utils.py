@@ -32,7 +32,30 @@ RETRY_PATCHED_METHODS = (
     "novel_series",
     "webview_novel",
     "user_detail",
+    "novel_follow",
 )
+
+
+def response_is_auth_failed(value: Any) -> bool:
+    from ..pixiv_fetch import _auth_failed, _parse_pixiv_error_json
+
+    if isinstance(value, BaseException):
+        return _auth_failed(_parse_pixiv_error_json(value))
+    error = value.get("error") if isinstance(value, dict) else getattr(value, "error", None)
+    return _auth_failed(error)
+
+
+def response_is_rate_limited(value: Any) -> bool:
+    from ..pixiv_fetch import _parse_pixiv_error_json
+
+    if isinstance(value, BaseException):
+        if _extract_status_code(value) == 429:
+            return True
+        error = _parse_pixiv_error_json(value) or str(value)
+    else:
+        error = value.get("error") if isinstance(value, dict) else getattr(value, "error", None)
+    text = " ".join(str(error.get(name) or "") for name in ("message", "reason", "user_message")) if isinstance(error, dict) else str(error or "")
+    return any(token in text.lower() for token in _RATE_LIMIT_TOKENS)
 
 
 def response_is_pixiv_error_page(result: Any) -> bool:
@@ -133,8 +156,37 @@ def apply_pixiv_retry_patch(
                 base_delay=base_delay,
                 stop_requested=stop_requested,
             )(original)
-        wrapped._pixiv_retry_original = original  # type: ignore[attr-defined]
+        renew = getattr(api, "__dict__", {}).get("_pixiv_reauthenticate")
+        if renew is not None:
+            wrapped = _retry_after_renewal(wrapped, renew, binding)
+        wrapped._pixiv_retry_original = original
         setattr(api, method_name, wrapped)
+
+
+def _retry_after_renewal(call, renew, binding):
+    def check_cancel():
+        if binding and binding.stop_requested and binding.stop_requested():
+            raise InterruptedError("Task stopped by user")
+
+    @wraps(call)
+    def invoke(*args, **kwargs):
+        check_cancel()
+        try:
+            result = call(*args, **kwargs)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            check_cancel()
+            if not response_is_auth_failed(exc) or not renew():
+                raise
+        else:
+            check_cancel()
+            if not response_is_auth_failed(result) or not renew():
+                return result
+        check_cancel()
+        return call(*args, **kwargs)
+
+    return invoke
 
 
 def _extract_status_code(exc: Exception) -> int | None:

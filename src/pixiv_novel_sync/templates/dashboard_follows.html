@@ -145,7 +145,7 @@
         { label: '全部', value: 'all' },
         { label: '正常', value: 'normal' },
         { label: '无小说', value: 'no_novels' },
-        { label: '已停用', value: 'suspended' },
+        { label: '账号不可用', value: 'suspended' },
         { label: '已清空', value: 'cleared' },
         { label: '未知', value: 'unknown' }
       ];
@@ -166,12 +166,17 @@
             page: page.value,
             page_size: 12,
             status: status.value,
-            search: search.value
+            search: search.value,
+            scope: 'following'
           });
           const res = await fetch('/api/dashboard/users?' + params, {
             signal: controller.signal
           });
-          if (!res.ok) throw new Error('API request failed');
+          if (!res.ok) {
+            const failure = new Error('API request failed');
+            failure.status = res.status;
+            throw failure;
+          }
 
           const data = await res.json();
           if (controller !== fetchAbortController || controller.signal.aborted) return;
@@ -182,7 +187,8 @@
         } catch (err) {
           if (controller === fetchAbortController && !controller.signal.aborted && err.name !== 'AbortError') {
             console.error(err);
-            error.value = '加载失败，请检查网络连接或稍后重试。';
+            error.value = err.status === 409 ? '关注名单尚未完整同步，请先运行“关注用户”同步。'
+              : '加载失败，请检查网络连接或稍后重试。';
             items.value = [];
           }
         } finally {
@@ -204,7 +210,7 @@
       const statusMap = {
         normal:    { label: '正常', badgeClass: 'bg-green-50 text-green-700 border border-green-200', dotClass: 'bg-green-500' },
         no_novels: { label: '无小说', badgeClass: 'bg-yellow-50 text-yellow-700 border border-yellow-200', dotClass: 'bg-yellow-500' },
-        suspended: { label: '已停用', badgeClass: 'bg-red-50 text-red-700 border border-red-200', dotClass: 'bg-red-500' },
+        suspended: { label: '账号不可用', badgeClass: 'bg-red-50 text-red-700 border border-red-200', dotClass: 'bg-red-500' },
         cleared:   { label: '已清空', badgeClass: 'bg-slate-50 text-slate-700 border border-slate-200', dotClass: 'bg-slate-400' },
         unknown:   { label: '未知', badgeClass: 'bg-gray-50 text-gray-700 border border-gray-200', dotClass: 'bg-gray-500' }
       };

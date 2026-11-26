@@ -641,6 +641,14 @@ class NovelsMixin:
         （真删/私密）由调用方单独计数，不走这里——那是终局结论，由现有语义跳过。
         """
         self.conn.execute(
+            """INSERT INTO novel_fetch_attempts(novel_id,failures) VALUES(?,1)
+            ON CONFLICT(novel_id) DO UPDATE SET failures=failures+1""", (novel_id,)
+        )
+        self.conn.execute(
+            """UPDATE novel_fetch_attempts SET retry_at=datetime('now',?)
+            WHERE novel_id=? AND failures>=?""", (f"+{int(cooldown_days)} days", novel_id, fail_streak)
+        )
+        self.conn.execute(
             """
             UPDATE novels
             SET fetch_fail_count = COALESCE(fetch_fail_count, 0) + 1
@@ -665,6 +673,7 @@ class NovelsMixin:
 
     def clear_novel_fetch_failures(self, novel_id: int) -> None:
         """同步成功后清零失败计数并解除冷却。"""
+        self.conn.execute("DELETE FROM novel_fetch_attempts WHERE novel_id=?", (novel_id,))
         self.conn.execute(
             """
             UPDATE novels
@@ -677,6 +686,11 @@ class NovelsMixin:
 
     def novel_in_fetch_cooldown(self, novel_id: int) -> bool:
         """该作品是否处于抓取失败冷却窗口内（调用方本轮应跳过重试）。"""
+        pending = self.conn.execute(
+            "SELECT 1 FROM novel_fetch_attempts WHERE novel_id=? AND retry_at>datetime('now')", (novel_id,)
+        ).fetchone()
+        if pending:
+            return True
         row = self.conn.execute(
             "SELECT fetch_fail_until FROM novels WHERE novel_id = ?",
             (novel_id,),

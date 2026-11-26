@@ -51,11 +51,14 @@ def direct_sync_env(tmp_path, monkeypatch):
         def __init__(self, api, db, storage, settings):
             created["service"] = self
 
-        def sync_following_list(self, progress_callback=None):
+        def sync_following_lists(self, progress_callback=None):
             return {"users": 1}
 
         def sync_following_novels(self, **kwargs):
             return {"novels": 2}
+
+        def sync_following_updates(self, progress_callback=None):
+            return {"novels": 1, "feed_pages": 2}
 
         def sync_subscribed_series(self, **kwargs):
             return {"series_synced": 3}
@@ -94,6 +97,16 @@ def test_build_default_task_list_uses_sync_settings():
         sync = Sync()
 
     assert build_default_task_list(Settings()) == ["bookmark", "following_novels", "subscribed_series"]
+
+
+def test_scheduler_discovers_followed_novels_through_feed(direct_sync_env):
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobState
+
+    settings, created, unused_db, unused_service = direct_sync_env
+    job = JobState("feed", JobSpec(JobSource.SCHEDULER, ["following_novels"]))
+    result = execute_task("following_novels", settings, {"job": job})
+    assert result["feed_pages"] == 2 and result["novels"] == 1
+    assert created["db"].closed
 
 
 def test_task_label_for_known_and_unknown_tasks():
@@ -368,7 +381,9 @@ def test_execute_task_dispatches_scheduled_user_backup_batch(monkeypatch):
         reporter=None,
         stop_requested=None,
         claim_finalization=None,
+        include_private=False,
     ):
+        assert include_private
         calls.append((settings, reporter, stop_requested, claim_finalization))
         return {"novels": 3}
 

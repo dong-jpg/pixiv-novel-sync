@@ -17,6 +17,15 @@ class SeriesMixin:
     _lock: Any
     _commit_if_needed: Any
 
+    def ensure_archived_series(self, series_id: int, title: str, user_id: int) -> None:
+        self.conn.execute(
+            """INSERT INTO series(series_id,title,user_id,total_novels,is_subscribed,source_url)
+            VALUES(?,?,?,0,0,?) ON CONFLICT(series_id) DO UPDATE SET
+            title=CASE WHEN series.title='' THEN excluded.title ELSE series.title END""",
+            (series_id, title, user_id, series_source_url(series_id)),
+        )
+        self._commit_if_needed()
+
     def upsert_series_status(self, series_id: int, status: str) -> None:
         """更新系列状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。"""
         if status == UNKNOWN_STATUS:
@@ -63,6 +72,7 @@ class SeriesMixin:
                         SELECT json_extract(n.raw_json, '$.series.title')
                         FROM novels n
                         WHERE n.series_id = series.series_id
+                          AND json_valid(n.raw_json)
                           AND json_extract(n.raw_json, '$.series.title') IS NOT NULL
                           AND json_extract(n.raw_json, '$.series.title') != ''
                         ORDER BY n.create_date ASC
@@ -75,11 +85,7 @@ class SeriesMixin:
                           AND n.title IS NOT NULL
                           AND n.title != ''
                     ), '')
-                ),
-                total_novels = CASE
-                    WHEN total_novels > 0 THEN total_novels
-                    ELSE (SELECT COUNT(*) FROM novels n WHERE n.series_id = series.series_id)
-                END
+                )
             WHERE (title IS NULL OR title = '')
               AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = series.series_id)
             """
@@ -134,6 +140,9 @@ class SeriesMixin:
                         series_info["cover_url"] = cu
                         break
         series_info["novels"] = [dict(row) for row in novels]
+        series_info["expected_count"] = (series_info.get("total_novels") or None) if series_row is not None else None
+        series_info["inventory_observed"] = bool(self.conn.execute(
+            "SELECT 1 FROM series_inventory WHERE series_id=?", (series_id,)).fetchone())
         from ..sync.series_inventory import observed_order
         order = {novel_id: index for index, novel_id in enumerate(observed_order(self.conn, series_id))}
         if order:

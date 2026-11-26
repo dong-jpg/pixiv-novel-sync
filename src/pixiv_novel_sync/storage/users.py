@@ -222,11 +222,16 @@ class UsersMixin:
             "total_pages": total_pages,
         }
 
-    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all", search: str = "") -> dict[str, Any]:
+    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all", search: str = "",
+                   member_ids: set[int] | None = None) -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
         clauses: list[str] = []
         params: list[Any] = []
+        if member_ids is not None:
+            clauses.append("u.user_id IN (SELECT value FROM json_each(?))")
+            import json
+            params.append(json.dumps(sorted(member_ids)))
         if status != "all":
             clauses.append("u.status = ?")
             params.append(status)

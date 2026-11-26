@@ -61,6 +61,7 @@ class SyncSettings:
     series_max_pages_per_run: int | None = None
     user_backup_max_pages_per_run: int | None = None
     user_backup_users_per_run: int = 5
+    rescue_archive_read_enabled: bool = False
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
     delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
@@ -225,6 +226,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             series_max_pages_per_run=_coerce_optional_int(sync_raw.get("series_max_pages_per_run")),
             user_backup_max_pages_per_run=_coerce_optional_int(sync_raw.get("user_backup_max_pages_per_run")),
             user_backup_users_per_run=_coerce_positive_int(sync_raw.get("user_backup_users_per_run"), 5),
+            rescue_archive_read_enabled=_coerce_bool(sync_raw.get("rescue_archive_read_enabled"), False),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),

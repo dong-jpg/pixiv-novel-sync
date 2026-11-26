@@ -95,6 +95,10 @@
           {{ rescueTokenStatus.configured ? '已配置' : '未配置' }}
         </span>
       </div>
+      <label v-if="settings" class="flex items-center gap-2 mt-4 text-sm">
+        <input type="checkbox" v-model="settings.rescue_archive_read_enabled" @change="saveSettings" :disabled="saving">
+        允许持有救援 Token 的设备按作品 ID 阅读未判失效的私人归档（含私密收藏）
+      </label>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 text-sm">
         <div class="p-4 bg-gray-50 rounded-lg border border-gray-100">
           <div class="text-xs text-gray-500">当前 Token 前缀</div>
@@ -198,6 +202,7 @@
             body: JSON.stringify({
               pending_deletion_cleanup_confirmed_days: settings.value.pending_deletion_cleanup_confirmed_days,
               task_log_retention_days: settings.value.task_log_retention_days,
+              rescue_archive_read_enabled: settings.value.rescue_archive_read_enabled,
             }),
           });
           const data = await res.json().catch(() => ({}));

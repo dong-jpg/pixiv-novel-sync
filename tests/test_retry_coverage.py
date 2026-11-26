@@ -146,6 +146,13 @@ def test_sync_service_binds_its_cancel_callback_after_login_patch(recorded_sleep
 
 
 class _StatusDb:
+    def get_watermark(self, sync_type, key="_"):
+        if sync_type.startswith("following_public:"):
+            return {"members": {"101": "u101"}}
+        if sync_type.startswith("following_private:"):
+            return {"members": {}}
+        return None
+
     def __init__(self) -> None:
         self.upserts: list[tuple[str, object, str]] = []
         self.closed = False

@@ -176,3 +176,16 @@ def test_scheduled_backup_reports_which_mode_each_round_used(tmp_path, monkeypat
 
     assert first["full_refresh_users"] == 0 and first["novels"] == 2
     assert second["full_refresh_users"] == 0 and second["skipped_archived"] == 2
+
+
+def test_scheduled_reconciliation_limits_old_body_rechecks(tmp_path, monkeypatch):
+    settings, api = _env(tmp_path, monkeypatch)
+    services.run_user_backup_task(settings, AUTHOR_ID, scheduled_owner=999)
+    db = Database(settings.storage.db_path)
+    try:
+        db.conn.execute("UPDATE archive_refreshes SET checked_at='2000-01-01'")
+    finally:
+        db.close()
+    result = services.run_user_backup_task(settings, AUTHOR_ID, scheduled_owner=999, body_recheck_budget=1)
+    assert result["body_rechecks"] == 1 and result["skipped_archived"] == 1
+    assert api.detail_calls == NOVEL_IDS + [NOVEL_IDS[0]]

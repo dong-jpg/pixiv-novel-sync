@@ -413,11 +413,14 @@ def register_rescue_routes(
     )
     @public_auth
     def rescue_novel(novel_id: int):
+        from .illustrations import asset_urls
+        archived = request.args.get("archive") == "1" and current_settings().sync.rescue_archive_read_enabled
         db = open_db()
         try:
-            item = db.get_rescue_novel(novel_id)
+            item = db.get_rescue_novel(novel_id, archived=archived)
+            images = asset_urls(db, novel_id, rescue=True) if item else {}
             extras = (
-                db.get_rescue_novel_extras(novel_id, item.get("series_id"))
+                db.get_rescue_novel_extras(novel_id, item.get("series_id"), archived=archived)
                 if item is not None
                 else {}
             )
@@ -447,11 +450,45 @@ def register_rescue_routes(
             "personal_hold",
         }
         data = {key: item.get(key) for key in fields}
+        data["illustrations"] = images
         # 收藏/浏览是同步时的快照；series_nav 只在所属系列可救援时有值
         for key in ("total_bookmarks", "total_views", "x_restrict", "is_original", "ai_type", "series_nav"):
             data[key] = extras.get(key)
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": data})
+
+    def illustration_response(novel_id: int, asset_id: int, *, rescue: bool):
+        from .illustrations import image_mime, mapped_assets, safe_image_path
+
+        current = current_settings()
+        db = open_db()
+        try:
+            if rescue:
+                item = db.evaluate_rescue_novel(novel_id)
+                archived = request.args.get("archive") == "1" and current.sync.rescue_archive_read_enabled
+                if not item or not item["body_complete"] or not (item["rescue_state"] or
+                        (archived and item.get("override_action") != "exclude")):
+                    return _public_error("插图不存在", 404)
+            asset = next((row for row in mapped_assets(db, novel_id) if row["asset_id"] == asset_id), None)
+        finally:
+            db.close()
+        path = safe_image_path(current, asset)
+        mime = image_mime(path) if path else None
+        if not mime:
+            return _public_error("插图不存在", 404)
+        response = send_file(path, mimetype=mime, conditional=True)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+    @app.get("/api/dashboard/novels/<int:novel_id>/assets/<int:asset_id>")
+    def dashboard_illustration(novel_id: int, asset_id: int):
+        return illustration_response(novel_id, asset_id, rescue=False)
+
+    @app.route("/api/rescue/v1/novels/<int:novel_id>/assets/<int:asset_id>", methods=["GET"], provide_automatic_options=False)
+    @public_cover_auth
+    def rescue_illustration(novel_id: int, asset_id: int):
+        return illustration_response(novel_id, asset_id, rescue=True)
 
     def _cover_response(asset: dict | None):
         """把 assets 记录解析成本地文件并返回 send_file 响应。
@@ -536,7 +573,8 @@ def register_rescue_routes(
     def rescue_series(series_id: int):
         db = open_db()
         try:
-            item = db.get_rescue_series(series_id)
+            item = db.get_rescue_series(series_id, archived=request.args.get("archive") == "1"
+                                        and current_settings().sync.rescue_archive_read_enabled)
         finally:
             db.close()
         if item is None:
@@ -575,6 +613,7 @@ def register_rescue_routes(
                 series_id,
                 page=_safe_page(request.args.get("page"), 1),
                 page_size=_safe_page(request.args.get("page_size"), 100, 100),
+                archived=request.args.get("archive") == "1" and current_settings().sync.rescue_archive_read_enabled,
             )
         finally:
             db.close()

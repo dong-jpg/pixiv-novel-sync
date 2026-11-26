@@ -478,7 +478,7 @@ class BookmarkNovelSyncService:
 
         return stats
 
-    def sync_following_list(self, progress_callback: Any = None) -> dict[str, Any]:
+    def sync_following_list(self, progress_callback: Any = None, restrict: str = "public") -> dict[str, Any]:
         """同步关注用户列表（只更新用户信息，不同步小说）"""
         stats = {"users": 0, "following_users_scanned": 0}
         page_delay = self.settings.sync.delay_seconds_between_pages
@@ -489,7 +489,7 @@ class BookmarkNovelSyncService:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
 
         users, incomplete, failed = self._collect_following_users(
-            current_user_id, FOLLOWING_LIST_MAX_PAGES, page_delay, progress_callback
+            current_user_id, FOLLOWING_LIST_MAX_PAGES, page_delay, progress_callback, restrict
         )
         for user in users:
             author_id = int(user.id)
@@ -507,7 +507,7 @@ class BookmarkNovelSyncService:
         else:
             if self.stop_requested is not None and self.stop_requested():
                 raise InterruptedError("Task stopped by user")
-            save_following_snapshot(self.db, current_user_id, users)
+            save_following_snapshot(self.db, current_user_id, users, restrict)
         return stats
 
     def _collect_following_users(
@@ -516,6 +516,7 @@ class BookmarkNovelSyncService:
         safety_limit: int,
         page_delay: float,
         progress_callback: Any = None,
+        restrict: str = "public",
     ) -> tuple[list[Any], bool, bool]:
         """整页取回关注列表（只收集用户对象，不同步任何作品）。
 
@@ -524,7 +525,7 @@ class BookmarkNovelSyncService:
         """
         collected: list[Any] = []
         seen_ids: set[int] = set()
-        next_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
+        next_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": restrict}
         page_count = 0
         incomplete = False
         fetch_failed = False
@@ -586,6 +587,23 @@ class BookmarkNovelSyncService:
         if self.stop_requested is not None and self.stop_requested():
             raise InterruptedError("Task stopped by user")
         return collected, incomplete, fetch_failed
+
+    def sync_following_lists(self, progress_callback: Any = None) -> dict[str, Any]:
+        stats = {"users": 0, "following_users_scanned": 0}
+        for restrict in ("public", "private"):
+            part = self.sync_following_list(progress_callback, restrict)
+            for field in ("users", "following_users_scanned"):
+                stats[field] += part[field]
+            stats[f"{restrict}_users"] = part["users"]
+            if part.get("incomplete"):
+                stats.update(incomplete=True, failed=part.get("failed", 0), aborted_reason="following_snapshot_unavailable")
+                break
+        return stats
+
+    def sync_following_updates(self, progress_callback: Any = None) -> dict[str, Any]:
+        from .sync.following_updates import sync_updates
+
+        return sync_updates(self, progress_callback)
 
     def _order_subscribed_series_for_rotation(self, series_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """按「最久未检查优先」给订阅系列排序，熔断后从断点续跑而非从队头重来。
@@ -1125,6 +1143,7 @@ class BookmarkNovelSyncService:
     def sync_subscribed_series(self, progress_callback: Any = None, limit: int = 0) -> dict[str, int]:
         """获取用户订阅的系列列表（从 watchlist 页面）"""
         stats = {"series_synced": 0, "novels": 0, "assets_downloaded": 0}
+        refresh_remaining = 10
         
         logger.info("Fetching subscribed series list (limit=%d)", limit)
         if progress_callback:
@@ -1530,8 +1549,8 @@ class BookmarkNovelSyncService:
                                         continue
 
                                     # 只有正文和必要资源都完整时才跳过；否则补同步。
-                                    if (self._archive_complete_on_disk(novel_id, download_assets)
-                                            and not needs_refresh(self.db, novel_id, rescan_days)):
+                                    archived = self._archive_complete_on_disk(novel_id, download_assets)
+                                    if archived and (refresh_remaining <= 0 or not needs_refresh(self.db, novel_id, rescan_days)):
                                         skipped_count += 1
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
@@ -1543,7 +1562,13 @@ class BookmarkNovelSyncService:
                                     # 不烧 30s/章预算），窗口过后照常重试（瞬时风控隔日自愈）。
                                     if self._novel_in_fetch_cooldown(novel_id):
                                         stats["failed_cooldown"] = stats.get("failed_cooldown", 0) + 1
+                                        stats.update(incomplete=True)
+                                        stats.setdefault("aborted_reason", "novel_fetch_cooldown")
                                         continue
+
+                                    if archived:
+                                        refresh_remaining -= 1
+                                        stats["body_rechecks"] = stats.get("body_rechecks", 0) + 1
 
                                     if progress_callback:
                                         progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 同步章节: {novel_id}"})
@@ -1559,6 +1584,8 @@ class BookmarkNovelSyncService:
                                     if counters.get("novels", 0) > 0:
                                         chapter_count += 1
                                         stats["novels"] += 1
+                                    for metric in ("novels_created", "metadata_updated", "texts_updated", "assets_downloaded", "failed_assets"):
+                                        stats[metric] = stats.get(metric, 0) + counters.get(metric, 0)
                                     if counters.get("failed", 0):
                                         stats["failed"] = stats.get("failed", 0) + counters.get("failed", 0)
                                         stats["incomplete"] = True
@@ -2215,6 +2242,10 @@ class BookmarkNovelSyncService:
             return False
         if not require_assets:
             return True
+        from .illustrations import mapped_assets, safe_image_path
+        if hasattr(self.db, "conn") and any(safe_image_path(self.settings, asset) is None
+                                            for asset in mapped_assets(self.db, novel_id)):
+            return False
         checker = getattr(self.storage, "asset_file_present", None)
         locate = getattr(self.storage, "get_novel_cover_path", None)
         if not callable(checker) or not callable(locate):
@@ -2247,8 +2278,15 @@ class BookmarkNovelSyncService:
         source_key: str | None = None,
     ) -> dict[str, int]:
         novel_id = int(novel.id)
+        if self._novel_in_fetch_cooldown(novel_id):
+            return {"failed": 1, "failed_cooldown": 1}
         try:
-            result = self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+            result = self._repair_archived_assets(novel_id, restrict, source_type, source_key) if download_assets else None
+            if result is None:
+                result = self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+            if result.get("failed"):
+                self.db.record_novel_fetch_failure(novel_id, NOVEL_FETCH_COOLDOWN_DAYS, NOVEL_FETCH_FAIL_STREAK)
+                return result
             # 成功（或纯本地跳过）即解除失败冷却：单次瞬时错误不累积惩罚。
             try:
                 self.db.clear_novel_fetch_failures(novel_id)
@@ -2295,6 +2333,36 @@ class BookmarkNovelSyncService:
                 logger.debug("记录小说 %s 失败退避失败", novel_id, exc_info=True)
             return {"failed": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
 
+    def _repair_archived_assets(self, novel_id, restrict, source_type, source_key):
+        from .illustrations import mapped_assets, safe_image_path
+
+        if not self.db.novel_archive_complete(novel_id, require_assets=False):
+            return None
+        row = self.db.conn.execute(
+            "SELECT n.*,u.name AS author_name FROM novels n LEFT JOIN users u USING(user_id) WHERE novel_id=?",
+            (novel_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if source_type.startswith("bookmark_") and restrict and restrict != row["restrict_value"]:
+            return None
+        novel_dir = self.storage.resolve_archive_dir(row["restrict_value"], row["archive_dir"], row["user_id"],
+                                                     row["author_name"], novel_id, row["title"])
+        missing = [("inline_image", asset["remote_url"]) for asset in mapped_assets(self.db, novel_id)
+                   if safe_image_path(self.settings, asset) is None]
+        if row["cover_url"] and not self._asset_file_present(novel_dir, "cover", row["cover_url"]):
+            missing.append(("cover", row["cover_url"]))
+        missing = list(dict.fromkeys(missing))
+        if not missing:
+            return None
+        if self.stop_requested and self.stop_requested():
+            raise InterruptedError("Task stopped by user")
+        downloaded = self._download_and_record_assets(novel_dir, row["restrict_value"], row["user_id"],
+                                                      row["author_name"], novel_id, row["title"], missing)
+        self.db.upsert_source(SourceRecord(novel_id, source_type, source_key or str(row["user_id"])))
+        return {"skipped": 1, "assets_downloaded": downloaded, "assets_repaired": downloaded,
+                "failed_assets": len(missing) - downloaded, "failed": int(downloaded < len(missing))}
+
     def _sync_novel_inner(
         self,
         novel_id: int,
@@ -2321,6 +2389,8 @@ class BookmarkNovelSyncService:
         existing_row = self.db.conn.execute(
             "SELECT meta_hash, archive_dir, restrict_value FROM novels WHERE novel_id = ?", (novel_id,)
         ).fetchone()
+        if existing_row and not source_type.startswith("bookmark_"):
+            restrict = None
         restrict = _resolve_archive_restrict(restrict, existing_row[2] if existing_row else None)
         existing_text_row = self.db.conn.execute(
             "SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)
@@ -2356,10 +2426,14 @@ class BookmarkNovelSyncService:
                 self.db.touch_novel(novel_id)
                 self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
             assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
+            from .illustrations import save_mapping
+            save_mapping(self.db, novel_id, fetched.illustrations, preserve_existing=True)
             from .sync.rescan import record_refresh
             record_refresh(self.db, novel_id)
             return {
                 "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": assets_downloaded,
+                "failed_assets": len(missing_assets) - assets_downloaded,
+                "failed": int(assets_downloaded < len(missing_assets)),
                 "bookmarks": metadata["total_bookmarks"],
                 "views": metadata["total_views"],
                 "skipped": 1,
@@ -2373,14 +2447,17 @@ class BookmarkNovelSyncService:
         # novel would be marked "synced" forever with no text on disk. Writing
         # files first means a crash leaves the DB unmarked and the novel is retried.
         self.storage.write_text(novel_dir / "meta.json", json.dumps(meta_plain, ensure_ascii=False, indent=2))
-        if write_raw_text:
+        if write_raw_text and (not text_unchanged or not (novel_dir / "text.txt").is_file()):
             self.storage.write_text(novel_dir / "text.txt", body)
-        if write_markdown and markdown_text is not None:
+        if write_markdown and markdown_text is not None and (not text_unchanged or not meta_unchanged):
             self.storage.write_text(novel_dir / "text.md", markdown_text)
 
         with self.db.transaction():
             if self.stop_requested is not None and self.stop_requested():
                 raise InterruptedError("Task stopped by user")
+            if series_id:
+                series_meta = meta_plain.get("series") or {}
+                self.db.ensure_archived_series(series_id, str(series_meta.get("title") or ""), user_id)
             if user_id:
                 self.db.upsert_user(
                     UserRecord(
@@ -2413,15 +2490,15 @@ class BookmarkNovelSyncService:
                 )
             )
             self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-            self.db.upsert_novel_text(
-                NovelTextRecord(
-                    novel_id=novel_id,
-                    text_raw=body,
-                    text_markdown=markdown_text,
-                    text_hash=text_hash,
+            if not text_unchanged:
+                self.db.upsert_novel_text(
+                    NovelTextRecord(novel_id=novel_id, text_raw=body,
+                                    text_markdown=markdown_text, text_hash=text_hash)
                 )
-            )
-            self.db.replace_fts(novel_id, title, caption, user_name, body)
+            if not text_unchanged or not meta_unchanged:
+                self.db.replace_fts(novel_id, title, caption, user_name, body)
+            from .illustrations import save_mapping
+            save_mapping(self.db, novel_id, fetched.illustrations, preserve_existing=bool(text_unchanged))
 
         assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
 
@@ -2430,8 +2507,12 @@ class BookmarkNovelSyncService:
         return {
             "users": 1,
             "novels": 1,
-            "texts_updated": 1,
+            "novels_created": int(existing_row is None),
+            "metadata_updated": int(existing_row is not None and not meta_unchanged),
+            "texts_updated": int(not text_unchanged),
             "assets_downloaded": assets_downloaded,
+            "failed_assets": len(missing_assets) - assets_downloaded,
+            "failed": int(assets_downloaded < len(missing_assets)),
             "bookmarks": metadata["total_bookmarks"],
             "views": metadata["total_views"],
         }

@@ -184,6 +184,21 @@ class SchemaMixin:
             migrate_inventory(conn)
             migrate_statistics(conn)
             migrate_library_analysis(conn)
+            conn.execute("""CREATE TABLE IF NOT EXISTS novel_fetch_attempts(
+                novel_id INTEGER PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, retry_at TEXT)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS following_feed_pending(
+                owner_id INTEGER NOT NULL, novel_id INTEGER NOT NULL, author_id INTEGER NOT NULL,
+                scope TEXT NOT NULL CHECK(scope IN ('public','private')), retry_at TEXT,
+                PRIMARY KEY(owner_id, novel_id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS novel_illustrations(
+                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+                marker TEXT NOT NULL, remote_url TEXT NOT NULL, PRIMARY KEY(novel_id,marker))""")
+            conn.execute("""INSERT INTO series(series_id,title,user_id,total_novels,is_subscribed,source_url)
+                SELECT n.series_id,COALESCE(MAX(CASE WHEN json_valid(n.raw_json)
+                THEN json_extract(n.raw_json,'$.series.title') END),''),MAX(n.user_id),0,0,
+                'https://www.pixiv.net/novel/series/' || n.series_id FROM novels n
+                LEFT JOIN series se ON se.series_id=n.series_id
+                WHERE n.series_id IS NOT NULL AND se.series_id IS NULL GROUP BY n.series_id""")
         self._commit_if_needed()
 
     def _migrate_query_indexes(self) -> None:

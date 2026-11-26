@@ -57,6 +57,7 @@ USER_BACKUP_MAX_FAILURE_RATIO = 0.2
 # 已确认 deleted 的系列多久复查一次（天）。与小说侧 KNOWN_DELETED_RECHECK_DAYS
 # 同语义——降频而非永久跳过：作者可能重新上传或恢复系列。
 KNOWN_DELETED_SERIES_RECHECK_DAYS = 7
+SERIES_STATUS_BATCH_SIZE = 300
 
 # 手动作者备份每 7 天允许全部重抓一次；定时备份始终只补缺失归档。
 # 全部重抓保留为唯一会重抓已归档正文的路径：作者改了正文、或 S2 那种被错误页覆写成
@@ -165,6 +166,8 @@ def run_user_backup_task(
     claim_finalization: ClaimFinalization | None = None,
     scheduled_owner: int | None = None,
     api: Any = None,
+    private_author: bool = False,
+    body_recheck_budget: int = 0,
 ) -> dict[str, Any]:
     if stop_requested is not None and stop_requested():
         _report_log(reporter, "info", "用户全量备份已停止")
@@ -210,8 +213,13 @@ def run_user_backup_task(
         next_query: dict[str, Any] | None = {"user_id": user_id}
         cursor_key = f"{scheduled_owner}:{user_id}"
         resumed = False
+        checkpoint = {}
+        unavailable_ids = set()
+        metrics = {name: 0 for name in ("novels_created", "metadata_updated", "texts_updated", "failed_assets", "assets_repaired", "body_rechecks")}
         if scheduled_owner is not None:
             checkpoint = db.get_watermark("user_backup_page", cursor_key) or {}
+            if checkpoint.get("offset"):
+                unavailable_ids = set(checkpoint.get("unavailable_ids", []))
             offset = checkpoint.get("offset")
             if type(offset) is int and offset > 0:
                 next_query["offset"] = offset
@@ -277,9 +285,12 @@ def run_user_backup_task(
                 visited += 1
                 novel_id = int(novel.id)
 
-                if not full_refresh and service._archive_complete_on_disk(
-                    novel_id, settings.sync.download_assets
-                ):
+                archived = not full_refresh and service._archive_complete_on_disk(novel_id, settings.sync.download_assets)
+                recheck = False
+                if archived and body_recheck_budget > 0:
+                    from ..sync.series_inventory import needs_refresh
+                    recheck = needs_refresh(db, novel_id, getattr(settings.sync, "archive_rescan_days", 7))
+                if archived and not recheck:
                     # 纯本地判定，不发请求、不间隔；来源照常登记（与以前重访时一致）
                     with db.transaction():
                         db.upsert_source(
@@ -297,12 +308,15 @@ def run_user_backup_task(
                     )
                     continue
 
+                if recheck:
+                    body_recheck_budget -= 1
+                    metrics["body_rechecks"] += 1
                 try:
                     counters = service._sync_novel(
                         novel,
                         # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
                         # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
-                        None,
+                        "private" if private_author else None,
                         settings.sync.download_assets,
                         settings.sync.write_markdown,
                         settings.sync.write_raw_text,
@@ -318,6 +332,12 @@ def run_user_backup_task(
                     _report_log(reporter, "error", message)
                     raise
                 processed += 1
+                if counters.get("content_unavailable"):
+                    unavailable_ids.add(novel_id)
+                elif not counters.get("failed"):
+                    unavailable_ids.discard(novel_id)
+                for metric in metrics:
+                    metrics[metric] += counters.get(metric, 0)
                 failed = counters.get("failed", 0)
                 if failed:
                     total_failed += failed
@@ -359,7 +379,15 @@ def run_user_backup_task(
                 except ValueError:
                     total_failed_page = True
                     break
-                checkpoint = {"offset": next_query["offset"]} if next_query else {}
+                last_enumerated = checkpoint.get("last_enumerated_at") or checkpoint.get("completed_at")
+                completed_at = None if next_query else datetime.now(timezone.utc).isoformat()
+                checkpoint = {
+                    "offset": next_query["offset"] if next_query else 0,
+                    "unavailable_ids": sorted(unavailable_ids),
+                    "completed_at": completed_at,
+                    "last_enumerated_at": completed_at or last_enumerated,
+                    "last_archive_complete": not unavailable_ids if completed_at else checkpoint.get("last_archive_complete"),
+                }
                 db.update_watermark("user_backup_page", checkpoint, cursor_key)
                 if next_query and page_count >= max_pages:
                     truncated_by_page_cap = True
@@ -385,6 +413,7 @@ def run_user_backup_task(
         else:
             _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本（{mode_label}）")
         stats = {
+            **metrics,
             "user_id": user_id,
             "novels": total_novels,
             "skipped": total_skipped,
@@ -406,7 +435,12 @@ def run_user_backup_task(
             else:
                 stats["truncated"] = True
         if scheduled_owner is not None:
-            stats.update(pages_read=page_count, resumed=resumed)
+            enumerated = bool(completed and checkpoint.get("completed_at"))
+            stats.update(pages_read=page_count, resumed=resumed, unavailable_count=len(unavailable_ids),
+                         history_enumerated=enumerated, history_complete=enumerated and not unavailable_ids)
+            if unavailable_ids:
+                stats.update(incomplete=True)
+                stats.setdefault("aborted_reason", "history_content_unavailable")
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped") and _catalog_inputs_changed(stats):
@@ -451,6 +485,14 @@ def run_user_status_task(
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
 ) -> dict[str, Any]:
+    def followed_users(db):
+        from ..sync.following_snapshot import known_following_members
+
+        members = known_following_members(db, getattr(settings.pixiv, "user_id", None))
+        if members is None:
+            return None
+        return [user for user in _list_users_for_status_check(db) if user["user_id"] in members]
+
     def build_already_missing(db: Database) -> Callable[[Any], bool]:
         # 已知 suspended 的再次确认是持续结论，不该推进 30 连熔断（MISSING_STATUSES
         # 同时含 suspended；series 侧 2026-11 同类假熔断的泛化修复）。生产上封禁
@@ -465,7 +507,7 @@ def run_user_status_task(
         stop_requested=stop_requested,
         task_label="用户状态检查",
         total_label="用户",
-        list_items=_list_users_for_status_check,
+        list_items=followed_users,
         check_status=_check_pixiv_user_status,
         upsert_status=lambda db, user, status: db.upsert_user_status(user["user_id"], status),
         progress_name=lambda user: str(user.get("name") or user.get("user_id")),
@@ -538,8 +580,10 @@ def run_series_status_task(
 ) -> dict[str, Any]:
     # 已删系列 7 天内复查过的不进本批；deferred 同时进 stats 供运维观测
     deferred: set[int] = set()
+    remaining = 0
 
     def list_ids(db: Database) -> list[int]:
+        nonlocal remaining
         # 已删系列 7 天内复查过的不进本批（与 novel_status 的 P21 降频同语义）。
         # 这同时省掉重复确认的请求：生产上 45 个已删系列每轮都吃 ~15% 检查量。
         # 查询失败退回全查（fail-safe），与小说侧一致。
@@ -560,11 +604,15 @@ def run_series_status_task(
         except Exception as exc:
             logger.warning("读取近期已确认删除的系列失败，本轮全部重查: %s", exc)
         ids = db.get_series_ids_for_status_check()
-        return [series_id for series_id in ids if int(series_id) not in deferred]
+        eligible = [series_id for series_id in ids if int(series_id) not in deferred]
+        remaining = max(0, len(eligible) - SERIES_STATUS_BATCH_SIZE)
+        return eligible[:SERIES_STATUS_BATCH_SIZE]
 
     def finalize_stats(db: Database, stats: dict[str, Any]) -> None:
         if deferred:
             stats["deleted_recheck_deferred"] = len(deferred)
+        if remaining:
+            stats.update(series_status_remaining=remaining, rotation_pending=True)
 
     def build_already_missing(db: Database) -> Callable[[Any], bool]:
         # known-deleted 再次确认是一致结论，不能推进 30 连熔断（生产 2026-11 事故：
@@ -734,7 +782,7 @@ def _make_reauth_handler(
         return state["api"]
 
     def on_auth_failed() -> bool:
-        if state["used"]:
+        if state["used"] or getattr(state["api"], "__dict__", {}).get("_pixiv_reauthenticate"):
             return False
         state["used"] = True
         api = _login(settings)
@@ -752,7 +800,7 @@ def _run_user_status_like_task(
     stop_requested: StopRequested | None,
     task_label: str,
     total_label: str,
-    list_items: Callable[[Database], list[dict[str, Any]]],
+    list_items: Callable[[Database], list[dict[str, Any]] | None],
     check_status: Callable[[Any, int], str],
     upsert_status: Callable[[Database, dict[str, Any], str], None],
     progress_name: Callable[[dict[str, Any]], str],
@@ -771,6 +819,9 @@ def _run_user_status_like_task(
     try:
         prepare_schema(db)
         items = list_items(db)
+        if items is None:
+            _report_log(reporter, "warning", "尚未取得完整的公开和私密关注名单，本轮不检查其他作者")
+            return {total_key: 0, "checked_count": 0, "incomplete": True, "aborted_reason": "following_snapshot_unavailable"}
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(items)} 个{total_label}需要检查")
         already_missing: Callable[[Any], bool] | None = None

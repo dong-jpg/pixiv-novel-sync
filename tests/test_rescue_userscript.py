@@ -565,6 +565,53 @@ def test_userscript_fixture_loads_additional_series_pages(rescue_browser) -> Non
     page.close()
 
 
+def test_archive_read_fallback_keeps_series_pagination_intent(rescue_browser):
+    page = rescue_browser.new_page()
+    base = "https://pixiv.dongboapp.com/api/rescue/v1/series/204"
+    responses = {
+        base + "?archive=1": {"series_id": 204, "title": "状态滞后系列", "rescue_state": "partial"},
+        base + "/chapters?archive=1": {
+            "items": [{"novel_id": 401, "title": "第一章"}], "page": 1, "total_pages": 2,
+        },
+        base + "/chapters?page=2&page_size=100&archive=1": {
+            "items": [{"novel_id": 402, "title": "第二章"}], "page": 2, "total_pages": 2,
+        },
+    }
+    _install_script(page, "<div id='spa-contents'></div>", responses,
+                    path="/novel/series/204?pixiv_rescue=1")
+    page.get_by_role("button", name="加载更多章节").click()
+    page.locator(".pixiv-rescue-chapter-title", has_text="第二章").wait_for(state="visible")
+    urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
+    assert base + "/chapters?page=2&page_size=100&archive=1" in urls
+    assert page.locator("a.pixiv-rescue-chapter-card").nth(1).get_attribute("href").endswith("id=402&pixiv_rescue=1")
+    page.close()
+
+
+def test_archive_read_fallback_keeps_directory_retry_intent(rescue_browser):
+    page = rescue_browser.new_page()
+    base = "https://pixiv.dongboapp.com/api/rescue/v1/series/204"
+    _install_script(page, "<div id='spa-contents'></div>", {
+        base + "?archive=1": {"series_id": 204, "title": "状态滞后系列", "rescue_state": "partial"},
+    }, path="/novel/series/204?pixiv_rescue=1")
+    page.locator(".pixiv-rescue-directory-error").wait_for(state="visible")
+    page.evaluate("([path, body]) => window.__rescueResponses[path] = body", [
+        base + "/chapters?archive=1", {"items": [{"novel_id": 401, "title": "恢复的章节"}], "page": 1, "total_pages": 1},
+    ])
+    page.get_by_role("button", name="重试", exact=True).click()
+    page.locator(".pixiv-rescue-chapter-title", has_text="恢复的章节").wait_for(state="visible")
+    page.close()
+
+
+def test_ambiguous_pixiv_error_does_not_expand_archive_access(rescue_browser):
+    page = rescue_browser.new_page()
+    _install_script(page, "<div id='spa-contents'></div>", {}, ajax_state="unknown")
+    page.wait_for_function("window.__rescueRequests.some(item => item.url.endsWith('/novels/101'))")
+    assert page.locator("[data-pixiv-rescue-notice]").count() == 0
+    urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
+    assert not any("archive=1" in url for url in urls)
+    page.close()
+
+
 def test_userscript_fixture_preserves_pixiv_error_when_api_fails(rescue_browser) -> None:
     """Pixiv 确认已删、备份里也没有：不开阅读层，只给一条固定定位的提示。"""
     page = rescue_browser.new_page()

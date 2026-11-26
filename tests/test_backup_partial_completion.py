@@ -40,6 +40,7 @@ def backup_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         db.init_schema()
         db.conn.execute("INSERT INTO users(user_id, name, raw_json) VALUES(1, 'test', '{}')")
         save_following_snapshot(db, 99, [SimpleNamespace(id=1)])
+        save_following_snapshot(db, 99, [], "private")
     finally:
         db.close()
     case = SimpleNamespace(
@@ -122,6 +123,58 @@ def test_scheduled_backup_rejects_cross_author_or_repeated_offset(backup_case, m
         result = run_backup(backup_case, "scheduled")
         assert _task_log_status_for_stats(result) == "partial"
         assert result["pages_read"] == 1
+
+
+def test_history_enumeration_records_unavailable_ids_without_claiming_complete(backup_case, monkeypatch):
+    from pixiv_novel_sync.pixiv_fetch import PixivFetchError
+
+    def unavailable(self, *args, **kwargs):
+        raise PixivFetchError("content_unavailable")
+
+    monkeypatch.setattr(BookmarkNovelSyncService, "_sync_novel_inner", unavailable)
+    stats = services.run_user_backup_task(backup_case.settings, 1, scheduled_owner=99)
+    assert stats["history_enumerated"] and not stats["history_complete"]
+    assert stats["unavailable_count"] == 5 and stats["incomplete"]
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        checkpoint = db.get_watermark("user_backup_page", "99:1")
+        assert checkpoint["completed_at"] and checkpoint["unavailable_ids"] == [1, 2, 3, 4, 5]
+    finally:
+        db.close()
+
+
+def test_scheduled_history_skips_completed_authors_and_reconciles_after_thirty_days(backup_case):
+    from datetime import datetime, timedelta, timezone
+
+    first = quick_sync.run_scheduled_user_backup(backup_case.settings, include_private=True)
+    second = quick_sync.run_scheduled_user_backup(backup_case.settings, include_private=True)
+    assert first["authors_enumerated_30d"] == 1
+    assert first["authors_ever_enumerated"] == first["authors_complete_at_last_scan"] == 1
+    assert second["pages_read"] == 0
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        db.update_watermark("user_backup_page", {"completed_at": (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()}, "99:1")
+    finally:
+        db.close()
+    assert quick_sync.run_scheduled_user_backup(backup_case.settings, include_private=True)["pages_read"] == 1
+
+
+def test_history_reconciliation_keeps_last_completed_observation(backup_case, monkeypatch):
+    first = services.run_user_backup_task(backup_case.settings, 1, scheduled_owner=99)
+    assert first["history_complete"]
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        original = db.get_watermark("user_backup_page", "99:1")["completed_at"]
+        api = SimpleNamespace(user_novels=lambda **query: SimpleNamespace(novels=[], next_url="more"),
+                              parse_qs=lambda url: {"offset": 30})
+        backup_case.settings.sync.user_backup_max_pages_per_run = 1
+        result = services.run_user_backup_task(backup_case.settings, 1, scheduled_owner=99, api=api)
+        assert result["resumed"] is False and not result["history_enumerated"]
+        checkpoint = db.get_watermark("user_backup_page", "99:1")
+        assert checkpoint["last_enumerated_at"] == original
+        assert checkpoint["completed_at"] is None and checkpoint["last_archive_complete"]
+    finally:
+        db.close()
 
 
 def test_failed_first_page_retries_without_starving_other_authors(backup_case, monkeypatch):

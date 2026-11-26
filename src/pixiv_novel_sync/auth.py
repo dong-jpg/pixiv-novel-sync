@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from pixivpy3 import AppPixivAPI
@@ -85,13 +86,43 @@ class PixivAuthManager:
             else:
                 api.set_auth(self._settings.access_token, None)
                 raw = {}
+        except InterruptedError:
+            raise
         except Exception as exc:
             raise PixivAuthError(f"Pixiv auth failed: {exc}") from exc
 
         access_token = getattr(api, "access_token", None) or self._settings.access_token
         refresh_token = getattr(api, "refresh_token", None) or self._settings.refresh_token
-        user_payload = raw.get("user", {}) if isinstance(raw, dict) else {}
-        user_id = self._settings.user_id or _coerce_user_id(user_payload.get("id"))
+        user_payload = (raw.get("user") or {}) if isinstance(raw, dict) else {}
+        authenticated_id = _coerce_user_id(user_payload.get("id"))
+        user_id = self._settings.user_id or authenticated_id
+        if authenticated_id and user_id != authenticated_id:
+            raise PixivAuthError("配置的 Pixiv 用户与登录账号不一致")
+        renewed = False
+
+        def reauthenticate() -> bool:
+            nonlocal renewed
+            if renewed or not refresh_token or not user_id:
+                return False
+            renewed = True
+            try:
+                candidate = self.create_api()
+                refreshed = candidate.auth(refresh_token=refresh_token)
+                refreshed_user = (refreshed.get("user") or {}) if isinstance(refreshed, dict) else {}
+                refreshed_id = _coerce_user_id(refreshed_user.get("id"))
+                if refreshed_id != user_id or not candidate.access_token:
+                    return False
+                api.set_auth(candidate.access_token, candidate.refresh_token)
+            except InterruptedError:
+                raise
+            except Exception:
+                logging.getLogger(__name__).warning("Pixiv 认证续期失败，本轮停止重试")
+                return False
+            logging.getLogger(__name__).info("Pixiv 认证已续期，重试当前请求")
+            return True
+
+        if refresh_token:
+            api._pixiv_reauthenticate = reauthenticate
 
         return api, AuthResult(
             access_token=access_token,

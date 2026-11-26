@@ -2,7 +2,7 @@
 
 ## Project Layout
 
-In `src/pixiv_novel_sync/`, `cli.py` defines commands, `webapp.py` creates the Flask app, `jobs/` runs sync tasks, and `storage/` manages SQLite. The UI ships in `templates/` and `static/`. At the root, `assets/` holds logos; `userscripts/` holds the Pixiv rescue script.
+Under `src/pixiv_novel_sync/`, `cli.py` defines commands, `webapp.py` creates the Flask app, `jobs/` runs tasks, `sync/` handles discovery and checkpoints, and `storage/` manages SQLite. The UI ships in `templates/` and `static/`. Root-level `assets/` holds logos; `userscripts/` holds the Pixiv rescue script.
 
 ## Local Development
 

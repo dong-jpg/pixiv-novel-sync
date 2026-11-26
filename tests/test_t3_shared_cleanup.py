@@ -120,6 +120,7 @@ def test_sync_novel_preserves_cancellation_without_recording_a_failure(monkeypat
     from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
     service = object.__new__(BookmarkNovelSyncService)
+    service.db = SimpleNamespace(novel_in_fetch_cooldown=lambda novel_id: False)
     cancelled = InterruptedError("Task stopped by user")
 
     def cancel(*args, **kwargs):

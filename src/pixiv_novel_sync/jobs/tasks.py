@@ -60,6 +60,7 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
             reporter=reporter,
             stop_requested=stop_requested,
             claim_finalization=claim_finalization,
+            include_private=True,
         )
 
     if task_type.startswith("user_backup:"):
@@ -113,6 +114,7 @@ def _run_direct_sync_task(
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from pixiv_novel_sync.auth import PixivAuthManager
+    from .models import JobSource
     from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.storage_files import FileStorage
     from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
@@ -135,6 +137,8 @@ def _run_direct_sync_task(
         raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
     if getattr(settings.pixiv, "user_id", None) is None:
         settings.pixiv.user_id = auth_result.user_id
+    from .services import _persist_self_profile
+    _persist_self_profile(settings, auth_result)
     add_log("success", f"登录成功, 用户ID: {auth_result.user_id}")
 
     db = Database(settings.storage.db_path)
@@ -156,15 +160,19 @@ def _run_direct_sync_task(
         )
 
         if task_type == "following_users":
-            return service.sync_following_list(progress_callback=progress_callback)
+            return service.sync_following_lists(progress_callback=progress_callback)
         if task_type == "following_novels":
-            stats = service.sync_following_novels(
-                download_assets=settings.sync.download_assets,
-                write_markdown=settings.sync.write_markdown,
-                write_raw_text=settings.sync.write_raw_text,
-                progress_callback=progress_callback,
-                users_limit=users_limit,
-            )
+            job = context.get("job")
+            if job is not None and job.spec.source == JobSource.SCHEDULER:
+                stats = service.sync_following_updates(progress_callback)
+            else:
+                stats = service.sync_following_novels(
+                    download_assets=settings.sync.download_assets,
+                    write_markdown=settings.sync.write_markdown,
+                    write_raw_text=settings.sync.write_raw_text,
+                    progress_callback=progress_callback,
+                    users_limit=users_limit,
+                )
         elif task_type == "subscribed_series":
             # sync_subscribed_series 签名固定为 (progress_callback, limit)，
             # 资源下载/写文件由内部按 settings 决定，此处无 download_assets 等参数。

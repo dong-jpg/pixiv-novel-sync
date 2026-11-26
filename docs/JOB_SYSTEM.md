@@ -143,8 +143,10 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - `FOLLOWING_LIST_MAX_PAGES = 50`(`sync_engine.py`):关注列表枚举与作品分页上限解耦,避免 `max_pages_per_run` 把候选集截断。
 - `sync.bookmark_max_pages_per_run`:**收藏列表专用**翻页上限,留空则回落到 `max_pages_per_run`。`max_pages_per_run` 的语义是"关注作者作品列表 / 系列章节的单轮翻页上限",生产配成 2 是为了压体量;收藏复用同一个值会让每轮只看最新约 60 条就标 `truncated/incomplete`,历史收藏永远补不齐——而收藏是优先级最高的数据。解析在 `sync_engine._resolve_bookmark_max_pages`。
 - `sync.max_items_per_run` 在收藏同步里只计**真正发了详情请求、能归档**的条目:已归档跳过的不计,`content_unavailable`(作品已删或不可见,永远归档不了)也不计,但照常按 `delay_seconds_between_items` 间隔。预算只在碰到下一本**未归档**的收藏时才判定触顶,此时置 `truncated` / `incomplete` / `budget_exhausted`(日志黄色);剩下的全是已归档时不算截断。以前失效收藏占预算,攒够上限后排在后面的未归档收藏永远轮不到,而且触顶静默、日志一直绿色(审查 S8)。
-- `following_list` 仅在成功遍历所有页后发布按账号隔离的公开关注名单。限量 `following_novels` 和定时备份可复用 36 小时内的快照；冷启动或过期时重新获取。请求失败不能把部分名单发布成完整名单，定时备份也不会退回整个 `users` 表。
-- 定时 `user_backup` 只补本地缺失的归档，每位作者每次最多 2 页；成功处理整页后才保存下一页 offset，失败页后停止翻页，失败或被取消时重试未完成的页。批次留一个名额给续页或失败重试，其余轮转，单名额时交替安排；同一批名单和作者请求复用一次登录，认证失败中止整批。手动 `user-backup <id>` 保留按作者每 7 天允许全量重校验的语义。`pages_read` 是请求页数而非成功页数；`resumed_users`、`authors_with_more_pages` 和 `skipped_archived` 用于区分续跑、重试和重复工作。
+- `following_list` 成功遍历全部页后，按账号和 public/private 分别发布完整关注名单。新作同步和备份复用 36 小时内快照；冷启动或过期时刷新。不完整名单不覆盖旧快照，账号状态巡检没有完整成员名单时明确跳过，不退回整个 `users` 表。
+- 定时 `following_novels` 使用公开/私密新作流；每个范围每轮 3–20 页（根据全局页预算），先持久保存发现 ID，再按 `max_items_per_run` 下载，未设时为 60 篇。最新作品优先，已完整归档的作品不请求正文；分页失败不丢下载积压。续跑会先核对新头部与旧锚点，最终追平才推进完成水位。`feed_pages`、`feed_pending`、`feed_backlog` 分别表示列表请求、待处理条目及分页积压；手动调用继续使用作者轮转。
+- 定时 `user_backup` 每作者每次最多 2 页，整页处理成功才推进 offset；失败/取消重试未完成页。记录目录枚举完成时间和不可获取 ID；`history_enumerated` 不等于 `history_complete`。已完成作者 30 天后再对账，每批旧正文复查最多 10 篇；缺图只补图片。批次给续页留名额并轮转其他作者，整批共用登录。手动 `user-backup <id>` 保留每 7 天允许全量重校验的语义。
+- 明确 OAuth 失败时共享客户端最多续期一次，验证账号后重试当前请求；再次失败按 `auth_failed` 结束。追更旧正文每轮最多复查 10 篇，新增、正文变化、仅元数据变化、补图分别统计。首次入库前失败的 ID 也持久退避。系列状态巡检最多 300 项，避免系列元数据迁移扩大单轮请求量。
 - `sync.following_max_novels_per_author`:**单个关注作者**每轮的同步上限,留空 = 不限。`max_items_per_run` 只在切换作者**之前**检查,单个作者内部没有任何上限,于是第一个高产作者就把整轮预算吃光——生产实测 256 个关注作者每轮只覆盖 1 个,轮完一圈要 95 天。撞到配额是跳到下一个作者,不是结束整轮。解析在 `sync_engine._resolve_following_author_quota`;整轮硬顶(`_resolve_following_run_cap`,取 配额×users_limit×1.5)只兜异常。
 - `sync.series_max_pages_per_run`:**系列章节专用**翻页上限,留空则回落到 `max_pages_per_run`。系列章节数远超单个作者的单轮作品体量,共用那个上限会把长系列永久截断,而且每轮都从 watchlist 头部重来、永远在同一页触顶:生产实测每轮 `truncated_series=2`,8 个订阅系列长期缺 76 章,高频重跑也补不齐。解析在 `sync_engine._resolve_series_max_pages`。
 - 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。`user_last_synced` 只在作者扫描**自然结束**时写(含配额、翻页上限、连续已存在早停);作品列表拉取失败记进同一水位的 `user_fail_streak`,连续 `FOLLOWING_AUTHOR_MAX_FAIL_STREAK = 3` 次照常写入(防止坏作者霸占队首),成功一次清零;被让位或取消的作者不写也不计数。以前扫描一开始就写,出错或被打断的作者也推后整圈。
@@ -213,7 +215,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | bookmarks | 1 | ✗ | True | 6 | "" | `bookmark_max_pages_per_run`(留空跟随 `max_pages_per_run`) |
 | subscribed_series | 2 | ✗ | True | 6 | "" | `series_max_pages_per_run`(留空跟随 `max_pages_per_run`) |
 | following_list | 3 | ✗ | True | 24 | "" | |
-| following_novels | 3 | ✓ | True | 6 | "" | `auto_sync_following_novels_users_limit`(0=全部)、`following_max_novels_per_author`(留空=不限) |
+| following_novels | 3 | ✓ | True | 6 | "" | 新作流页预算与 `max_items_per_run`；作者人数/单作者配额仅用于手动扫描 |
 | user_status | 3 | ✓ | True | 6 | "" | 已知受限用户按 `users.restricted_streak` 降频(≥3 轮判不出状态 → 每 7 天才巡检一次) |
 | novel_status | 3 | ✓ | True | 6 | "" | 批大小是代码常量 `NOVEL_STATUS_BATCH_SIZE`（800），不是设置页字段 |
 | series_status | 3 | ✓ | True | 6 | "" | |
@@ -261,7 +263,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 1. P1 收藏每天 6 次均匀分布,任何时刻最多等 4 小时。
 2. 长任务(`following_novels`、`novel_status`)避开收藏时刻 ±30 分钟,减少无谓让位。
 3. 状态检查轮转覆盖与用户取消收藏/追更检测是不同任务，调整频率时分别核对覆盖周期。
-4. `following_novels` 有单作者配额与轮转水位，应看最久未覆盖作者而不是单轮剩余数判断进度。
+4. 定时 `following_novels` 看新作流是否追平及下载积压；作者历史覆盖另看备份枚举完成记录，不能从单轮成功推断全库完整。
 5. `subscribed_series` 按独立访问水位轮转，未知错误保留熔断但不直接判定限流；注册表保持 `preemptible=False`。
 
 设置 API 拒绝非法时区和非空非法 cron；直接编辑 YAML 绕过该校验时，调度计算失败会回落到 interval。改完必须逐条验算下次时刻：

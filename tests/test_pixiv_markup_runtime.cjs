@@ -209,7 +209,7 @@ function defineReaderTests() {
     const html = read('dashboard_novel_detail.html');
     assert.match(html, /\{% include "pixiv_markup\.html" %\}/);
     assert.match(html, /class="reader-body" :class="'fs-' \+ fontSize" v-html="formattedContent" @click="onBodyClick"/);
-    assert.match(html, /window\.pixivMarkup\.renderHtml\(text\)/);
+    assert.match(html, /window\.pixivMarkup\.renderHtml\(text, novel\.value\.illustrations\)/);
     const { state } = mountReader({ novel_id: 1, title: 't', text_raw: '[[rb:漢字 > かんじ]]<script>x</script>[newpage]二' });
     const out = state.formattedContent.value;
     assert.match(out, /<ruby>漢字/);
@@ -240,5 +240,14 @@ function defineReaderTests() {
     state.onBodyClick({ target: { closest: () => missing }, preventDefault: () => { prevented += 1; } });
     assert.equal(prevented, 2);
     assert.equal(scrolled.length, 1);
+  });
+
+  test('mapped illustrations use authenticated local URLs only', () => {
+    const markup = loadMarkup();
+    const rendered = markup.renderHtml('[uploadedimage:3]', {'uploadedimage:3': '/api/dashboard/novels/42/assets/7'});
+    assert.match(rendered, /<img src="\/api\/dashboard\/novels\/42\/assets\/7"/);
+    for (const unsafe of ['https://evil.example/x', 'javascript:alert(1)', '/api/dashboard/novels/42/assets/7" onerror="x']) {
+      assert.doesNotMatch(markup.renderHtml('[uploadedimage:3]', {'uploadedimage:3': unsafe}), /<img/);
+    }
   });
 }
