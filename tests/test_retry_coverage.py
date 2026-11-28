@@ -205,7 +205,7 @@ def test_status_checks_cancel_during_retry_backoff(monkeypatch, tmp_path, record
         def __init__(self, pixiv_settings) -> None:
             pass
 
-        def login(self):
+        def login(self, **kwargs):
             return api, SimpleNamespace(user_id=999)
 
     monkeypatch.setattr(services, "PixivAuthManager", _Auth)

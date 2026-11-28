@@ -93,14 +93,16 @@ class NovelsMixin:
         self._commit_if_needed()
 
     def upsert_source(self, record: SourceRecord) -> None:
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
-            VALUES (?, ?, ?)
-            """,
-            (record.novel_id, record.source_type, record.source_key),
-        )
-        self._commit_if_needed()
+        with self.transaction():
+            cursor = self.conn.execute(
+                """
+                INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
+                VALUES (?, ?, ?)
+                """,
+                (record.novel_id, record.source_type, record.source_key),
+            )
+            if cursor.rowcount:
+                self.refresh_rescue_sources(record.novel_id)
 
     def record_asset(self, novel_id: int, asset_type: str, remote_url: str, local_path: str, file_hash: str | None) -> None:
         self.conn.execute(

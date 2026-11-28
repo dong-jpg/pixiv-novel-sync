@@ -261,6 +261,9 @@ def test_failed_or_cancelled_fetch_cannot_overwrite_an_existing_archive(tmp_path
         if failure == "cancel_after_detail":
             with pytest.raises(InterruptedError):
                 service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
+        elif failure == "detail_error":
+            with pytest.raises(sync_engine.SyncRateLimited):
+                service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
         else:
             assert service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")["failed"] == 1
         assert storage.text_writes == initial_writes
@@ -829,7 +832,8 @@ def test_sync_bookmarks_marks_truncated_when_page_limit_reached(tmp_path: Path) 
 
         def user_bookmarks_novel(self, **kwargs):
             self.calls += 1
-            return SimpleNamespace(novels=[], next_url="loop")
+            return SimpleNamespace(novels=[SimpleNamespace(id=self.calls)],
+                next_url=f"https://app-api.pixiv.net/v1/user/bookmarks/novel?offset={self.calls * 30}")
 
         def parse_qs(self, next_url):
             if next_url == "loop":
@@ -1007,7 +1011,7 @@ def test_sync_novel_keeps_failed_path_when_error_json_unparsable(tmp_path: Path)
     assert "content_unavailable" not in counters
 
 
-def test_sync_novel_treats_rate_limit_error_json_as_retryable_failure(tmp_path: Path) -> None:
+def test_sync_novel_propagates_account_rate_limit(tmp_path: Path) -> None:
     """限流的 error JSON 是临时失败，不能被归类为"正文不可获取"。"""
 
     class _RateLimitedApi(_Api):
@@ -1023,14 +1027,11 @@ def test_sync_novel_treats_rate_limit_error_json_as_retryable_failure(tmp_path: 
     service = BookmarkNovelSyncService(_RateLimitedApi(), db, _Storage(), settings)
 
     try:
-        counters = service._sync_novel(
-            _Novel(), "public", True, True, True, source_type="bookmark_public"
-        )
+        with pytest.raises(sync_engine.SyncRateLimited):
+            service._sync_novel(_Novel(), "public", True, True, True, source_type="bookmark_public")
+        assert db.conn.execute("SELECT COUNT(*) FROM novel_fetch_attempts").fetchone()[0] == 0
     finally:
         db.close()
-
-    assert counters["failed"] == 1
-    assert "content_unavailable" not in counters
 
 
 def test_sync_subscribed_series_counts_content_unavailable_separately(
@@ -2025,7 +2026,7 @@ def test_sync_novel_failure_records_cooldown(tmp_path: Path) -> None:
     # 每次调用都报错页的 API
     class _FailApi:
         def novel_detail(self, novel_id: int) -> dict:
-            return {"error": {"user_message": "", "message": "Rate Limit", "reason": ""}}
+            return {"error": {"user_message": "", "message": "temporary detail failure", "reason": ""}}
 
         def webview_novel(self, novel_id: int) -> dict:
             return {"text": ""}

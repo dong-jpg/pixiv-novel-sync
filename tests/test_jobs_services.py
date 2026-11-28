@@ -272,7 +272,7 @@ class FakeAuthManager:
         self.auth_result = SimpleNamespace(user_id=999)
         self.login_called = False
 
-    def login(self):
+    def login(self, **kwargs):
         self.login_called = True
         return self.api, self.auth_result
 
@@ -1182,7 +1182,7 @@ def test_run_user_backup_task_pagination_has_safety_limit(settings, service_env,
         def __init__(self, pixiv_settings) -> None:
             self.api = EndlessApi()
 
-        def login(self):
+        def login(self, **kwargs):
             return self.api, SimpleNamespace(user_id=999)
 
     created_auth: dict[str, object] = {}
@@ -1250,7 +1250,7 @@ def test_user_backup_production_combo_page_cap(tmp_path, monkeypatch):
         services,
         "PixivAuthManager",
         lambda pixiv_settings: SimpleNamespace(
-            login=lambda: (counting_api, SimpleNamespace(user_id=999))
+            login=lambda **kwargs: (counting_api, SimpleNamespace(user_id=999))
         ),
     )
     monkeypatch.setattr(

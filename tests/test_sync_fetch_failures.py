@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from pixivpy3.utils import JsonDict
 
 from pixiv_novel_sync.storage_db import Database
-from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
+from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService, SyncRateLimited
 from pixiv_novel_sync.web.managers import AutoSyncScheduler
 from tests.test_sync_engine_incremental import (
     _FollowingFakeDb,
@@ -43,7 +44,7 @@ def test_bookmark_page_failure_marks_fetch_failed(tmp_path) -> None:
 def test_bookmark_id_page_cap_is_not_a_bare_runtime_error(tmp_path) -> None:
     class _Endless:
         def user_bookmarks_novel(self, **kwargs):
-            return SimpleNamespace(novels=[SimpleNamespace(id=1)], next_url="http://next")
+            return SimpleNamespace(novels=[SimpleNamespace(id=1)], next_url="https://app-api.pixiv.net/v1/user/bookmarks/novel?offset=30")
 
         def parse_qs(self, url):
             return {"user_id": 1, "restrict": "public"}
@@ -254,8 +255,8 @@ def test_novel_detail_rate_limit_page_does_not_overwrite_archive(tmp_path) -> No
     try:
         before = _novel_row(db)
         service.api = _DetailApi(_RATE_LIMIT_PAGE)
-        result = service._sync_novel(_Novel(), "public", False, True, True, source_type="bookmark_public", source_key="1")
-        assert result["failed"] == 1
+        with pytest.raises(SyncRateLimited):
+            service._sync_novel(_Novel(), "public", False, True, True, source_type="bookmark_public", source_key="1")
         assert service.api.webview_calls == 0  # 错误页之后不再继续请求、写库
         assert _novel_row(db) == before == ("title", 1, 1)
     finally:

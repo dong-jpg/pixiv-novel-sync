@@ -111,7 +111,7 @@ def test_user_backup_keeps_private_bookmark_in_private_tree(tmp_path: Path, monk
     assert restrict_value == "private"
 
     # 作者改了正文，全量备份重访这本
-    monkeypatch.setattr(services, "_login", lambda s: _Api("v2"))
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: _Api("v2"))
     monkeypatch.setattr(services, "FileStorage", _OfflineStorage)
     stats = services.run_user_backup_task(settings, user_id=7)
 

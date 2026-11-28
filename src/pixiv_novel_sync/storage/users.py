@@ -1,6 +1,7 @@
 """User CRUD operations."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 # 与 novels 一致：unknown 表示本次检查没拿到可信结果，不得覆盖已有状态
@@ -188,10 +189,12 @@ class UsersMixin:
             }
         return None
 
-    def list_followed_users(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    def list_followed_users(self, *, member_ids: set[int], page: int = 1, page_size: int = 10) -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
-        total = int(self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        members = json.dumps(sorted(member_ids))
+        total = int(self.conn.execute("SELECT COUNT(*) FROM users WHERE user_id IN (SELECT value FROM json_each(?))",
+                                      (members,)).fetchone()[0])
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
@@ -199,10 +202,11 @@ class UsersMixin:
             """
             SELECT user_id, name, account, raw_json, updated_at
             FROM users
+            WHERE user_id IN (SELECT value FROM json_each(?))
             ORDER BY updated_at DESC, user_id DESC
             LIMIT ? OFFSET ?
             """,
-            (page_size, offset),
+            (members, page_size, offset),
         ).fetchall()
         items = [
             {
@@ -230,7 +234,6 @@ class UsersMixin:
         params: list[Any] = []
         if member_ids is not None:
             clauses.append("u.user_id IN (SELECT value FROM json_each(?))")
-            import json
             params.append(json.dumps(sorted(member_ids)))
         if status != "all":
             clauses.append("u.status = ?")

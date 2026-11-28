@@ -132,7 +132,7 @@ def _run_direct_sync_task(
 
     add_log("info", f"=== 开始{task_label(task_type)} ===")
     auth = PixivAuthManager(settings.pixiv)
-    api, auth_result = auth.login()
+    api, auth_result = auth.login(stop_requested=stop_requested)
     if auth_result.user_id is None:
         raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
     if getattr(settings.pixiv, "user_id", None) is None:

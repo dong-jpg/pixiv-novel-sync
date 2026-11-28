@@ -179,13 +179,13 @@ def sync_updates(service, progress_callback=None):
             if requests >= budget:
                 break
             requested_scope = "private" if author_id not in members.get("public", set()) else None
-            from ..sync_engine import SyncAuthFailed
+            from ..sync_engine import SyncAccountError
             try:
                 counters = service._sync_novel(SimpleNamespace(id=novel_id), requested_scope, settings.download_assets,
                                                settings.write_markdown, settings.write_raw_text,
                                                "following_user_scan", str(author_id))
-            except SyncAuthFailed:
-                incomplete("auth_failed")
+            except SyncAccountError as exc:
+                incomplete(exc.code)
                 break
             requests += int(not counters.get("failed_cooldown"))
             for name, value in counters.items():

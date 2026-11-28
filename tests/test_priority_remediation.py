@@ -77,7 +77,7 @@ def test_scheduled_backup_propagates_terminal_state(tmp_path: Path, monkeypatch,
         if mode == 'cancelled':
             raise InterruptedError('cancelled')
         return {'novels': 0, 'truncated': True, 'incomplete': True}
-    monkeypatch.setattr('pixiv_novel_sync.jobs.services._login', lambda settings: object())
+    monkeypatch.setattr('pixiv_novel_sync.jobs.services._login', lambda settings, **kwargs: object())
     monkeypatch.setattr('pixiv_novel_sync.jobs.quick_sync.job_services.run_user_backup_task', backup)
     result = run_scheduled_user_backup(settings)
     if mode == 'cancelled':

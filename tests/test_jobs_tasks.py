@@ -21,7 +21,7 @@ def direct_sync_env(tmp_path, monkeypatch):
         def __init__(self, pixiv_settings):
             created["auth"] = self
 
-        def login(self):
+        def login(self, **kwargs):
             return object(), SimpleNamespace(user_id=123)
 
     class FakeDatabase:
@@ -459,7 +459,7 @@ def test_scheduled_user_backup_rotates_batch_and_rebuilds_catalog_once(monkeypat
         return {"novels": 1, "skipped": 2, "assets_downloaded": 3, "stopped": False}
 
     monkeypatch.setattr(quick_sync, "Database", Database)
-    monkeypatch.setattr(quick_sync.job_services, "_login", lambda settings: object())
+    monkeypatch.setattr(quick_sync.job_services, "_login", lambda settings, **kwargs: object())
     monkeypatch.setattr(quick_sync, "read_following_snapshot", lambda db, owner: [SimpleNamespace(id=10), SimpleNamespace(id=20)])
     monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
     settings = SimpleNamespace(
@@ -527,7 +527,7 @@ def test_scheduled_user_backup_watermark_only_advances_completed_users(monkeypat
         return {"novels": 1, "skipped": 0, "assets_downloaded": 0, "stopped": False}
 
     monkeypatch.setattr(quick_sync, "Database", Database)
-    monkeypatch.setattr(quick_sync.job_services, "_login", lambda settings: object())
+    monkeypatch.setattr(quick_sync.job_services, "_login", lambda settings, **kwargs: object())
     monkeypatch.setattr(quick_sync, "read_following_snapshot", lambda db, owner: [SimpleNamespace(id=10), SimpleNamespace(id=20)])
     monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
     settings = SimpleNamespace(

@@ -276,6 +276,7 @@ def test_batch_export_names_carry_the_novel_id(export_client):
     response = export_client.post("/api/dashboard/novels/export-epub", json={"novel_ids": [101, 102, 101, 999]})
     assert response.status_code == 200
     assert response.mimetype == "application/zip"
+    assert response.headers["X-Skipped-Novel-Ids"] == "999"
     archive = zipfile.ZipFile(io.BytesIO(response.data))
     # 同名作品各占一个条目；重复 ID 只导一次；不存在的 ID 跳过
     assert sorted(archive.namelist()) == ["同名作品_101.epub", "同名作品_102.epub"]
@@ -291,3 +292,14 @@ def test_single_export_still_returns_one_epub(export_client):
     assert response.mimetype == "application/epub+zip"
     book = zipfile.ZipFile(io.BytesIO(response.data))
     assert b"<ruby>" in book.read("EPUB/chap_001.xhtml")
+
+
+def test_batch_export_without_archived_text_never_returns_empty_zip(export_client):
+    response = export_client.post("/api/dashboard/novels/export-epub", json={"novel_ids": [998, 999]})
+    assert response.status_code == 422
+    assert response.get_json()["skipped_novel_ids"] == [998, 999]
+
+
+@pytest.mark.parametrize("values", [[True], [1.5], ["invalid"], [2**63], list(range(1, 52))])
+def test_export_rejects_invalid_or_excessive_selections(export_client, values):
+    assert export_client.post("/api/dashboard/novels/export-epub", json={"novel_ids": values}).status_code == 400

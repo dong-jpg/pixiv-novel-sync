@@ -64,7 +64,7 @@ def test_novel_status_defers_recently_confirmed_deleted_and_fills_the_batch(tmp_
         checked.append(int(novel_id))
         return "deleted" if novel_id == 3 else "normal"
 
-    monkeypatch.setattr(services, "_login", lambda settings: SimpleNamespace())
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: SimpleNamespace())
     monkeypatch.setattr(services, "_ensure_storage_dirs", lambda settings: None)
     monkeypatch.setattr(services, "_check_novel_status", check)
 

@@ -11,10 +11,12 @@ from pixiv_novel_sync.auth import PixivAuthManager
 from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
-from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, next_user_page_query, response_is_pixiv_error_page
+from pixiv_novel_sync.sync.author_history import AuthorHistoryCursor
+from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, next_user_page_query, positive_pixiv_id, response_is_pixiv_error_page, response_is_rate_limited
 from pixiv_novel_sync.sync_engine import (
     BookmarkNovelSyncService,
     SyncAuthFailed,
+    SyncRateLimited,
     _iso_age_days,
     _recently_confirmed_deleted_novel_ids,
 )
@@ -180,7 +182,7 @@ def run_user_backup_task(
         }
 
     if api is None:
-        api = _login(settings)
+        api = _login(settings, stop_requested=stop_requested)
     storage = _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -211,19 +213,12 @@ def run_user_backup_task(
         truncated_by_page_cap = False
         total_failed_page = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
-        cursor_key = f"{scheduled_owner}:{user_id}"
-        resumed = False
-        checkpoint = {}
-        unavailable_ids = set()
+        history = AuthorHistoryCursor(db, scheduled_owner, user_id) if scheduled_owner is not None else None
+        if history and history.resumed:
+            next_query["offset"] = history.offset
+        unavailable_ids = history.unavailable if history else set()
+        rate_limited = False
         metrics = {name: 0 for name in ("novels_created", "metadata_updated", "texts_updated", "failed_assets", "assets_repaired", "body_rechecks")}
-        if scheduled_owner is not None:
-            checkpoint = db.get_watermark("user_backup_page", cursor_key) or {}
-            if checkpoint.get("offset"):
-                unavailable_ids = set(checkpoint.get("unavailable_ids", []))
-            offset = checkpoint.get("offset")
-            if type(offset) is int and offset > 0:
-                next_query["offset"] = offset
-                resumed = True
         # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环。
         # 备份是整库导出，绝不能回退到 max_pages_per_run（生产事故 2026-11：
         # 该字段缺省时回落共享值 2，每作者只备到最新 ~60 本，第 61 本起永久缺失；
@@ -256,8 +251,19 @@ def run_user_backup_task(
                 truncated_by_page_cap = True
                 break
 
-            result = api.user_novels(**next_query)
+            try:
+                result = api.user_novels(**next_query)
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if not response_is_rate_limited(exc):
+                    raise
+                rate_limited = True
+                break
             page_count += 1
+            if response_is_rate_limited(result):
+                rate_limited = True
+                break
             if response_is_pixiv_error_page(result) or not isinstance(getattr(result, "novels", None), (list, tuple)):
                 from pixiv_novel_sync.web.utils import _is_auth_error, _pixiv_error_text
 
@@ -277,6 +283,17 @@ def run_user_backup_task(
                 total_failed_page = True
                 break
             novels = getattr(result, "novels", []) or []
+            page_offset = next_query.get("offset", 0)
+            if history is not None:
+                try:
+                    next_url = result["next_url"] if isinstance(result, dict) else result.next_url
+                    following_query = next_user_page_query(api, next_url, next_query)
+                    following_offset = following_query["offset"] if following_query else None
+                    page_ids = [positive_pixiv_id(novel.id) for novel in novels]
+                    history.verify(page_offset, page_ids, following_offset)
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    total_failed_page = True
+                    break
             total_seen += len(novels)
             for novel in novels:
                 if stop_requested is not None and stop_requested():
@@ -325,6 +342,9 @@ def run_user_backup_task(
                     )
                 except InterruptedError:
                     raise
+                except SyncRateLimited:
+                    rate_limited = True
+                    break
                 except SyncAuthFailed:
                     # token 已失效：按中止收口（不堆 failed、不算该作者完成）。
                     message = f"用户全量备份中止：Pixiv 认证失败（token 已失效）: {user_name} ({user_id})"
@@ -364,31 +384,18 @@ def run_user_backup_task(
                     stopped = True
                     break
 
-            if stopped or (scheduled_owner is not None and total_failed):
+            if stopped or rate_limited or (scheduled_owner is not None and total_failed):
                 break
 
             next_url = getattr(result, "next_url", None)
-            if scheduled_owner is None:
+            if history is None:
                 next_query = api.parse_qs(next_url)
             else:
                 if stop_requested is not None and stop_requested():
                     stopped = True
                     break
-                try:
-                    next_query = next_user_page_query(api, next_url, next_query)
-                except ValueError:
-                    total_failed_page = True
-                    break
-                last_enumerated = checkpoint.get("last_enumerated_at") or checkpoint.get("completed_at")
-                completed_at = None if next_query else datetime.now(timezone.utc).isoformat()
-                checkpoint = {
-                    "offset": next_query["offset"] if next_query else 0,
-                    "unavailable_ids": sorted(unavailable_ids),
-                    "completed_at": completed_at,
-                    "last_enumerated_at": completed_at or last_enumerated,
-                    "last_archive_complete": not unavailable_ids if completed_at else checkpoint.get("last_archive_complete"),
-                }
-                db.update_watermark("user_backup_page", checkpoint, cursor_key)
+                next_query = following_query
+                history.advance(page_offset, page_ids, following_offset)
                 if next_query and page_count >= max_pages:
                     truncated_by_page_cap = True
                     break
@@ -399,13 +406,15 @@ def run_user_backup_task(
 
         if not stopped and stop_requested is not None and stop_requested():
             stopped = True
-        completed = not stopped and not total_failed and not total_failed_page and not truncated_by_page_cap
+        completed = not (stopped or rate_limited or total_failed or total_failed_page or truncated_by_page_cap)
         if full_refresh and completed:
             _mark_full_refresh(db, user_id)
         if not full_refresh:
             mode_label = f"增量：跳过已归档 {total_skipped_archived} 本"
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
+        elif rate_limited:
+            _report_log(reporter, "warning", "Pixiv 请求已被限流，本轮备份停止，保留未完成页")
         elif truncated_by_page_cap and scheduled_owner is not None and not total_failed and not total_failed_page:
             _report_log(reporter, "info", f"本轮完成 {page_count} 页，下轮续页: {user_name} ({user_id})")
         elif total_failed or total_failed_page or truncated_by_page_cap:
@@ -434,10 +443,15 @@ def run_user_backup_task(
                 stats.update(rotation_pending=True, more_pages=True)
             else:
                 stats["truncated"] = True
-        if scheduled_owner is not None:
-            enumerated = bool(completed and checkpoint.get("completed_at"))
-            stats.update(pages_read=page_count, resumed=resumed, unavailable_count=len(unavailable_ids),
-                         history_enumerated=enumerated, history_complete=enumerated and not unavailable_ids)
+        if rate_limited:
+            stats.update(incomplete=True, aborted_reason="rate_limited")
+        if history is not None:
+            enumerated = bool(completed and history.enumerated)
+            stats.update(pages_read=page_count, boundary_pages=0, resumed=history.resumed, unavailable_count=len(unavailable_ids),
+                         history_enumerated=enumerated, history_verified=enumerated and history.verified,
+                         history_complete=enumerated and history.verified and not unavailable_ids)
+            if enumerated and not history.verified:
+                stats.update(incomplete=True, rotation_pending=True, more_pages=True, history_verification_pending=True)
             if unavailable_ids:
                 stats.update(incomplete=True)
                 stats.setdefault("aborted_reason", "history_content_unavailable")
@@ -653,7 +667,7 @@ def run_pending_deletion_detection_task(
 
     _report_log(reporter, "info", "=== 开始检测取消收藏/追更 ===")
 
-    api = _login(settings)
+    api = _login(settings, stop_requested=stop_requested)
     auth_user_id = settings.pixiv.user_id
     _report_log(reporter, "success", f"登录成功, 用户ID: {auth_user_id}")
 
@@ -776,7 +790,7 @@ def _make_reauth_handler(
     每任务最多重登一次：refresh token 若也失效，第二次 ``auth()`` 同样失败，
     无限重试只会把熔断额度烧在认证端点上。
     """
-    state = {"api": _login(settings), "used": False}
+    state = {"api": _login(settings, stop_requested=stop_requested), "used": False}
 
     def get_api() -> Any:
         return state["api"]
@@ -785,7 +799,7 @@ def _make_reauth_handler(
         if state["used"] or getattr(state["api"], "__dict__", {}).get("_pixiv_reauthenticate"):
             return False
         state["used"] = True
-        api = _login(settings)
+        api = _login(settings, stop_requested=stop_requested)
         apply_pixiv_retry_patch(api, stop_requested=stop_requested)
         state["api"] = api
         logger.warning("%s：access token 已失效，已重新登录并继续", task_label)
@@ -930,9 +944,9 @@ def _db_utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _login(settings: Any) -> Any:
+def _login(settings: Any, stop_requested: StopRequested | None = None) -> Any:
     auth = PixivAuthManager(settings.pixiv)
-    api, auth_result = auth.login()
+    api, auth_result = auth.login(stop_requested=stop_requested)
     if auth_result.user_id is None:
         raise RuntimeError("Unable to determine user ID")
     if getattr(settings.pixiv, "user_id", None) is None:

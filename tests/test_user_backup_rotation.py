@@ -24,7 +24,7 @@ def test_failed_user_does_not_stall_backup_rotation(tmp_path, monkeypatch) -> No
             raise RuntimeError("上游失败")
         return {"novels": 3, "skipped": 0, "assets_downloaded": 0}
 
-    monkeypatch.setattr("pixiv_novel_sync.jobs.services._login", lambda settings: object())
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services._login", lambda settings, **kwargs: object())
     monkeypatch.setattr(
         "pixiv_novel_sync.jobs.quick_sync.job_services.run_user_backup_task",
         backup,

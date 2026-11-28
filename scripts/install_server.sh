@@ -16,9 +16,9 @@ sudo chown -R "$USER":"$USER" /opt/pixiv-novel-sync
 
 # 单元文件的 WorkingDirectory 是 APP_DIR。在别的目录里建 venv 的话，定时任务找不到解释器。
 if [ "$SOURCE_DIR" != "$APP_DIR" ]; then
-  tar -C "$SOURCE_DIR" \
-    --exclude .venv --exclude data --exclude .backup --exclude .git \
-    -cf - . | tar -C "$APP_DIR" -xf -
+  tar -C "$SOURCE_DIR" --exclude __pycache__ --exclude '*.pyc' \
+    -cf - pyproject.toml README.md LICENSE .env.example config/config.yaml.example \
+    src/pixiv_novel_sync deploy/systemd | tar -C "$APP_DIR" -xf -
 fi
 
 cd "$APP_DIR"

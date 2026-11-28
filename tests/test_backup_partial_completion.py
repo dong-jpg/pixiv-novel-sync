@@ -75,7 +75,7 @@ def backup_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     # Only isolate network/content I/O and derived-catalog work. Keep the real
     # error wrapper, user backup, scheduled aggregation, database and Runner.
-    monkeypatch.setattr(services, "_login", lambda settings: api)
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: api)
     monkeypatch.setattr(BookmarkNovelSyncService, "_sync_novel_inner", sync_inner)
     monkeypatch.setattr(services, "_rebuild_rescue_catalog", rebuild)
     monkeypatch.setattr(quick_sync, "_rebuild_rescue_catalog", rebuild)
@@ -101,7 +101,7 @@ def test_scheduled_backup_resumes_third_page_and_retries_failed_page(backup_case
         return SimpleNamespace(novels=[SimpleNamespace(id=offset + 1)], next_url=str(offset + 1) if offset < 2 else None)
 
     api = SimpleNamespace(user_novels=user_novels, parse_qs=lambda url: {"offset": url, "user_id": "1"} if url else None)
-    monkeypatch.setattr(services, "_login", lambda settings: api)
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: api)
     first = run_backup(backup_case, "scheduled")
     assert first["authors_with_more_pages"] == 1 and first["rotation_pending"]
     assert _task_log_status_for_stats(first) == "succeeded"
@@ -111,15 +111,19 @@ def test_scheduled_backup_resumes_third_page_and_retries_failed_page(backup_case
     assert second["authors_with_more_pages"] == 1
     backup_case.failed_ids.clear()
     third = run_backup(backup_case, "scheduled")
-    assert third["resumed_users"] == 1 and not third["authors_with_more_pages"]
+    assert third["resumed_users"] == 1 and third["authors_with_more_pages"] == 1
     assert offsets == [0, 1, 2, 2]
+    run_backup(backup_case, "scheduled")
+    fifth = run_backup(backup_case, "scheduled")
+    assert fifth["resumed_users"] == 1 and not fifth["authors_with_more_pages"]
+    assert offsets == [0, 1, 2, 2, 0, 1, 2]
 
 
 def test_scheduled_backup_rejects_cross_author_or_repeated_offset(backup_case, monkeypatch):
     for next_query in ({"offset": "1", "user_id": "2"}, {"offset": "0", "user_id": "1"}):
         api = SimpleNamespace(user_novels=lambda **kwargs: SimpleNamespace(novels=[], next_url="next"),
                               parse_qs=lambda url: next_query)
-        monkeypatch.setattr(services, "_login", lambda settings: api)
+        monkeypatch.setattr(services, "_login", lambda settings, **kwargs: api)
         result = run_backup(backup_case, "scheduled")
         assert _task_log_status_for_stats(result) == "partial"
         assert result["pages_read"] == 1
@@ -165,7 +169,7 @@ def test_history_reconciliation_keeps_last_completed_observation(backup_case, mo
     db = Database(backup_case.settings.storage.db_path)
     try:
         original = db.get_watermark("user_backup_page", "99:1")["completed_at"]
-        api = SimpleNamespace(user_novels=lambda **query: SimpleNamespace(novels=[], next_url="more"),
+        api = SimpleNamespace(user_novels=lambda **query: SimpleNamespace(novels=[SimpleNamespace(id=1)], next_url="more"),
                               parse_qs=lambda url: {"offset": 30})
         backup_case.settings.sync.user_backup_max_pages_per_run = 1
         result = services.run_user_backup_task(backup_case.settings, 1, scheduled_owner=99, api=api)
@@ -191,7 +195,7 @@ def test_failed_first_page_retries_without_starving_other_authors(backup_case, m
         return SimpleNamespace(novels=[SimpleNamespace(id=user_id)], next_url="next" if not offset else None)
 
     api = SimpleNamespace(user_novels=user_novels, parse_qs=lambda url: {"offset": 30} if url else None)
-    monkeypatch.setattr(services, "_login", lambda settings: api)
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: api)
     backup_case.failed_ids = {1}
     first = run_backup(backup_case, "scheduled")
     assert requests == [(1, 0)]
@@ -215,7 +219,7 @@ def test_cold_backup_shares_one_login_with_list_and_authors(backup_case, monkeyp
         parse_qs=lambda url: None,
     )
 
-    def login(settings):
+    def login(settings, **kwargs):
         logins.append(settings)
         return api
 
@@ -238,7 +242,7 @@ def test_backup_auth_failure_does_not_continue_to_next_author(backup_case, monke
         requests.append(query)
         return {"error": {"message": "invalid_grant"}}
 
-    monkeypatch.setattr(services, "_login", lambda settings: SimpleNamespace(user_novels=user_novels))
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: SimpleNamespace(user_novels=user_novels))
     if entry == "direct":
         with pytest.raises(SyncAuthFailed):
             run_backup(backup_case, entry)
@@ -454,7 +458,7 @@ class _ErrorPageApi:
                 novels=list(self.first_page_novels),
                 next_url="page-2",
             )
-        return {"error": {"message": "Rate Limit"}}
+        return {"error": {"message": "temporary page failure"}}
 
     def parse_qs(self, value):
         return {"user_id": 1, "offset": 5} if value == "page-2" else None
@@ -467,7 +471,7 @@ def test_upstream_error_page_marks_backup_partial_not_success(backup_case, entry
     error_api = _ErrorPageApi(novels)
 
     # fixture 已 mock _sync_novel_inner / 目录重建；这里只把 api 换成错误页版本
-    monkeypatch.setattr(services, "_login", lambda settings: error_api)
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: error_api)
 
     if entry == "direct":
         result = run_backup(backup_case, entry)

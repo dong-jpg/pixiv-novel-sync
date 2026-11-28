@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .sync.utils import response_is_pixiv_error_page
+from .sync.utils import response_is_pixiv_error_page, response_is_rate_limited
 from .utils_hashing import sha256_text, stable_json_dumps
 from .utils_text import clean_caption, normalize_text
 
@@ -154,10 +154,17 @@ def _stable_meta_for_hash(plain: Any) -> Any:
 
 
 def _parse_pixiv_error_json(exc: BaseException) -> dict[str, Any] | None:
+    def error_fields(value):
+        error = value.get("error") if isinstance(value, dict) else None
+        if isinstance(error, dict):
+            return error
+        if isinstance(error, str) and error in {"invalid_grant", "invalid_token"}:
+            return {"reason": error}
+        return None
+
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
-        error = body.get("error")
-        return error if isinstance(error, dict) else None
+        return error_fields(body)
     candidates = [body] if isinstance(body, (str, bytes, bytearray)) else []
     candidates.append(str(exc))
     for raw in candidates:
@@ -171,8 +178,9 @@ def _parse_pixiv_error_json(exc: BaseException) -> dict[str, Any] | None:
             value = json.loads(text[start:end + 1])
         except (ValueError, TypeError, RecursionError):
             continue
-        if isinstance(value, dict) and isinstance(value.get("error"), dict):
-            return value["error"]
+        error = error_fields(value)
+        if error is not None:
+            return error
     return None
 
 
@@ -218,6 +226,8 @@ class PixivErrorPage(PixivFetchError):
             # 认证失败单独成码：它不是临时风控，重试该次调用无意义，
             # 上层应当立即中止本轮（而不是把尾部章节全部刷成 failed）。
             super().__init__("auth_failed")
+        elif response_is_rate_limited(body):
+            super().__init__("rate_limited")
         else:
             unavailable = _unavailable(error)
             super().__init__("content_unavailable" if unavailable else "pixiv_error_page")
@@ -412,6 +422,8 @@ def fetch_novel(api: Any, novel_id: int, *, fallback_novel=None,
         _check_cancel(stop_requested)
         if _auth_failed(_parse_pixiv_error_json(exc)):
             raise PixivFetchError("auth_failed") from None
+        if response_is_rate_limited(exc):
+            raise PixivFetchError("rate_limited") from None
         code = "content_unavailable" if _pixiv_content_unavailable_reason(exc) else "pixiv_request_failed"
         raise PixivFetchError(code) from None
 

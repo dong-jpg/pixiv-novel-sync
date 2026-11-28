@@ -41,7 +41,7 @@ class FakeAuthManager:
         self.auth_result = SimpleNamespace(user_id=123)
         self.login_called = False
 
-    def login(self):
+    def login(self, **kwargs):
         self.login_called = True
         return self.api, self.auth_result
 

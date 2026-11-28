@@ -23,7 +23,7 @@ def test_sweep_preserves_newest_page_and_resumes_within_page_budget(tmp_path, mo
                 calls.append(offset)
                 return SimpleNamespace(
                     novels=[SimpleNamespace(id=offset + 1)],
-                    next_url=str(offset + 30) if offset < 90 else None,
+                    next_url=f"https://app-api.pixiv.net/v1/user/bookmarks/novel?offset={offset + 30}" if offset < 90 else None,
                 )
 
             def parse_qs(self, url):

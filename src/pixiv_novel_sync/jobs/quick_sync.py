@@ -10,8 +10,9 @@ from ..auth import PixivAuthManager
 from ..settings import Settings
 from ..storage_db import Database, prepare_schema
 from ..storage_files import FileStorage
+from ..sync.author_history import CURSOR_VERSION
 from ..sync.following_snapshot import read_following_snapshot
-from ..sync_engine import BookmarkNovelSyncService, SyncAuthFailed
+from ..sync_engine import BookmarkNovelSyncService, SyncAccountError
 from . import services as job_services
 from .services import JobReporter, _catalog_inputs_changed, _rebuild_rescue_catalog
 
@@ -57,7 +58,7 @@ def run_bookmark_sync(
 ) -> dict[str, int]:
     _raise_if_stopped(stop_requested)
     auth = PixivAuthManager(settings.pixiv)
-    api, auth_result = auth.login()
+    api, auth_result = auth.login(stop_requested=stop_requested)
     if auth_result.user_id is None:
         raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
 
@@ -106,12 +107,12 @@ def run_scheduled_user_backup(
         owner = settings.pixiv.user_id
         api = None
         if not owner:
-            api = job_services._login(settings)
+            api = job_services._login(settings, stop_requested=stop_requested)
             owner = settings.pixiv.user_id
         members = read_following_snapshot(db, owner)
         if members is None:
             if api is None:
-                api = job_services._login(settings)
+                api = job_services._login(settings, stop_requested=stop_requested)
             service = BookmarkNovelSyncService(api, db, FileStorage(settings), settings, stop_requested)
             refreshed = service.sync_following_list(_build_cancel_progress_callback(stop_requested))
             members = read_following_snapshot(db, owner)
@@ -123,7 +124,7 @@ def run_scheduled_user_backup(
             private_members = read_following_snapshot(db, owner, "private")
             if private_members is None:
                 if api is None:
-                    api = job_services._login(settings)
+                    api = job_services._login(settings, stop_requested=stop_requested)
                 service = BookmarkNovelSyncService(api, db, FileStorage(settings), settings, stop_requested)
                 refreshed = service.sync_following_list(_build_cancel_progress_callback(stop_requested), "private")
                 private_members = read_following_snapshot(db, owner, "private")
@@ -137,20 +138,23 @@ def run_scheduled_user_backup(
         member_ids = set(user_ids)
         completed_ids = set()
         enumerated_ids = set()
+        recently_enumerated = set()
         complete_archive_ids = set()
         if include_private:
             records = db.conn.execute(
                 "SELECT key,json_extract(value_json,'$.completed_at'),json_extract(value_json,'$.last_enumerated_at'),"
-                "json_extract(value_json,'$.last_archive_complete') FROM sync_watermarks "
+                "json_extract(value_json,'$.last_archive_complete'),json_extract(value_json,'$.cursor_version') FROM sync_watermarks "
                 "WHERE sync_type='user_backup_page' AND key LIKE ?", (f"{owner}:%",)
             )
-            for key, completed_at, last_enumerated, archive_complete in records:
+            for key, completed_at, last_enumerated, archive_complete, version in records:
                 author_id = int(key.split(":")[1])
                 if last_enumerated or completed_at:
                     enumerated_ids.add(author_id)
-                    if archive_complete:
+                    if version == CURSOR_VERSION and job_services._iso_age_days(last_enumerated or completed_at) < 30:
+                        recently_enumerated.add(author_id)
+                    if archive_complete and version == CURSOR_VERSION:
                         complete_archive_ids.add(author_id)
-                if completed_at and job_services._iso_age_days(completed_at) < 30:
+                if version == CURSOR_VERSION and completed_at and job_services._iso_age_days(completed_at) < 30:
                     completed_ids.add(author_id)
             member_ids -= completed_ids
         pending = [author for author in watermark.get("pending", []) if author in member_ids]
@@ -175,9 +179,9 @@ def run_scheduled_user_backup(
         truncated = False
         incomplete = False
         incomplete_reasons: set[str] = set()
-        pages_read = resumed_users = 0
+        pages_read = boundary_pages = resumed_users = 0
         if batch and api is None:
-            api = job_services._login(settings)
+            api = job_services._login(settings, stop_requested=stop_requested)
         for index, user_id in enumerate(batch):
             if stop_requested is not None and stop_requested():
                 stopped = True
@@ -203,9 +207,9 @@ def run_scheduled_user_backup(
             except InterruptedError:
                 stopped = True
                 break
-            except SyncAuthFailed:
+            except SyncAccountError as exc:
                 incomplete = True
-                incomplete_reasons.add("auth_failed")
+                incomplete_reasons.add(exc.code)
                 break
             except Exception as exc:
                 failed_users += 1
@@ -220,6 +224,7 @@ def run_scheduled_user_backup(
             elif not stats.get("stopped") and user_id in pending:
                 pending.remove(user_id)
             pages_read += int(stats.get("pages_read", 0))
+            boundary_pages += int(stats.get("boundary_pages", 0))
             resumed_users += int(bool(stats.get("resumed")))
             truncated = truncated or bool(stats.get("truncated"))
             if stats.get("aborted_reason") or stats.get("truncated") or (stats.get("incomplete") and not stats.get("more_pages")):
@@ -227,8 +232,10 @@ def run_scheduled_user_backup(
                 incomplete_reasons.add(str(stats.get("aborted_reason") or "user_backup_incomplete"))
             failed_novels += int(stats.get("failed", 0) or 0)
             if stats.get("history_enumerated"):
-                completed_ids.add(user_id)
                 enumerated_ids.add(user_id)
+                recently_enumerated.add(user_id)
+            if stats.get("history_verified"):
+                completed_ids.add(user_id)
                 if stats.get("history_complete"):
                     complete_archive_ids.add(user_id)
                 else:
@@ -246,6 +253,8 @@ def run_scheduled_user_backup(
                 watermark["last_author"] = user_id
             watermark.update(pending=pending, resumed_first=resume_author is not None)
             db.update_watermark("user_backup_rotation_v2", watermark, str(owner))
+            if stats.get("aborted_reason") == "rate_limited":
+                break
         totals["failed_users"] = failed_users
 
         if not stopped and stop_requested is not None and stop_requested():
@@ -253,9 +262,10 @@ def run_scheduled_user_backup(
 
         # full_refresh_users：本轮里走「全部重抓」的作者数，其余作者只补没归档完整的
         result: dict[str, Any] = {**totals, "full_refresh_users": full_refresh_users, "stopped": stopped}
-        result.update(pages_read=pages_read, resumed_users=resumed_users, authors_with_more_pages=len(pending), users_total=total_users)
+        result.update(pages_read=pages_read, boundary_pages=boundary_pages, resumed_users=resumed_users, authors_with_more_pages=len(pending), users_total=total_users)
         if include_private:
-            result["authors_enumerated_30d"] = len(completed_ids.intersection(user_ids))
+            result["authors_enumerated_30d"] = len(recently_enumerated.intersection(user_ids))
+            result["authors_verified_30d"] = len(completed_ids.intersection(user_ids))
             result["authors_ever_enumerated"] = len(enumerated_ids.intersection(user_ids))
             result["authors_complete_at_last_scan"] = len(complete_archive_ids.intersection(user_ids))
         if pending and not incomplete:

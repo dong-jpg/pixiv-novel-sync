@@ -401,6 +401,27 @@ def _reader_state(page) -> dict:
     )
 
 
+@pytest.mark.parametrize("replace_link", [False, True])
+def test_completed_negative_lookup_is_rechecked_when_card_identity_changes(rescue_browser, replace_link):
+    page = rescue_browser.new_page()
+    prefix = "https://pixiv.dongboapp.com/api/rescue/v1/lookup?novel_ids="
+    _install_script(page, '<ul><li id="slot"><a href="/novel/show.php?id=101">该作品无法显示</a></li></ul>', {
+        prefix + "101": {"novels": [], "series": []},
+        prefix + "102": {"novels": [{"novel_id": 102, "title": "第二本的备份"}], "series": []},
+    }, path="/users/2/bookmarks/novels")
+    try:
+        page.wait_for_selector("#slot[data-pixiv-rescue=card]")
+        if replace_link:
+            page.locator("#slot").evaluate("node => {const link = document.createElement('a'); link.href='/novel/show.php?id=102'; link.textContent='该作品无法显示'; node.replaceChildren(link)}")
+        else:
+            page.locator("#slot a").evaluate("node => node.setAttribute('href','/novel/show.php?id=102')")
+        page.wait_for_function("document.querySelector('#slot').textContent.includes('第二本的备份')")
+        assert sum(item["url"] == prefix + "102" for item in page.evaluate("window.__rescueRequests")) == 1
+        assert page.locator("#slot a").get_attribute("href") == "/novel/show.php?id=102&pixiv_rescue=1"
+    finally:
+        page.close()
+
+
 def test_userscript_fixture_keeps_healthy_novel_untouched(rescue_browser) -> None:
     page = rescue_browser.new_page()
     html = "<main><article class='novel-text'>这是原始正文内容，不应触发救援接口。</article></main>"
@@ -2007,6 +2028,25 @@ REUSE_MUTATIONS = {
     # 整块从页面上摘掉（保留引用，之后再放回去）
     "detached": "() => { window.__detached = document.querySelector('#list li'); window.__detached.remove(); }",
 }
+
+
+def test_old_lookup_cannot_release_the_pending_state_of_a_reused_card(rescue_browser):
+    page = rescue_browser.new_page()
+    try:
+        _install_list_script(page, '<ul id="list">' + _broken_card_html(101) + '</ul>', {
+            LOOKUP_URL + "101": _held_lookup_novel(101, "旧作品"),
+            LOOKUP_URL + "102": _held_lookup_novel(102, "新作品"),
+        }, {"pixivRescueToken": LIST_TOKEN}, hold=["novel_ids=101", "novel_ids=102"])
+        page.wait_for_function("window.__rescueHeld.length === 1")
+        page.evaluate(REUSE_MUTATIONS["relinked"])
+        page.wait_for_function("window.__rescueHeld.length === 2")
+        page.evaluate("() => new Promise(resolve => { window.__rescueRelease('novel_ids=101'); setTimeout(resolve, 0); })")
+        assert page.locator("#list [data-pixiv-rescue='card-pending']").count() == 1
+        page.evaluate("() => window.__rescueRelease('novel_ids=102')")
+        page.locator(".pixiv-rescue-rescued-title", has_text="新作品").wait_for()
+        assert page.locator(".pixiv-rescue-rescued-title", has_text="旧作品").count() == 0
+    finally:
+        page.close()
 
 
 @pytest.mark.parametrize("mutation", list(REUSE_MUTATIONS), ids=list(REUSE_MUTATIONS))

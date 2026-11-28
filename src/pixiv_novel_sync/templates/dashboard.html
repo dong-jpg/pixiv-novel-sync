@@ -15,7 +15,7 @@
       <div class="library-page-header dashboard-overview">
         <div class="min-w-0">
           <h1 class="text-xl font-bold text-gray-900 leading-tight">控制台</h1>
-          <p class="text-xs library-muted mt-1">推荐、归档与同步状态</p>
+          <p class="text-xs library-muted mt-1">推荐、归档与同步状态<span v-if="stats.feed_pending"> · 新作待归档 {{ stats.feed_pending.toLocaleString() }} 篇</span></p>
         </div>
 
         <div class="dashboard-stats">
@@ -43,7 +43,7 @@
             <div class="min-w-0">
               <div class="text-xs font-medium library-muted">关注作者</div>
               <div v-if="loadingStats" class="animate-pulse h-5 w-12 bg-gray-100 rounded mt-0.5"></div>
-              <div v-else class="dashboard-stat-value font-black text-gray-900 leading-tight">{{ stats.users_count.toLocaleString() }}</div>
+              <div v-else class="dashboard-stat-value font-black text-gray-900 leading-tight">{{ stats.users_count === null ? '待同步' : stats.users_count.toLocaleString() }}</div>
             </div>
           </a>
 
@@ -154,7 +154,7 @@
       const { ref, computed, onMounted, onUnmounted } = Vue;
 
       // ── State ──
-      const stats = ref({ novels_count: 0, users_count: 0, series_count: 0, pending_count: 0 });
+      const stats = ref({ novels_count: 0, users_count: null, series_count: 0, pending_count: 0, feed_pending: 0 });
       const loadingStats = ref(true);
 
       const latestJob = ref(null);
@@ -209,9 +209,10 @@
             const s = data.stats || {};
             stats.value = {
               novels_count: s.novels_count || 0,
-              users_count: s.users_count || 0,
+              users_count: s.users_count === null ? null : (s.users_count || 0),
               series_count: s.series_count || 0,
               pending_count: s.pending_count || 0,
+              feed_pending: s.feed_pending || 0,
             };
 
             if (data.latest_job) {

@@ -103,11 +103,13 @@ Expected fields:
 ```json
 {
   "current_user": { "user_id": 123, "name": "作者名", "avatar_url": "https://..." },
-  "stats": { "novels_count": 100, "users_count": 20, "series_count": 8, "pending_count": 1 },
+  "stats": { "novels_count": 100, "users_count": 20, "series_count": 8, "pending_count": 1, "feed_pending": 5 },
   "latest_job": { "job_id": "...", "status": "running", "message": "...", "progress": {} },
   "series_sync_limit": 50
 }
 ```
+
+`users_count` 为当前账号公开/私密关注快照的去重人数；快照尚未齐全时为 `null`，页面显示“待同步”。`series_count` 为本地 `is_subscribed=1` 的系列数，不是全部系列元数据，也不保证都是当前远端可用系列。`feed_pending` 为当前账号已发现、尚未完成归档的新作数量；正常配额结束不代表积压为零。统计导出接口仍保留全库作者及系列总数的原有口径。
 
 ### GET /api/dashboard/auto-sync/status
 
@@ -243,7 +245,7 @@ Query params:
 
 - `page`（页大小固定为 10，不接受 `page_size`）。
 
-返回 `db.list_followed_users` 的分页 payload（关注作者列表及分页元数据）。
+返回 `db.list_followed_users` 的分页 payload：当前账号的公开与私密关注快照取并集，保留原有排序和条目字段，不包含仅从收藏等来源入库的作者。任一完整快照尚未建立时返回 `409`；已同步且无人关注时返回 `200` 和空列表。
 
 ### GET /api/dashboard/novels
 
@@ -319,7 +321,7 @@ Used by: 小说阅读页阅读进度恢复。每次打开都核对服务端版�
 
 - `novel_ids` 缺失或不是数组时返回 `400 { "error": "novel_ids required" }`。
 - 单本：直接返回 `application/epub+zip` 附件；小说不存在返回 `404`，正文缺失返回 `400`。
-- 多本：最多处理前 50 个 ID（重复 ID 只导一次），跳过无正文条目，返回 `application/zip` 附件 `novels.zip`；条目名为 `{标题}_{novel_id}.epub`（无标题时为 `{novel_id}.epub`），同名作品不再互相覆盖。
+- 多本：最多 50 个不同的正整数 ID，非法或超量返回 `400`，重复只导一次。部分可导出时返回 `application/zip` 附件 `novels.zip`，响应头 `X-Skipped-Novel-Ids` 列出跳过的 ID（逗号分隔）；全部不存在或没有正文时返回 `422`、`error` 和 `skipped_novel_ids`，不生成空包。条目名为 `{标题}_{novel_id}.epub`（无标题时为 `{novel_id}.epub`）。
 - EPUB 内容：正文按 Pixiv 标记解析（`pixiv_markup.py`）。`[newpage]` 与 `[chapter:]` 各起一个 XHTML 文件并进目录（超过 500 个文件后，其余分页并入最后一个文件，页内锚点仍可跳转）；`[[rb:]]` 转 `<ruby><rt>`；`[[jumpuri:]]` 只保留 http(s) 链接，其余只留文字；`[jump:N]` 链到第 N 页所在文件。有明确映射且文件有效的插图直接嵌入，单图最多 8 MiB，单本总计最多 32 MiB，批量导出共享 32 MiB 插图预算；缺失或无法映射时保留文字说明。语言按正文判断（ja / zh / ko / en）；封面和插图按文件头识别 JPEG / PNG / GIF / WebP。
 
 ### GET /api/dashboard/export/stats

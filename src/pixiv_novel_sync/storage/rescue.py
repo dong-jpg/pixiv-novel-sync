@@ -889,6 +889,19 @@ class RescueMixin:
             "duration_ms": duration_ms,
         }
 
+    def refresh_rescue_sources(self, novel_id: int) -> None:
+        with self.transaction():
+            rows = self.conn.execute(
+                "SELECT item_type,item_id FROM rescue_catalog WHERE (item_type='novel' AND item_id=?) "
+                "OR (item_type='series' AND item_id=(SELECT series_id FROM novels WHERE novel_id=?))",
+                (novel_id, novel_id),
+            ).fetchall()
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_sources WHERE item_type=? AND item_id=?",
+                [(row["item_type"], row["item_id"]) for row in rows],
+            )
+            self._insert_catalog_sources_for_rows(rows)
+
     def refresh_rescue_item(self, item_type: str, item_id: int) -> dict[str, int]:
         """Atomically rebuild one item, its parent series, and affected chapters."""
         normalized_type = self._validate_rescue_item_type(item_type)

@@ -92,7 +92,7 @@ def _env(tmp_path: Path, monkeypatch, item_delay: float = 0.0):
     save_following_snapshot(db, 999, [SimpleNamespace(id=AUTHOR_ID)])
     db.close()
     api = _Api()
-    monkeypatch.setattr(services, "_login", lambda s: api)
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: api)
     monkeypatch.setattr(services, "FileStorage", _OfflineStorage)
     return settings, api
 

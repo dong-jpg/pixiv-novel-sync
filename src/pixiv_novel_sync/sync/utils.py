@@ -7,6 +7,7 @@ code organization and reusability.
 from __future__ import annotations
 
 import logging
+import re
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -20,6 +21,7 @@ T = TypeVar('T')
 
 # 明确的限流标志：完整 token，避免 "rate" 子串误匹配 moderate/generate 等词
 _RATE_LIMIT_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+_RATE_LIMIT_MESSAGE = re.compile(r"\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bhttp(?:/\d[.\d]*)?[: ]+429\b|^\s*429\b", re.I)
 
 # 重试补丁覆盖的 pixivpy 方法名单。sync_engine 的六方法之外，状态检查还用到
 # user_detail——名单收在这里供各调用点共享，新增 API 调用时记得登记
@@ -54,8 +56,8 @@ def response_is_rate_limited(value: Any) -> bool:
         error = _parse_pixiv_error_json(value) or str(value)
     else:
         error = value.get("error") if isinstance(value, dict) else getattr(value, "error", None)
-    text = " ".join(str(error.get(name) or "") for name in ("message", "reason", "user_message")) if isinstance(error, dict) else str(error or "")
-    return any(token in text.lower() for token in _RATE_LIMIT_TOKENS)
+    fields = (error.get(name) for name in ("message", "reason", "user_message")) if isinstance(error, dict) else (error,)
+    return any(isinstance(field, str) and _RATE_LIMIT_MESSAGE.search(field) for field in fields)
 
 
 def response_is_pixiv_error_page(result: Any) -> bool:
@@ -267,13 +269,21 @@ def retry_on_pixiv_error(
     return decorator
 
 
+def positive_pixiv_id(value: Any) -> int:
+    if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 19:
+        value = int(value)
+    if type(value) is not int or not 0 < value < 2**63:
+        raise ValueError("无效的 Pixiv ID 或游标")
+    return value
+
+
 def next_user_page_query(api: Any, next_url: str | None, current: dict[str, Any]) -> dict[str, Any] | None:
     if next_url is None:
         return None
     try:
         params = api.parse_qs(next_url)
-        offset = int(params["offset"])
-        same_user = int(params.get("user_id", current["user_id"])) == current["user_id"]
+        offset = positive_pixiv_id(params["offset"])
+        same_user = positive_pixiv_id(params.get("user_id", current["user_id"])) == current["user_id"]
         same_scope = "restrict" not in current or params.get("restrict", current["restrict"]) == current["restrict"]
         if same_user and same_scope and offset > current.get("offset", 0):
             return {**current, "offset": offset}

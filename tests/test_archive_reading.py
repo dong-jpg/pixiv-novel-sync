@@ -121,13 +121,17 @@ def test_following_dashboard_handles_cold_start_membership_and_unfollow(reader):
 
     response = reader.client.get("/api/dashboard/users?scope=following")
     assert response.status_code == 409
+    assert reader.client.get("/api/dashboard/follows").status_code == 409
     save_following_snapshot(reader.db, 99, [SimpleNamespace(id=1)])
     save_following_snapshot(reader.db, 99, [], "private")
     response = reader.client.get("/api/dashboard/users?scope=following")
     assert response.status_code == 200
     assert [item["user_id"] for item in response.get_json()["items"]] == [1]
+    legacy = reader.client.get("/api/dashboard/follows").get_json()
+    assert legacy["page_size"] == 10 and [item["user_id"] for item in legacy["items"]] == [1]
     save_following_snapshot(reader.db, 99, [])
     assert reader.client.get("/api/dashboard/users?scope=following").get_json()["total"] == 0
+    assert reader.client.get("/api/dashboard/follows").get_json()["items"] == []
     assert reader.client.get("/api/dashboard/users").get_json()["total"] == 1
 
 
