@@ -7,6 +7,7 @@ code organization and reusability.
 from __future__ import annotations
 
 import logging
+import re
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -20,6 +21,7 @@ T = TypeVar('T')
 
 # 明确的限流标志：完整 token，避免 "rate" 子串误匹配 moderate/generate 等词
 _RATE_LIMIT_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+_RATE_LIMIT_MESSAGE = re.compile(r"\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bhttp(?:/\d[.\d]*)?[: ]+429\b|^\s*429\b", re.I)
 
 # 重试补丁覆盖的 pixivpy 方法名单。sync_engine 的六方法之外，状态检查还用到
 # user_detail——名单收在这里供各调用点共享，新增 API 调用时记得登记
@@ -32,7 +34,30 @@ RETRY_PATCHED_METHODS = (
     "novel_series",
     "webview_novel",
     "user_detail",
+    "novel_follow",
 )
+
+
+def response_is_auth_failed(value: Any) -> bool:
+    from ..pixiv_fetch import _auth_failed, _parse_pixiv_error_json
+
+    if isinstance(value, BaseException):
+        return _auth_failed(_parse_pixiv_error_json(value))
+    error = value.get("error") if isinstance(value, dict) else getattr(value, "error", None)
+    return _auth_failed(error)
+
+
+def response_is_rate_limited(value: Any) -> bool:
+    from ..pixiv_fetch import _parse_pixiv_error_json
+
+    if isinstance(value, BaseException):
+        if _extract_status_code(value) == 429:
+            return True
+        error = _parse_pixiv_error_json(value) or str(value)
+    else:
+        error = value.get("error") if isinstance(value, dict) else getattr(value, "error", None)
+    fields = (error.get(name) for name in ("message", "reason", "user_message")) if isinstance(error, dict) else (error,)
+    return any(isinstance(field, str) and _RATE_LIMIT_MESSAGE.search(field) for field in fields)
 
 
 def response_is_pixiv_error_page(result: Any) -> bool:
@@ -133,8 +158,37 @@ def apply_pixiv_retry_patch(
                 base_delay=base_delay,
                 stop_requested=stop_requested,
             )(original)
-        wrapped._pixiv_retry_original = original  # type: ignore[attr-defined]
+        renew = getattr(api, "__dict__", {}).get("_pixiv_reauthenticate")
+        if renew is not None:
+            wrapped = _retry_after_renewal(wrapped, renew, binding)
+        wrapped._pixiv_retry_original = original
         setattr(api, method_name, wrapped)
+
+
+def _retry_after_renewal(call, renew, binding):
+    def check_cancel():
+        if binding and binding.stop_requested and binding.stop_requested():
+            raise InterruptedError("Task stopped by user")
+
+    @wraps(call)
+    def invoke(*args, **kwargs):
+        check_cancel()
+        try:
+            result = call(*args, **kwargs)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            check_cancel()
+            if not response_is_auth_failed(exc) or not renew():
+                raise
+        else:
+            check_cancel()
+            if not response_is_auth_failed(result) or not renew():
+                return result
+        check_cancel()
+        return call(*args, **kwargs)
+
+    return invoke
 
 
 def _extract_status_code(exc: Exception) -> int | None:
@@ -213,6 +267,29 @@ def retry_on_pixiv_error(
             raise last_exc  # type: ignore
         return wrapper
     return decorator
+
+
+def positive_pixiv_id(value: Any) -> int:
+    if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 19:
+        value = int(value)
+    if type(value) is not int or not 0 < value < 2**63:
+        raise ValueError("无效的 Pixiv ID 或游标")
+    return value
+
+
+def next_user_page_query(api: Any, next_url: str | None, current: dict[str, Any]) -> dict[str, Any] | None:
+    if next_url is None:
+        return None
+    try:
+        params = api.parse_qs(next_url)
+        offset = positive_pixiv_id(params["offset"])
+        same_user = positive_pixiv_id(params.get("user_id", current["user_id"])) == current["user_id"]
+        same_scope = "restrict" not in current or params.get("restrict", current["restrict"]) == current["restrict"]
+        if same_user and same_scope and offset > current.get("offset", 0):
+            return {**current, "offset": offset}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+    raise ValueError("Invalid Pixiv user pagination cursor")
 
 
 def _to_plain(value: Any) -> Any:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import time
 from time import perf_counter
@@ -11,9 +11,12 @@ from pixiv_novel_sync.auth import PixivAuthManager
 from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
-from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
+from pixiv_novel_sync.sync.author_history import AuthorHistoryCursor
+from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, next_user_page_query, positive_pixiv_id, response_is_pixiv_error_page, response_is_rate_limited
 from pixiv_novel_sync.sync_engine import (
     BookmarkNovelSyncService,
+    SyncAuthFailed,
+    SyncRateLimited,
     _iso_age_days,
     _recently_confirmed_deleted_novel_ids,
 )
@@ -41,6 +44,11 @@ MAX_CONSECUTIVE_MISSING = 30
 # 三者共用同一套熔断逻辑。
 MISSING_STATUSES = frozenset({"deleted", "suspended"})
 
+# 认证失败的状态值（web/utils._check_*_status 在 token 失效时返回）。
+# 与 unknown 的区别：它是确定性错误——该次调用重试无意义，等 15 个条目烧完
+# 「疑似限流」熔断只会让日志归因错误（2026-11-20~23 生产事故即此形态）。
+AUTH_FAILED_STATUS = "auth_failed"
+
 # 全量备份按失败比例中止单个用户之前，至少要处理过这么多本。以前没有最小样本：
 # 第 1 本失败就是 1/1 > 20%，整个用户中止，在轮转里被跳过一整圈。失败累计到
 # USER_BACKUP_MAX_FAILED_NOVELS 本仍然立即中止（那是确定的坏信号，与样本量无关）。
@@ -48,13 +56,23 @@ USER_BACKUP_FAILURE_MIN_SAMPLE = 10
 USER_BACKUP_MAX_FAILED_NOVELS = 10
 USER_BACKUP_MAX_FAILURE_RATIO = 0.2
 
-# 全量备份平时只补没归档完整的作品，每位作者每 7 天全部重抓一次（审查性能 P19）。
+# 已确认 deleted 的系列多久复查一次（天）。与小说侧 KNOWN_DELETED_RECHECK_DAYS
+# 同语义——降频而非永久跳过：作者可能重新上传或恢复系列。
+KNOWN_DELETED_SERIES_RECHECK_DAYS = 7
+SERIES_STATUS_BATCH_SIZE = 300
+
+# 手动作者备份每 7 天允许全部重抓一次；定时备份始终只补缺失归档。
 # 全部重抓保留为唯一会重抓已归档正文的路径：作者改了正文、或 S2 那种被错误页覆写成
 # 占位数据（title=novel_<id>、user_id=0，正文仍在所以 archive_complete 为真）的作品，
 # 只能靠它修回。上次全部重抓的时间按作者记在这个水位里，只有该作者那一轮完整跑完
 # （没停、没失败、没触顶）才更新。
 USER_BACKUP_FULL_REFRESH_DAYS = 7
 USER_BACKUP_FULL_REFRESH_WATERMARK = "user_backup_full_refresh"
+
+# user_backup 翻页的专用兜底上限（每页 30 本 ⇒ 200 页 = 6000 本）。历史事故
+# （2026-11 生产）：未配置 user_backup_max_pages_per_run 时回退到共享的
+# max_pages_per_run=2，整库导出被砍成每作者 60 本。绝不复用 max_pages_per_run。
+USER_BACKUP_MAX_PAGES = 200
 
 # 小说状态检查每轮的批大小。全量 6971 篇（每篇间隔 2 秒）单轮要跑满 4 小时，
 # 既占死任务槽又是限流诱因；分批后单轮耗时可控，多轮按 last_checked_at 轮转覆盖全库。
@@ -148,6 +166,10 @@ def run_user_backup_task(
     *,
     rebuild_catalog: bool = True,
     claim_finalization: ClaimFinalization | None = None,
+    scheduled_owner: int | None = None,
+    api: Any = None,
+    private_author: bool = False,
+    body_recheck_budget: int = 0,
 ) -> dict[str, Any]:
     if stop_requested is not None and stop_requested():
         _report_log(reporter, "info", "用户全量备份已停止")
@@ -159,7 +181,8 @@ def run_user_backup_task(
             "stopped": True,
         }
 
-    api = _login(settings)
+    if api is None:
+        api = _login(settings, stop_requested=stop_requested)
     storage = _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -173,7 +196,7 @@ def run_user_backup_task(
         )
         service.stop_requested = stop_requested
         user_name = _lookup_user_name(db, user_id)
-        full_refresh = _needs_full_refresh(_load_full_refresh_marks(db), user_id)
+        full_refresh = scheduled_owner is None and _needs_full_refresh(_load_full_refresh_marks(db), user_id)
         mode_label = "全部重抓" if full_refresh else "增量：已归档的跳过"
         _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})（{mode_label}）")
         item_delay = float(getattr(settings.sync, "delay_seconds_between_items", 0) or 0)
@@ -190,11 +213,29 @@ def run_user_backup_task(
         truncated_by_page_cap = False
         total_failed_page = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
-        # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环
-        # 备份是整库导出，不能共用 max_pages_per_run=2 那种轻量上限
+        history = AuthorHistoryCursor(db, scheduled_owner, user_id) if scheduled_owner is not None else None
+        if history and history.resumed:
+            next_query["offset"] = history.offset
+        unavailable_ids = history.unavailable if history else set()
+        rate_limited = False
+        metrics = {name: 0 for name in ("novels_created", "metadata_updated", "texts_updated", "failed_assets", "assets_repaired", "body_rechecks")}
+        # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环。
+        # 备份是整库导出，绝不能回退到 max_pages_per_run（生产事故 2026-11：
+        # 该字段缺省时回落共享值 2，每作者只备到最新 ~60 本，第 61 本起永久缺失；
+        # 截断又让 full_refresh 水位写不进，同批作者每轮重抓前 60 本）。
+        # 仿 FOLLOWING_LIST_MAX_PAGES 的模式：专用常量兜底，YAML 的
+        # user_backup_max_pages_per_run 仍然可以覆盖。
         max_pages = getattr(getattr(settings, "sync", None), "user_backup_max_pages_per_run", None)
         if max_pages is None:
-            max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
+            max_pages = USER_BACKUP_MAX_PAGES
+        try:
+            max_pages = int(max_pages)
+        except (TypeError, ValueError):
+            max_pages = USER_BACKUP_MAX_PAGES
+        if max_pages <= 0:
+            max_pages = USER_BACKUP_MAX_PAGES
+        if scheduled_owner is not None:
+            max_pages = min(max_pages, 2)
         page_count = 0
 
         _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
@@ -210,9 +251,25 @@ def run_user_backup_task(
                 truncated_by_page_cap = True
                 break
 
-            result = api.user_novels(**next_query)
+            try:
+                result = api.user_novels(**next_query)
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if not response_is_rate_limited(exc):
+                    raise
+                rate_limited = True
+                break
             page_count += 1
-            if response_is_pixiv_error_page(result):
+            if response_is_rate_limited(result):
+                rate_limited = True
+                break
+            if response_is_pixiv_error_page(result) or not isinstance(getattr(result, "novels", None), (list, tuple)):
+                from pixiv_novel_sync.web.utils import _is_auth_error, _pixiv_error_text
+
+                if _is_auth_error(_pixiv_error_text(result)):
+                    _report_log(reporter, "error", "用户备份中止：Pixiv 认证失败（token 已失效）")
+                    raise SyncAuthFailed("Pixiv authentication failed while listing user novels")
                 # A14-01：Pixiv 限流/鉴权失败时 pixivpy 不抛异常而是回
                 # {"error": {...}}。旧代码 getattr(result, "novels", []) 把它当
                 # 「空的最后一页」记成功，备份没拉到数据却是绿灯。错误页必须按
@@ -226,6 +283,17 @@ def run_user_backup_task(
                 total_failed_page = True
                 break
             novels = getattr(result, "novels", []) or []
+            page_offset = next_query.get("offset", 0)
+            if history is not None:
+                try:
+                    next_url = result["next_url"] if isinstance(result, dict) else result.next_url
+                    following_query = next_user_page_query(api, next_url, next_query)
+                    following_offset = following_query["offset"] if following_query else None
+                    page_ids = [positive_pixiv_id(novel.id) for novel in novels]
+                    history.verify(page_offset, page_ids, following_offset)
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    total_failed_page = True
+                    break
             total_seen += len(novels)
             for novel in novels:
                 if stop_requested is not None and stop_requested():
@@ -234,9 +302,12 @@ def run_user_backup_task(
                 visited += 1
                 novel_id = int(novel.id)
 
-                if not full_refresh and service._archive_complete_on_disk(
-                    novel_id, settings.sync.download_assets
-                ):
+                archived = not full_refresh and service._archive_complete_on_disk(novel_id, settings.sync.download_assets)
+                recheck = False
+                if archived and body_recheck_budget > 0:
+                    from ..sync.series_inventory import needs_refresh
+                    recheck = needs_refresh(db, novel_id, getattr(settings.sync, "archive_rescan_days", 7))
+                if archived and not recheck:
                     # 纯本地判定，不发请求、不间隔；来源照常登记（与以前重访时一致）
                     with db.transaction():
                         db.upsert_source(
@@ -254,18 +325,39 @@ def run_user_backup_task(
                     )
                     continue
 
-                counters = service._sync_novel(
-                    novel,
-                    # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
-                    # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
-                    None,
-                    settings.sync.download_assets,
-                    settings.sync.write_markdown,
-                    settings.sync.write_raw_text,
-                    source_type="user_backup",
-                    source_key=str(user_id),
-                )
+                if recheck:
+                    body_recheck_budget -= 1
+                    metrics["body_rechecks"] += 1
+                try:
+                    counters = service._sync_novel(
+                        novel,
+                        # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
+                        # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
+                        "private" if private_author else None,
+                        settings.sync.download_assets,
+                        settings.sync.write_markdown,
+                        settings.sync.write_raw_text,
+                        source_type="user_backup",
+                        source_key=str(user_id),
+                    )
+                except InterruptedError:
+                    raise
+                except SyncRateLimited:
+                    rate_limited = True
+                    break
+                except SyncAuthFailed:
+                    # token 已失效：按中止收口（不堆 failed、不算该作者完成）。
+                    message = f"用户全量备份中止：Pixiv 认证失败（token 已失效）: {user_name} ({user_id})"
+                    logger.error(message)
+                    _report_log(reporter, "error", message)
+                    raise
                 processed += 1
+                if counters.get("content_unavailable"):
+                    unavailable_ids.add(novel_id)
+                elif not counters.get("failed"):
+                    unavailable_ids.discard(novel_id)
+                for metric in metrics:
+                    metrics[metric] += counters.get(metric, 0)
                 failed = counters.get("failed", 0)
                 if failed:
                     total_failed += failed
@@ -292,10 +384,21 @@ def run_user_backup_task(
                     stopped = True
                     break
 
-            if stopped:
+            if stopped or rate_limited or (scheduled_owner is not None and total_failed):
                 break
 
-            next_query = api.parse_qs(getattr(result, "next_url", None))
+            next_url = getattr(result, "next_url", None)
+            if history is None:
+                next_query = api.parse_qs(next_url)
+            else:
+                if stop_requested is not None and stop_requested():
+                    stopped = True
+                    break
+                next_query = following_query
+                history.advance(page_offset, page_ids, following_offset)
+                if next_query and page_count >= max_pages:
+                    truncated_by_page_cap = True
+                    break
             if next_query and settings.sync.delay_seconds_between_pages > 0:
                 if _sleep_with_cancel(settings.sync.delay_seconds_between_pages, stop_requested):
                     stopped = True
@@ -303,18 +406,23 @@ def run_user_backup_task(
 
         if not stopped and stop_requested is not None and stop_requested():
             stopped = True
-        completed = not stopped and not total_failed and not total_failed_page and not truncated_by_page_cap
+        completed = not (stopped or rate_limited or total_failed or total_failed_page or truncated_by_page_cap)
         if full_refresh and completed:
             _mark_full_refresh(db, user_id)
         if not full_refresh:
             mode_label = f"增量：跳过已归档 {total_skipped_archived} 本"
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
-        elif total_failed or total_failed_page:
+        elif rate_limited:
+            _report_log(reporter, "warning", "Pixiv 请求已被限流，本轮备份停止，保留未完成页")
+        elif truncated_by_page_cap and scheduled_owner is not None and not total_failed and not total_failed_page:
+            _report_log(reporter, "info", f"本轮完成 {page_count} 页，下轮续页: {user_name} ({user_id})")
+        elif total_failed or total_failed_page or truncated_by_page_cap:
             _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本（{mode_label}）")
         else:
             _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本（{mode_label}）")
         stats = {
+            **metrics,
             "user_id": user_id,
             "novels": total_novels,
             "skipped": total_skipped,
@@ -330,9 +438,23 @@ def run_user_backup_task(
             # 上游错误页：数据没拉全却没有任何单本失败，必须单独标记
             stats.update(incomplete=True, aborted_reason="upstream_error_page")
         if truncated_by_page_cap:
-            # 触顶翻页上限属于异常截断，必须让任务日志显示 partial
-            stats["truncated"] = True
             stats["incomplete"] = True
+            if scheduled_owner is not None and not total_failed and not total_failed_page:
+                stats.update(rotation_pending=True, more_pages=True)
+            else:
+                stats["truncated"] = True
+        if rate_limited:
+            stats.update(incomplete=True, aborted_reason="rate_limited")
+        if history is not None:
+            enumerated = bool(completed and history.enumerated)
+            stats.update(pages_read=page_count, boundary_pages=0, resumed=history.resumed, unavailable_count=len(unavailable_ids),
+                         history_enumerated=enumerated, history_verified=enumerated and history.verified,
+                         history_complete=enumerated and history.verified and not unavailable_ids)
+            if enumerated and not history.verified:
+                stats.update(incomplete=True, rotation_pending=True, more_pages=True, history_verification_pending=True)
+            if unavailable_ids:
+                stats.update(incomplete=True)
+                stats.setdefault("aborted_reason", "history_content_unavailable")
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped") and _catalog_inputs_changed(stats):
@@ -377,18 +499,35 @@ def run_user_status_task(
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
 ) -> dict[str, Any]:
+    def followed_users(db):
+        from ..sync.following_snapshot import known_following_members
+
+        members = known_following_members(db, getattr(settings.pixiv, "user_id", None))
+        if members is None:
+            return None
+        return [user for user in _list_users_for_status_check(db) if user["user_id"] in members]
+
+    def build_already_missing(db: Database) -> Callable[[Any], bool]:
+        # 已知 suspended 的再次确认是持续结论，不该推进 30 连熔断（MISSING_STATUSES
+        # 同时含 suspended；series 侧 2026-11 同类假熔断的泛化修复）。生产上封禁
+        # 用户零星（1-2 个）凑不满 30 连，但豁免保证边界形态（批量封禁聚集）下
+        # 也不误报。
+        known = db.get_known_suspended_user_ids()
+        return lambda user: int(user["user_id"]) in known
+
     return _run_user_status_like_task(
         settings=settings,
         reporter=reporter,
         stop_requested=stop_requested,
         task_label="用户状态检查",
         total_label="用户",
-        list_items=_list_users_for_status_check,
+        list_items=followed_users,
         check_status=_check_pixiv_user_status,
         upsert_status=lambda db, user, status: db.upsert_user_status(user["user_id"], status),
         progress_name=lambda user: str(user.get("name") or user.get("user_id")),
         progress_id=lambda user: user.get("user_id"),
         total_key="total_users",
+        build_already_missing=build_already_missing,
     )
 
 
@@ -453,18 +592,62 @@ def run_series_status_task(
     *,
     claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
+    # 已删系列 7 天内复查过的不进本批；deferred 同时进 stats 供运维观测
+    deferred: set[int] = set()
+    remaining = 0
+
+    def list_ids(db: Database) -> list[int]:
+        nonlocal remaining
+        # 已删系列 7 天内复查过的不进本批（与 novel_status 的 P21 降频同语义）。
+        # 这同时省掉重复确认的请求：生产上 45 个已删系列每轮都吃 ~15% 检查量。
+        # 查询失败退回全查（fail-safe），与小说侧一致。
+        try:
+            cutoff = (
+                datetime.now(timezone.utc)
+                - timedelta(days=KNOWN_DELETED_SERIES_RECHECK_DAYS)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            rows = db.conn.execute(
+                "SELECT series_id FROM series "
+                "WHERE status IN ('deleted', 'suspended') "
+                "AND datetime(last_checked_at) >= datetime(?)",
+                (cutoff,),
+            ).fetchall()
+            deferred.update(int(row[0]) for row in rows)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            logger.warning("读取近期已确认删除的系列失败，本轮全部重查: %s", exc)
+        ids = db.get_series_ids_for_status_check()
+        eligible = [series_id for series_id in ids if int(series_id) not in deferred]
+        remaining = max(0, len(eligible) - SERIES_STATUS_BATCH_SIZE)
+        return eligible[:SERIES_STATUS_BATCH_SIZE]
+
+    def finalize_stats(db: Database, stats: dict[str, Any]) -> None:
+        if deferred:
+            stats["deleted_recheck_deferred"] = len(deferred)
+        if remaining:
+            stats.update(series_status_remaining=remaining, rotation_pending=True)
+
+    def build_already_missing(db: Database) -> Callable[[Any], bool]:
+        # known-deleted 再次确认是一致结论，不能推进 30 连熔断（生产 2026-11 事故：
+        # 45 个已删系列聚集凑满 30 连，99% 完成度处把整轮打成 suspicious_missing_streak）。
+        known = db.get_known_missing_series_ids()
+        return lambda series_id: int(series_id) in known
+
     return _run_status_task(
         settings=settings,
         reporter=reporter,
         stop_requested=stop_requested,
         task_label="系列状态检查",
         total_label="系列",
-        list_ids=lambda db: db.get_series_ids_for_status_check(),
+        list_ids=list_ids,
         check_status=_check_series_status,
         upsert_status=lambda db, item_id, status: db.upsert_series_status(item_id, status),
         total_key="total_series",
         rebuild_catalog=True,
         claim_finalization=claim_finalization,
+        finalize_stats=finalize_stats,
+        build_already_missing=build_already_missing,
     )
 
 
@@ -484,7 +667,7 @@ def run_pending_deletion_detection_task(
 
     _report_log(reporter, "info", "=== 开始检测取消收藏/追更 ===")
 
-    api = _login(settings)
+    api = _login(settings, stop_requested=stop_requested)
     auth_user_id = settings.pixiv.user_id
     _report_log(reporter, "success", f"登录成功, 用户ID: {auth_user_id}")
 
@@ -592,20 +775,55 @@ def run_pending_deletion_detection_task(
         db.close()
 
 
+def _make_reauth_handler(
+    settings: Any,
+    stop_requested: StopRequested | None,
+    task_label: str,
+) -> tuple[Callable[[], Any], Callable[[], bool]]:
+    """构造可中途重登的 (取 api, 认证失败回调) 对。
+
+    pixivpy3 登录后 access token 硬 1 小时过期且无自动刷新（api.py 只在
+    token 为 None 时抛错），单轮任务逼近 60 分钟就会整体失效。状态检查的
+    ``check_status`` 回调闭包持有旧 api 对象，因此重登必须换新实例并把
+    重试补丁原样打上；回调返回 True 表示已重登、当前条目可重查一次。
+
+    每任务最多重登一次：refresh token 若也失效，第二次 ``auth()`` 同样失败，
+    无限重试只会把熔断额度烧在认证端点上。
+    """
+    state = {"api": _login(settings, stop_requested=stop_requested), "used": False}
+
+    def get_api() -> Any:
+        return state["api"]
+
+    def on_auth_failed() -> bool:
+        if state["used"] or getattr(state["api"], "__dict__", {}).get("_pixiv_reauthenticate"):
+            return False
+        state["used"] = True
+        api = _login(settings, stop_requested=stop_requested)
+        apply_pixiv_retry_patch(api, stop_requested=stop_requested)
+        state["api"] = api
+        logger.warning("%s：access token 已失效，已重新登录并继续", task_label)
+        return True
+
+    return get_api, on_auth_failed
+
+
 def _run_user_status_like_task(
     settings: Any,
     reporter: JobReporter | None,
     stop_requested: StopRequested | None,
     task_label: str,
     total_label: str,
-    list_items: Callable[[Database], list[dict[str, Any]]],
+    list_items: Callable[[Database], list[dict[str, Any]] | None],
     check_status: Callable[[Any, int], str],
     upsert_status: Callable[[Database, dict[str, Any], str], None],
     progress_name: Callable[[dict[str, Any]], str],
     progress_id: Callable[[dict[str, Any]], Any],
     total_key: str,
+    build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
-    api = _login(settings)
+    get_api, on_auth_failed = _make_reauth_handler(settings, stop_requested, task_label)
+    api = get_api()
     # 状态检查不经过 BookmarkNovelSyncService，取消回调只能在这里绑到重试补丁上，
     # 否则 user_detail 的 429/网络退避是一整段不可取消的 sleep（S7）。
     apply_pixiv_retry_patch(api, stop_requested=stop_requested)
@@ -615,19 +833,31 @@ def _run_user_status_like_task(
     try:
         prepare_schema(db)
         items = list_items(db)
+        if items is None:
+            _report_log(reporter, "warning", "尚未取得完整的公开和私密关注名单，本轮不检查其他作者")
+            return {total_key: 0, "checked_count": 0, "incomplete": True, "aborted_reason": "following_snapshot_unavailable"}
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(items)} 个{total_label}需要检查")
+        already_missing: Callable[[Any], bool] | None = None
+        if build_already_missing is not None:
+            # 快照失败不该拖垮整轮：退化成 None 即恢复旧的严格熔断行为
+            try:
+                already_missing = build_already_missing(db)
+            except Exception as exc:
+                logger.warning("%s已知封禁快照失败，熔断退回严格模式: %s", task_label, exc)
         return _process_status_items(
             settings=settings,
             reporter=reporter,
             stop_requested=stop_requested,
             db=db,
             items=items,
-            check_status=lambda item: check_status(api, int(progress_id(item))),
+            check_status=lambda item: check_status(get_api(), int(progress_id(item))),
             upsert_status=upsert_status,
             item_label=total_label,
             item_name=progress_name,
             total_key=total_key,
+            already_missing=already_missing,
+            on_auth_failed=on_auth_failed,
         )
     finally:
         db.close()
@@ -648,7 +878,8 @@ def _run_status_task(
     finalize_stats: Callable[[Database, dict[str, Any]], None] | None = None,
     build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
-    api = _login(settings)
+    get_api, on_auth_failed = _make_reauth_handler(settings, stop_requested, task_label)
+    api = get_api()
     # 同 _run_user_status_like_task：把任务的取消回调绑到重试补丁上
     apply_pixiv_retry_patch(api, stop_requested=stop_requested)
     _ensure_storage_dirs(settings)
@@ -672,12 +903,13 @@ def _run_status_task(
             stop_requested=stop_requested,
             db=db,
             items=item_ids,
-            check_status=lambda item_id: check_status(api, item_id),
+            check_status=lambda item_id: check_status(get_api(), item_id),
             upsert_status=upsert_status,
             item_label=total_label,
             item_name=lambda item_id: str(item_id),
             total_key=total_key,
             already_missing=already_missing,
+            on_auth_failed=on_auth_failed,
         )
         if finalize_stats is not None:
             # 批次统计只是运维观测信息，失败不应拖垮整轮任务
@@ -712,9 +944,9 @@ def _db_utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _login(settings: Any) -> Any:
+def _login(settings: Any, stop_requested: StopRequested | None = None) -> Any:
     auth = PixivAuthManager(settings.pixiv)
-    api, auth_result = auth.login()
+    api, auth_result = auth.login(stop_requested=stop_requested)
     if auth_result.user_id is None:
         raise RuntimeError("Unable to determine user ID")
     if getattr(settings.pixiv, "user_id", None) is None:
@@ -767,6 +999,7 @@ def _process_status_items(
     item_name: Callable[[Any], str],
     total_key: str,
     already_missing: Callable[[Any], bool] | None = None,
+    on_auth_failed: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     checked_count = 0
     status_counts: dict[str, int] = {}
@@ -785,6 +1018,31 @@ def _process_status_items(
             break
 
         status = check_status(item)
+        if status == AUTH_FAILED_STATUS:
+            # access token 过期是确定性错误：重试该次调用无意义。给调用方一次
+            # 重登机会（成功则重查当前条目），否则立即中止——不再烧 15 个条目
+            # 走「疑似限流」熔断（2026-11-20~23 生产事故的误报形态）。
+            _report_log(reporter, "warning", f"[{checked_count + 1}/{total}] {item_label} {item_name(item)}: 认证失败（token 已失效）")
+            reauthenticated = False
+            if on_auth_failed is not None:
+                try:
+                    reauthenticated = bool(on_auth_failed())
+                except InterruptedError:
+                    raise
+                except Exception as exc:  # pragma: no cover - 重登失败按中止处理
+                    logger.warning("%s重新登录失败: %s", item_label, exc)
+            if reauthenticated:
+                status = check_status(item)
+            if status == AUTH_FAILED_STATUS:
+                message = (
+                    f"Pixiv 认证失败（access token 已失效），已中止本轮{item_label}检查"
+                    f"（已检查 {checked_count}/{total}，未检查的保持原状态）"
+                )
+                logger.warning(message)
+                _report_log(reporter, "error", message)
+                aborted_reason = "auth_failed"
+                stopped = True
+                break
         upsert_status(db, item, status)
         checked_count += 1
         status_counts[status] = status_counts.get(status, 0) + 1

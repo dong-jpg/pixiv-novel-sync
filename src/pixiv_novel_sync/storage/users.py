@@ -1,6 +1,7 @@
 """User CRUD operations."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 # 与 novels 一致：unknown 表示本次检查没拿到可信结果，不得覆盖已有状态
@@ -110,6 +111,19 @@ class UsersMixin:
             )
         self._commit_if_needed()
 
+    def get_known_suspended_user_ids(self) -> set[int]:
+        """返回数据库里已经标记为 suspended 的用户 ID 集合。
+
+        给 user_status 的「连续大量 suspended」熔断做去噪（``MISSING_STATUSES``
+        含 suspended）：Pixiv 再次确认一个本来就是 suspended 的账号，是持续的
+        结论而不是「限流伪装成不存在」的证据。与小说/系列侧的 known-missing
+        快照同一语义。
+        """
+        rows = self.conn.execute(
+            "SELECT user_id FROM users WHERE status = 'suspended'"
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+
     # 本人账号资料的水位线存储键。users 表只存「被关注的作者」，本人账号不在其中，
     # 所以侧边栏不能靠 users 表取自己的信息（会退化成"最近同步的作者"）。
     SELF_PROFILE_WATERMARK = "self_profile"
@@ -175,10 +189,12 @@ class UsersMixin:
             }
         return None
 
-    def list_followed_users(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    def list_followed_users(self, *, member_ids: set[int], page: int = 1, page_size: int = 10) -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
-        total = int(self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        members = json.dumps(sorted(member_ids))
+        total = int(self.conn.execute("SELECT COUNT(*) FROM users WHERE user_id IN (SELECT value FROM json_each(?))",
+                                      (members,)).fetchone()[0])
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
@@ -186,10 +202,11 @@ class UsersMixin:
             """
             SELECT user_id, name, account, raw_json, updated_at
             FROM users
+            WHERE user_id IN (SELECT value FROM json_each(?))
             ORDER BY updated_at DESC, user_id DESC
             LIMIT ? OFFSET ?
             """,
-            (page_size, offset),
+            (members, page_size, offset),
         ).fetchall()
         items = [
             {
@@ -209,11 +226,15 @@ class UsersMixin:
             "total_pages": total_pages,
         }
 
-    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all", search: str = "") -> dict[str, Any]:
+    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all", search: str = "",
+                   member_ids: set[int] | None = None) -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
         clauses: list[str] = []
         params: list[Any] = []
+        if member_ids is not None:
+            clauses.append("u.user_id IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(sorted(member_ids)))
         if status != "all":
             clauses.append("u.status = ?")
             params.append(status)

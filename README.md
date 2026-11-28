@@ -13,7 +13,7 @@
 ## 分支选择
 
 - **main：私人书库。** 包含本地同步、归档、阅读、推荐、偏好 / XP 分析，支持 NAS / Docker 部署；main 不包含写作模块。
-- **ai-writing：书库与写作。** [ai-writing 分支](https://github.com/dong-jpg/pixiv-novel-sync/tree/ai-writing)包含 main 的全部功能，额外提供创作项目、章节、创作向导、风格蒸馏与润色。共享改动先进入 main，再合并到 ai-writing。
+- **ai-writing：书库与写作。** [ai-writing 分支](https://github.com/dong-jpg/pixiv-novel-sync/tree/ai-writing)在书库基础上额外提供创作项目、章节、创作向导、风格蒸馏与润色。共享改动先进入 main，再合并到 ai-writing；实际继承版本与发布状态见 [项目现状](docs/STATUS.md)，分支名称不代表已同步到最新提交。
 
 ## 当前 ai-writing 分支
 

@@ -21,7 +21,7 @@ def direct_sync_env(tmp_path, monkeypatch):
         def __init__(self, pixiv_settings):
             created["auth"] = self
 
-        def login(self):
+        def login(self, **kwargs):
             return object(), SimpleNamespace(user_id=123)
 
     class FakeDatabase:
@@ -51,11 +51,14 @@ def direct_sync_env(tmp_path, monkeypatch):
         def __init__(self, api, db, storage, settings):
             created["service"] = self
 
-        def sync_following_list(self, progress_callback=None):
+        def sync_following_lists(self, progress_callback=None):
             return {"users": 1}
 
         def sync_following_novels(self, **kwargs):
             return {"novels": 2}
+
+        def sync_following_updates(self, progress_callback=None):
+            return {"novels": 1, "feed_pages": 2}
 
         def sync_subscribed_series(self, **kwargs):
             return {"series_synced": 3}
@@ -94,6 +97,16 @@ def test_build_default_task_list_uses_sync_settings():
         sync = Sync()
 
     assert build_default_task_list(Settings()) == ["bookmark", "following_novels", "subscribed_series"]
+
+
+def test_scheduler_discovers_followed_novels_through_feed(direct_sync_env):
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobState
+
+    settings, created, unused_db, unused_service = direct_sync_env
+    job = JobState("feed", JobSpec(JobSource.SCHEDULER, ["following_novels"]))
+    result = execute_task("following_novels", settings, {"job": job})
+    assert result["feed_pages"] == 2 and result["novels"] == 1
+    assert created["db"].closed
 
 
 def test_task_label_for_known_and_unknown_tasks():
@@ -368,7 +381,9 @@ def test_execute_task_dispatches_scheduled_user_backup_batch(monkeypatch):
         reporter=None,
         stop_requested=None,
         claim_finalization=None,
+        include_private=False,
     ):
+        assert include_private
         calls.append((settings, reporter, stop_requested, claim_finalization))
         return {"novels": 3}
 
@@ -424,13 +439,13 @@ def test_scheduled_user_backup_rotates_batch_and_rebuilds_catalog_once(monkeypat
         def init_schema(self):
             pass
 
-        def get_watermark(self, key):
-            assert key == "user_backup_rotation"
-            return {"offset": 0}
+        def get_watermark(self, key, owner):
+            assert key == "user_backup_rotation_v2"
+            return {}
 
-        def update_watermark(self, key, value):
-            assert key == "user_backup_rotation"
-            watermark_updates.append(value)
+        def update_watermark(self, key, value, owner):
+            assert key == "user_backup_rotation_v2"
+            watermark_updates.append(dict(value))
 
         def rebuild_rescue_catalog(self):
             type(self).rebuild_calls += 1
@@ -444,10 +459,12 @@ def test_scheduled_user_backup_rotates_batch_and_rebuilds_catalog_once(monkeypat
         return {"novels": 1, "skipped": 2, "assets_downloaded": 3, "stopped": False}
 
     monkeypatch.setattr(quick_sync, "Database", Database)
+    monkeypatch.setattr(quick_sync.job_services, "_login", lambda settings, **kwargs: object())
+    monkeypatch.setattr(quick_sync, "read_following_snapshot", lambda db, owner: [SimpleNamespace(id=10), SimpleNamespace(id=20)])
     monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
     settings = SimpleNamespace(
         storage=SimpleNamespace(db_path="db.sqlite"),
-        sync=SimpleNamespace(auto_sync_following_novels_users_limit=0),
+        pixiv=SimpleNamespace(user_id=99), sync=SimpleNamespace(user_backup_users_per_run=5),
     )
 
     result = run_batch(
@@ -464,7 +481,7 @@ def test_scheduled_user_backup_rotates_batch_and_rebuilds_catalog_once(monkeypat
     assert result["stopped"] is False
     assert result["rescue_catalog_items"] == 2
     assert Database.rebuild_calls == 1
-    assert watermark_updates[-1]["offset"] == 0
+    assert watermark_updates[-1]["last_author"] == 20
 
 
 def test_scheduled_user_backup_watermark_only_advances_completed_users(monkeypatch):
@@ -492,11 +509,11 @@ def test_scheduled_user_backup_watermark_only_advances_completed_users(monkeypat
         def init_schema(self):
             pass
 
-        def get_watermark(self, key):
-            return {"offset": 0}
+        def get_watermark(self, key, owner):
+            return {}
 
-        def update_watermark(self, key, value):
-            watermark_updates.append(value)
+        def update_watermark(self, key, value, owner):
+            watermark_updates.append(dict(value))
 
         def rebuild_rescue_catalog(self):
             raise AssertionError("cancelled batches must not rebuild the catalog")
@@ -510,10 +527,12 @@ def test_scheduled_user_backup_watermark_only_advances_completed_users(monkeypat
         return {"novels": 1, "skipped": 0, "assets_downloaded": 0, "stopped": False}
 
     monkeypatch.setattr(quick_sync, "Database", Database)
+    monkeypatch.setattr(quick_sync.job_services, "_login", lambda settings, **kwargs: object())
+    monkeypatch.setattr(quick_sync, "read_following_snapshot", lambda db, owner: [SimpleNamespace(id=10), SimpleNamespace(id=20)])
     monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
     settings = SimpleNamespace(
         storage=SimpleNamespace(db_path="db.sqlite"),
-        sync=SimpleNamespace(auto_sync_following_novels_users_limit=10),
+        pixiv=SimpleNamespace(user_id=99), sync=SimpleNamespace(user_backup_users_per_run=5),
     )
 
     result = run_batch(
@@ -524,7 +543,7 @@ def test_scheduled_user_backup_watermark_only_advances_completed_users(monkeypat
     )
 
     assert result["stopped"] is True
-    assert watermark_updates[-1]["offset"] == 1
+    assert watermark_updates[-1]["last_author"] == 10
 
 
 def test_scheduled_user_backup_empty_batch_has_no_inverted_range_log(monkeypatch):
@@ -548,7 +567,7 @@ def test_scheduled_user_backup_empty_batch_has_no_inverted_range_log(monkeypatch
         def init_schema(self):
             pass
 
-        def get_watermark(self, key):
+        def get_watermark(self, key, owner):
             return None
 
         def update_watermark(self, key, value):
@@ -568,9 +587,10 @@ def test_scheduled_user_backup_empty_batch_has_no_inverted_range_log(monkeypatch
             raise AssertionError("empty batches have no per-user progress")
 
     monkeypatch.setattr(quick_sync, "Database", Database)
+    monkeypatch.setattr(quick_sync, "read_following_snapshot", lambda db, owner: [])
     settings = SimpleNamespace(
         storage=SimpleNamespace(db_path="db.sqlite"),
-        sync=SimpleNamespace(auto_sync_following_novels_users_limit=10),
+        pixiv=SimpleNamespace(user_id=99), sync=SimpleNamespace(user_backup_users_per_run=5),
     )
 
     result = quick_sync.run_scheduled_user_backup(

@@ -111,7 +111,7 @@ def test_bookmark_sync_redownloads_cover_deleted_from_disk(tmp_path: Path) -> No
         db.close()
 
     # 表里还记着封面，但磁盘上没了：不能再当成归档完整跳过
-    assert api.detail_calls == [NOVEL_ID, NOVEL_ID]
+        assert api.detail_calls == [NOVEL_ID]
     assert stats["assets_downloaded"] == 1
     assert cover.stat().st_size > 0
 

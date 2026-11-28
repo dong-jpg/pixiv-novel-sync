@@ -156,24 +156,33 @@
 
         <div class="pt-6 border-t border-gray-100">
           <h3 class="text-sm font-bold text-gray-900 mb-1">关注作者</h3>
-          <p class="text-xs text-pixiv-light mb-3">按 user_last_synced 轮转，可让位、下轮从水位续跑</p>
+          <p class="text-xs text-pixiv-light mb-3">定时任务读取关注新作并续跑积压；历史作品由定时备份分批补齐。</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每作者最大篇数（留空不限）</label>
               <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" placeholder="不限" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-              <p class="mt-1 text-xs text-pixiv-light">留空时单个高产作者会吃光整轮预算，一轮只覆盖 1 个作者</p>
+              <p class="mt-1 text-xs text-pixiv-light">用于手动扫描作者；定时新作同步使用全局作品数预算。</p>
             </div>
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每轮扫描用户数（0=全部）</label>
               <input type="number" v-model.number="settings.auto_sync_following_novels_users_limit" min="0" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-              <p class="mt-1 text-xs text-pixiv-light">「全量备份关注用户」复用同一个值，改这里会同时改掉那个任务的每轮批量</p>
+              <p class="mt-1 text-xs text-pixiv-light">用于手动扫描作者；定时备份作者数单独设置。</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">备份最大页数（留空=200）</label>
+              <input type="number" v-model.number="settings.user_backup_max_pages_per_run" min="1" placeholder="200" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">手动备份留空为 200 页；定时备份每位作者最多处理 2 页并续页。</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">定时备份每轮作者数</label>
+              <input type="number" v-model.number="settings.user_backup_users_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
             </div>
           </div>
         </div>
 
         <div class="pt-6 border-t border-gray-100">
           <h3 class="text-sm font-bold text-gray-900 mb-1">系列</h3>
-          <p class="text-xs text-pixiv-light mb-3">每轮从追更列表头部重走，不是水位续跑，所以不可让位</p>
+          <p class="text-xs text-pixiv-light mb-3">优先检查最久未同步的系列，每轮最多复查 10 篇旧正文，新章另行归档。</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">系列最大页数（留空跟随全局）</label>

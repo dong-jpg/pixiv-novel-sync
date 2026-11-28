@@ -889,6 +889,19 @@ class RescueMixin:
             "duration_ms": duration_ms,
         }
 
+    def refresh_rescue_sources(self, novel_id: int) -> None:
+        with self.transaction():
+            rows = self.conn.execute(
+                "SELECT item_type,item_id FROM rescue_catalog WHERE (item_type='novel' AND item_id=?) "
+                "OR (item_type='series' AND item_id=(SELECT series_id FROM novels WHERE novel_id=?))",
+                (novel_id, novel_id),
+            ).fetchall()
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_sources WHERE item_type=? AND item_id=?",
+                [(row["item_type"], row["item_id"]) for row in rows],
+            )
+            self._insert_catalog_sources_for_rows(rows)
+
     def refresh_rescue_item(self, item_type: str, item_id: int) -> dict[str, int]:
         """Atomically rebuild one item, its parent series, and affected chapters."""
         normalized_type = self._validate_rescue_item_type(item_type)
@@ -1150,8 +1163,11 @@ class RescueMixin:
             return None
         return self._series_evaluation_payload(rows[0])
 
-    def get_rescue_series(self, series_id: int) -> dict[str, Any] | None:
+    def get_rescue_series(self, series_id: int, *, archived: bool = False) -> dict[str, Any] | None:
         payload = self.evaluate_rescue_series(int(series_id))
+        if archived and payload is not None and payload.get("complete_count") and payload.get("override_action") != "exclude":
+            payload["rescue_state"] = payload.get("rescue_state") or "partial"
+            payload["eligibility_reason"] = payload.get("eligibility_reason") or "archived_copy"
         if payload is None or payload["rescue_state"] is None:
             return None
         # 与 get_rescue_novel 同理：读接口不受 pending 排除约束，但要把「本人是否
@@ -1196,7 +1212,9 @@ class RescueMixin:
                     FROM novels n4
                     JOIN novel_texts nt4 ON nt4.novel_id = n4.novel_id
                     WHERE n4.series_id = se.series_id AND nt4.has_content = 1
-                    ORDER BY n4.create_date DESC, n4.novel_id DESC
+                    ORDER BY COALESCE((SELECT CAST(entry.key AS INTEGER) FROM series_inventory inventory,
+                        json_each(inventory.novel_ids_json) entry WHERE inventory.series_id=n4.series_id
+                        AND entry.value=n4.novel_id),2147483647) DESC, n4.create_date DESC, n4.novel_id DESC
                     LIMIT 1
                 ) AS latest_novel_id,
                 COALESCE((
@@ -1380,11 +1398,14 @@ class RescueMixin:
             if key not in {"text_raw", "caption", "tags"}
         }
 
-    def get_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
+    def get_rescue_novel(self, novel_id: int, *, archived: bool = False) -> dict[str, Any] | None:
         data = self._novel_rescue_row(int(novel_id))
         if data is None:
             return None
         payload = self._novel_evaluation_payload(data)
+        if archived and payload["body_complete"] and payload.get("override_action") != "exclude":
+            payload["rescue_state"] = payload.get("rescue_state") or "success"
+            payload["eligibility_reason"] = payload.get("eligibility_reason") or "archived_copy"
         if payload["rescue_state"] is None:
             return None
         # 读接口不受 pending 排除约束（目录决定「能浏览什么」，接口只负责按 ID 取回备份），
@@ -1392,7 +1413,7 @@ class RescueMixin:
         payload["personal_hold"] = self._personal_holds_item("novel", int(novel_id))
         return payload
 
-    def get_rescue_novel_extras(self, novel_id: int, series_id: int | None) -> dict[str, Any]:
+    def get_rescue_novel_extras(self, novel_id: int, series_id: int | None, *, archived: bool = False) -> dict[str, Any]:
         """救援正文页额外展示的数据：同步时的收藏/浏览快照、原创/AI 标记、系列导航。
 
         系列导航（第几话、上一话/下一话）只在所属系列本身可救援时给出；章节序号
@@ -1412,7 +1433,7 @@ class RescueMixin:
         extras.update(_work_flags(row["raw_json"]))
         if series_id is None:
             return extras
-        series = self.get_rescue_series(int(series_id))
+        series = self.get_rescue_series(int(series_id), archived=archived)
         if series is None:
             return extras
         chapters = self.conn.execute(
@@ -1421,7 +1442,9 @@ class RescueMixin:
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
             WHERE n.series_id = ? AND nt.has_content = 1
-            ORDER BY n.create_date ASC, n.novel_id ASC
+            ORDER BY COALESCE((SELECT CAST(entry.key AS INTEGER) FROM series_inventory inventory,
+                json_each(inventory.novel_ids_json) entry WHERE inventory.series_id=n.series_id
+                AND entry.value=n.novel_id),2147483647), n.create_date ASC, n.novel_id ASC
             """,
             (int(series_id),),
         ).fetchall()
@@ -1776,8 +1799,9 @@ class RescueMixin:
         series_id: int,
         page: int = 1,
         page_size: int = 100,
+        *, archived: bool = False,
     ) -> dict[str, Any] | None:
-        series = self.get_rescue_series(int(series_id))
+        series = self.get_rescue_series(int(series_id), archived=archived)
         if series is None:
             return None
         normalized_page = max(int(page), 1)
@@ -1814,7 +1838,9 @@ class RescueMixin:
                         WHERE a.novel_id = n.novel_id AND a.asset_type = 'cover'
                     ) AS has_cover,
                     ROW_NUMBER() OVER (
-                        ORDER BY n.create_date ASC, n.novel_id ASC
+                        ORDER BY COALESCE((SELECT CAST(entry.key AS INTEGER) FROM series_inventory inventory,
+                            json_each(inventory.novel_ids_json) entry WHERE inventory.series_id=n.series_id
+                            AND entry.value=n.novel_id),2147483647), n.create_date ASC, n.novel_id ASC
                     ) AS chapter_number
                 FROM novels n
                 JOIN novel_texts nt ON nt.novel_id = n.novel_id

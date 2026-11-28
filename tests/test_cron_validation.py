@@ -84,7 +84,7 @@ PHASE2_CRONS: dict[str, str] = {
     "user_backup": "30 2 */3 * *",
     "pending_deletion_detection": "30 12 * * *",
     "preference_analyze": "15 7,19 * * *",
-    "recommendation_run": "50 8 * * *",
+    "recommendation_run": "0 11 * * *",
 }
 
 # 两个基准时刻：00:00 覆盖"当天还没跑过"，19:00 覆盖"当天已跑完、要跨到下一次"，
@@ -104,7 +104,7 @@ _EXPECTED_NEXT_RUNS: list[tuple[str, datetime, datetime]] = [
     ("user_backup", _BASE_MIDNIGHT, datetime(2026, 9, 1, 2, 30, tzinfo=_SEOUL)),
     ("pending_deletion_detection", _BASE_MIDNIGHT, datetime(2026, 9, 1, 12, 30, tzinfo=_SEOUL)),
     ("preference_analyze", _BASE_MIDNIGHT, datetime(2026, 9, 1, 7, 15, tzinfo=_SEOUL)),
-    ("recommendation_run", _BASE_MIDNIGHT, datetime(2026, 9, 1, 8, 50, tzinfo=_SEOUL)),
+    ("recommendation_run", _BASE_MIDNIGHT, datetime(2026, 9, 1, 11, 0, tzinfo=_SEOUL)),
     # 从 2026-09-01 19:00 KST 起算
     ("bookmarks", _BASE_EVENING, datetime(2026, 9, 1, 20, 20, tzinfo=_SEOUL)),
     ("subscribed_series", _BASE_EVENING, datetime(2026, 9, 2, 1, 40, tzinfo=_SEOUL)),
@@ -116,7 +116,7 @@ _EXPECTED_NEXT_RUNS: list[tuple[str, datetime, datetime]] = [
     ("user_backup", _BASE_EVENING, datetime(2026, 9, 4, 2, 30, tzinfo=_SEOUL)),
     ("pending_deletion_detection", _BASE_EVENING, datetime(2026, 9, 2, 12, 30, tzinfo=_SEOUL)),
     ("preference_analyze", _BASE_EVENING, datetime(2026, 9, 1, 19, 15, tzinfo=_SEOUL)),
-    ("recommendation_run", _BASE_EVENING, datetime(2026, 9, 2, 8, 50, tzinfo=_SEOUL)),
+    ("recommendation_run", _BASE_EVENING, datetime(2026, 9, 2, 11, 0, tzinfo=_SEOUL)),
 ]
 
 # 每天应触发几次：锁住"预算"而不只是"能解析"。日步进任务不在此列（跨天，见上表）。
@@ -209,7 +209,7 @@ def test_preference_analyze_default_cron_is_twice_daily() -> None:
 
 def test_recommendation_run_default_cron_is_daily() -> None:
     """recommendation_run 消耗 Pixiv 搜索配额，默认降到每天一次。"""
-    assert _sync_default("auto_sync_recommendation_run_cron") == "50 8 * * *"
+    assert _sync_default("auto_sync_recommendation_run_cron") == "0 11 * * *"
 
 
 def test_load_settings_falls_back_to_new_default_crons(tmp_path: Path) -> None:
@@ -242,7 +242,7 @@ def test_save_sync_settings_default_crons_pass_their_own_validator(tmp_path: Pat
 
     assert saved["auto_sync_preference_analyze_cron"] == "15 7,19 * * *"
     assert saved["auto_sync_preference_analyze_interval_hours"] == 12
-    assert saved["auto_sync_recommendation_run_cron"] == "50 8 * * *"
+    assert saved["auto_sync_recommendation_run_cron"] == "0 11 * * *"
 
 
 # ── cron 预览端点 ─────────────────────────────────────────────────────

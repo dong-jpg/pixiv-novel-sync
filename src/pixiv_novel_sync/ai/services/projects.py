@@ -158,11 +158,13 @@ class AIProjectsMixin:
             raise AIServiceError("缺少 project_id")
         db = self._db()
         try:
-            if not db.get_ai_writing_project(project_id):
-                raise AIServiceError("写作项目不存在")
-            if "chapter_number" not in payload or not payload["chapter_number"]:
-                payload["chapter_number"] = db.get_next_chapter_number(project_id)
-            return db.create_ai_chapter(payload)
+            with db.transaction():
+                if not db.get_ai_writing_project(project_id):
+                    raise AIServiceError("写作项目不存在")
+                chapter = dict(payload)
+                if not chapter.get("chapter_number"):
+                    chapter["chapter_number"] = db.get_next_chapter_number(project_id)
+                return db.create_ai_chapter(chapter)
         finally:
             db.close()
 

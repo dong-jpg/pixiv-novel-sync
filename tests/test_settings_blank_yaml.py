@@ -50,7 +50,7 @@ def test_missing_cron_keys_keep_their_defaults(tmp_path: Path) -> None:
     assert settings.sync.auto_sync_timezone == "UTC"
     assert settings.sync.auto_sync_bookmarks_cron == ""
     assert settings.sync.auto_sync_preference_analyze_cron == "15 7,19 * * *"
-    assert settings.sync.auto_sync_recommendation_run_cron == "50 8 * * *"
+    assert settings.sync.auto_sync_recommendation_run_cron == "0 11 * * *"
 
 
 @pytest.mark.parametrize(

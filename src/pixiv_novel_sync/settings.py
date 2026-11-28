@@ -59,9 +59,9 @@ class SyncSettings:
     # 系列章节数远超单个作者的单轮作品体量，共用那个上限会把长系列永久截断：
     # 生产实测每轮 truncated_series=2，8 个订阅系列长期缺 76 章，高频重跑也补不齐。
     series_max_pages_per_run: int | None = None
-    # 用户全量备份翻页上限。None = 跟随 max_pages_per_run（旧行为）。
-    # 备份是整库导出，共用 2 页上限会把 800 篇收藏截成 60 篇，任务日志却显示绿色。
     user_backup_max_pages_per_run: int | None = None
+    user_backup_users_per_run: int = 5
+    rescue_archive_read_enabled: bool = False
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
     delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
@@ -107,8 +107,7 @@ class SyncSettings:
     auto_sync_recommendation_run_enabled: bool = False  # 自动生成推荐
     auto_sync_recommendation_run_interval_hours: int = 24  # 生成推荐间隔（小时）
     # 一轮最多发 20 条 Pixiv 检索，是唯一会额外吃搜索配额的任务，每天一次足够；
-    # 08:50 卡在 following_novels(09:00) 之前的空档，且避开收藏时刻。
-    auto_sync_recommendation_run_cron: str = "50 8 * * *"
+    auto_sync_recommendation_run_cron: str = "0 11 * * *"
     # Phase 3.2: pending_deletions表清理配置
     # 注意这里只有「已确认记录保留天数」。曾经还有一个 pending_deletion_grace_period_days
     # （「待确认宽限天数」），但 cleanup_old_pending_deletions 早就不按时间自动确认
@@ -226,6 +225,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             following_max_novels_per_author=_coerce_optional_int(sync_raw.get("following_max_novels_per_author")),
             series_max_pages_per_run=_coerce_optional_int(sync_raw.get("series_max_pages_per_run")),
             user_backup_max_pages_per_run=_coerce_optional_int(sync_raw.get("user_backup_max_pages_per_run")),
+            user_backup_users_per_run=_coerce_positive_int(sync_raw.get("user_backup_users_per_run"), 5),
+            rescue_archive_read_enabled=_coerce_bool(sync_raw.get("rescue_archive_read_enabled"), False),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
@@ -266,7 +267,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             preference_analyze_batch_size=_coerce_positive_int(sync_raw.get("preference_analyze_batch_size"), 200),
             auto_sync_recommendation_run_enabled=_coerce_bool(sync_raw.get("auto_sync_recommendation_run_enabled"), False),
             auto_sync_recommendation_run_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_recommendation_run_interval_hours"), 24),
-            auto_sync_recommendation_run_cron=_coerce_str(sync_raw.get("auto_sync_recommendation_run_cron", "50 8 * * *"), ""),
+            auto_sync_recommendation_run_cron=_coerce_str(sync_raw.get("auto_sync_recommendation_run_cron", "0 11 * * *"), ""),
             pending_deletion_cleanup_confirmed_days=_coerce_positive_int(sync_raw.get("pending_deletion_cleanup_confirmed_days"), 7),
             task_log_retention_days=_coerce_positive_int(sync_raw.get("task_log_retention_days"), 14),
         ),

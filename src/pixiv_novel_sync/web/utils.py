@@ -77,6 +77,9 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "max_items_per_run": settings.sync.max_items_per_run,
         "max_pages_per_run": settings.sync.max_pages_per_run,
         "bookmark_max_pages_per_run": settings.sync.bookmark_max_pages_per_run,
+        "user_backup_max_pages_per_run": settings.sync.user_backup_max_pages_per_run,
+        "user_backup_users_per_run": settings.sync.user_backup_users_per_run,
+        "rescue_archive_read_enabled": settings.sync.rescue_archive_read_enabled,
         "archive_rescan_days": settings.sync.archive_rescan_days,
         "following_max_novels_per_author": settings.sync.following_max_novels_per_author,
         "series_max_pages_per_run": settings.sync.series_max_pages_per_run,
@@ -444,12 +447,30 @@ _MISSING_ERROR_KEYWORDS: tuple[str, ...] = (
 _VERDICT_OK = "ok"  # 拿到目标数据
 _VERDICT_MISSING = "missing"  # Pixiv 明确回复「不存在/已删除」
 _VERDICT_UNKNOWN = "unknown"  # 其余一切情况，不可据此改写状态
+_VERDICT_AUTH_FAILED = "auth_failed"  # access token 过期/被拒，重试该次调用无意义
 
 # 限流/风控的错误特征。必须与 sync_engine._RATE_LIMIT_ERROR_TOKENS 保持一致
 # （tests/test_status_check_classification.py 里有防漂移断言），否则同一个响应
 # 会在两处得到相反结论：例如 {"user_message": "尚无此页", "message": "Rate Limit"}
 # 在 sync_engine 里被排除为临时故障，在这里却被判成「已删除」。
 _RATE_LIMIT_ERROR_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+
+# 认证失败（access token 过期/被拒）的错误特征。pixivpy3 拿到这种响应不抛异常，
+# 原样返回 {"error": {...}}，历史上被归入 unknown、要烧满 15 个条目才触发
+# 「疑似 Pixiv 限流」的误报熔断（2026-11-20~23 生产事故：token 1 小时 TTL 过期，
+# 6 轮状态检查全部在 +3600s 处熔断报 rate_limited）。认证失败是确定性错误：
+# 这次调用重试没有意义，正确动作是重登或立即中止，文案也要与限流区分开。
+# 必须与 sync/utils._AUTH_ERROR_TOKENS 保持一致（同一响应两处不能得到相反分类）。
+_AUTH_ERROR_TOKENS = (
+    "invalid_grant",
+    "invalid token",
+    "invalid_token",
+    "oauth process",
+    "check your access token",
+    "token expired",
+    "unauthorized",
+    "access token",
+)
 
 
 def _response_field(result: Any, key: str) -> Any:
@@ -493,11 +514,24 @@ def _is_missing_error(error_text: str) -> bool:
     return any(keyword in lowered for keyword in _MISSING_ERROR_KEYWORDS)
 
 
+def _is_auth_error(error_text: str) -> bool:
+    """错误文案是否表示认证失败（token 过期/被拒）。
+
+    判定顺序在 missing 与 unknown 之前：认证失败时 Pixiv 回的是 OAuth 层的
+    错误体（``Error occurred at the OAuth process... invalid_grant``），既没有
+    目标数据键也不会命中「不存在」关键词，但它比 unknown 更具体——调用方
+    应当立即中止或重登，而不是继续消耗条目/熔断额度。
+    """
+    lowered = error_text.lower()
+    return any(token in lowered for token in _AUTH_ERROR_TOKENS)
+
+
 def _classify_pixiv_response(result: Any, data_keys: tuple[str, ...]) -> tuple[str, Any]:
     """判定 pixivpy 响应属于哪一类，返回 (判定, 目标数据)。
 
     - 命中 ``data_keys`` 之一 → (``ok``, 该数据)
     - 错误文案明确表示不存在 → (``missing``, None)
+    - 错误文案是认证失败（token 过期/被拒）→ (``auth_failed``, None)
     - 其余（含 result 为 None）→ (``unknown``, None)
     """
     if result is None:
@@ -506,7 +540,10 @@ def _classify_pixiv_response(result: Any, data_keys: tuple[str, ...]) -> tuple[s
         value = _response_field(result, key)
         if value is not None:
             return _VERDICT_OK, value
-    if _is_missing_error(_pixiv_error_text(result)):
+    error_text = _pixiv_error_text(result)
+    if _is_auth_error(error_text):
+        return _VERDICT_AUTH_FAILED, None
+    if _is_missing_error(error_text):
         return _VERDICT_MISSING, None
     return _VERDICT_UNKNOWN, None
 
@@ -514,6 +551,10 @@ def _classify_pixiv_response(result: Any, data_keys: tuple[str, ...]) -> tuple[s
 def _log_unknown_status(label: str, item_id: int, result: Any) -> None:
     detail = _pixiv_error_text(result) or "响应为空或缺少预期字段"
     logger.warning("%s %s 状态无法判定，保持原状态: %s", label, item_id, detail[:200])
+
+
+def _log_auth_failed_status(label: str, item_id: int) -> None:
+    logger.warning("%s %s 检查失败：认证失败（access token 已失效），需重新登录", label, item_id)
 
 
 def _check_pixiv_user_status(api: Any, user_id: int) -> str:
@@ -526,6 +567,9 @@ def _check_pixiv_user_status(api: Any, user_id: int) -> str:
         verdict, _user = _classify_pixiv_response(result, ("user",))
         if verdict == _VERDICT_MISSING:
             return "suspended"
+        if verdict == _VERDICT_AUTH_FAILED:
+            _log_auth_failed_status("用户", user_id)
+            return "auth_failed"
         if verdict != _VERDICT_OK:
             _log_unknown_status("用户", user_id, result)
             return "unknown"
@@ -556,6 +600,9 @@ def _check_novel_status(api: Any, novel_id: int) -> str:
         verdict, novel = _classify_pixiv_response(result, ("novel",))
         if verdict == _VERDICT_MISSING:
             return "deleted"
+        if verdict == _VERDICT_AUTH_FAILED:
+            _log_auth_failed_status("小说", novel_id)
+            return "auth_failed"
         if verdict != _VERDICT_OK:
             _log_unknown_status("小说", novel_id, result)
             return "unknown"
@@ -582,6 +629,9 @@ def _check_series_status(api: Any, series_id: int) -> str:
         verdict, _detail = _classify_pixiv_response(result, ("novel_series_detail",))
         if verdict == _VERDICT_MISSING:
             return "deleted"
+        if verdict == _VERDICT_AUTH_FAILED:
+            _log_auth_failed_status("系列", series_id)
+            return "auth_failed"
         if verdict != _VERDICT_OK:
             _log_unknown_status("系列", series_id, result)
             return "unknown"

@@ -2,7 +2,7 @@
 
 正文按 ``pixiv_markup`` 解析：``[newpage]`` 和 ``[chapter:]`` 各起一个 XHTML 文件并进目录，
 注音转 ``<ruby><rt>``，jumpuri 只放行 http(s)，``[jump:N]`` 链到对应页的文件。
-插图标记降级成文字说明：备份没有存「插图 ID → 图片文件」的对应关系，不猜图。
+有明确映射的本地插图嵌入书中；未知标记保留文字说明。
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ def create_epub_from_novel(
     text_content: str,
     cover_path: Path | None = None,
     language: str | None = None,
+    *, inline_images: dict[str, Path] | None = None, image_budget: int = 32 * 1024**2,
 ) -> bytes:
     """从小说数据创建EPUB字节流；``language`` 不传时按正文判断（ja / zh / ko / en）。"""
     novel_id = novel_data["novel_id"]
@@ -56,6 +57,28 @@ def create_epub_from_novel(
     book.add_item(style)
 
     pages = pixiv_markup.parse(text)
+    embedded = {}
+    markers = {f"{block['kind']}:{block['id']}" for page in pages for block in page if block['type'] == 'image'}
+    for marker, path in (inline_images or {}).items():
+        if marker not in markers:
+            continue
+        limit = min(image_budget, 8 * 1024**2)
+        try:
+            if not 0 < path.stat().st_size <= limit:
+                continue
+            with path.open('rb') as stream:
+                content = stream.read(limit + 1)
+        except OSError:
+            continue
+        kind = _sniff_image(content)
+        if not kind or len(content) > limit:
+            continue
+        extension, media_type = kind
+        image_id = f"illustration_{len(embedded) + 1}"
+        filename = f"images/{image_id}.{extension}"
+        book.add_item(epub.EpubItem(uid=image_id, file_name=filename, media_type=media_type, content=content))
+        embedded[marker] = filename
+        image_budget -= len(content)
     sections, page_targets = _build_sections(pages)
     files = [f"chap_{index + 1:03d}.xhtml" for index in range(len(sections))]
 
@@ -73,7 +96,7 @@ def create_epub_from_novel(
             file_name=files[index],
             lang=lang,
         )
-        chapter.set_content(_render_section(section, title if index == 0 else None, page_href))
+        chapter.set_content(_render_section(section, title if index == 0 else None, page_href, embedded))
         chapter.add_item(style)
         book.add_item(chapter)
         chapters.append(chapter)
@@ -212,19 +235,19 @@ def _toc_indexes(sections: list[dict[str, Any]]) -> list[int]:
     return list(range(len(sections)))
 
 
-def _render_section(section: dict[str, Any], book_title: str | None, page_href) -> str:
+def _render_section(section: dict[str, Any], book_title: str | None, page_href, embedded) -> str:
     parts: list[str] = []
     if book_title is not None:
         parts.append(f"<h1>{_escape(book_title)}</h1>")
     if section["chapter"] is not None:
         parts.append(f'<h2 class="chapter">{_render_inline(section["chapter"], page_href, False)}</h2>')
     for block in section["blocks"]:
-        parts.append(_render_block(block, page_href))
+        parts.append(_render_block(block, page_href, embedded))
     # lxml 解析空字符串会失败，ebooklib 随即写出 0 字节文件；空页至少留一个空段落
     return "\n".join(parts) or "<p></p>"
 
 
-def _render_block(block: dict[str, Any], page_href) -> str:
+def _render_block(block: dict[str, Any], page_href, embedded) -> str:
     kind = block["type"]
     if kind == "paragraph":
         return f'<p>{_escape(block["indent"])}{_render_inline(block["content"], page_href, False)}</p>'
@@ -233,6 +256,9 @@ def _render_block(block: dict[str, Any], page_href) -> str:
     if kind == "chapter":
         return f'<h2 class="chapter">{_render_inline(block["content"], page_href, False)}</h2>'
     if kind == "image":
+        filename = embedded.get(f"{block['kind']}:{block['id']}")
+        if filename:
+            return f'<p><img src="{_escape(filename)}" alt="正文插图" style="max-width:100%"/></p>'
         return _render_image(block)
     if kind == "pagebreak":
         return f'<hr class="page-break" id="{block["anchor"]}"/>'

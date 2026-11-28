@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.12.4
+// @version      0.13.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；「好P友新作」tab 改为「拯救系列」，追更列表空白框原位替换为备份卡片。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.12.4';
+  const SCRIPT_VERSION = '0.13.1';
   // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
   // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
   const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
@@ -851,7 +851,7 @@
     const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
     renderWorkHeader(panel, data, { cover: true });
-    renderPixivText(panel, data.text_raw);
+    renderPixivText(panel, data.text_raw, data.illustrations, data.novel_id, data.archiveAccess);
     // 系列章节：文末照 Pixiv 放系列卡（「下一话 #N」「上一话 #N」），并记下阅读进度
     if (data.series_nav) {
       renderSeriesNavCard(panel, data.series_nav);
@@ -1197,7 +1197,7 @@
   //   [[emphasismark:文字 > •]] → 着重号；[uploadedimage:ID]/[pixivimage:ID] →
   //   插图占位（备份未收录插图与正文的对应关系）。
   // 全部用 DOM 节点 + textContent 构建，正文里的 <script> 只会是字面文字。
-  function renderPixivText(container, rawText) {
+  function renderPixivText(container, rawText, illustrations, novelId, archived) {
     const pages = splitPixivPages(rawText);
     const section = element('div', 'pixiv-rescue-novel-text pixiv-rescue-body');
     section.setAttribute('lang', /[぀-ヿ]/.test(String(rawText || '').slice(0, 4000)) ? 'ja' : 'zh-CN');
@@ -1211,7 +1211,7 @@
     function show(index, scroll) {
       current = Math.max(0, Math.min(pages.length - 1, index));
       clearNode(section);
-      renderPixivPage(section, pages[current], function (page) { show(page, true); });
+      renderPixivPage(section, pages[current], function (page) { show(page, true); }, illustrations, novelId, archived);
       top.update(current, pages.length);
       bottom.update(current, pages.length);
       if (scroll) top.node.scrollIntoView(true);
@@ -1262,7 +1262,7 @@
   // 块级标记（章节标题、插图）把一页切成若干文本块，各文本块再按空行分段
   const PIXIV_BLOCK_RE = /\n?\[chapter:([^\]\n]*)\]\n?|\n?\[(uploadedimage|pixivimage):([^\]\n]*)\]\n?/g;
 
-  function renderPixivPage(section, pageText, goToPage) {
+  function renderPixivPage(section, pageText, goToPage, illustrations, novelId, archived) {
     // Pixiv 正文容器开头有一个 1px 的阅读进度埋点元素：逐段对照实测，少了它
     // 全文会整体上移 1px，这里照样占位
     const start = element('div', 'pixiv-rescue-text-start');
@@ -1281,7 +1281,7 @@
       if (match[1] !== undefined) {
         section.append(element('h2', 'pixiv-rescue-chapter', match[1]));
       } else {
-        section.append(renderMissingImage(match[2], match[3]));
+        section.append(renderInlineImage(match[2], match[3], illustrations, novelId, archived));
       }
       last = PIXIV_BLOCK_RE.lastIndex;
     }
@@ -1413,7 +1413,25 @@
     parent.append(mark);
   }
 
-  // 插图：备份没有存「插图 ID → 图片文件」的对应关系，如实给占位，不猜图
+  function renderInlineImage(kind, id, illustrations, novelId, archived) {
+    const path = illustrations && illustrations[kind + ':' + id];
+    const prefix = '/api/rescue/v1/novels/' + String(novelId) + '/assets/';
+    if (typeof path !== 'string' || !path.startsWith(prefix) || !/^\d+$/.test(path.slice(prefix.length))) {
+      return renderMissingImage(kind, id);
+    }
+    const image = element('img', 'pixiv-rescue-illustration');
+    image.alt = '正文插图';
+    image.style.maxWidth = '100%';
+    apiGetBlobUrl(path + (archived ? '?archive=1' : '')).then(function (url) {
+      if (!image.isConnected) { URL.revokeObjectURL(url); return; }
+      image.onload = image.onerror = function () { URL.revokeObjectURL(url); };
+      image.src = url;
+    }).catch(function () {
+      if (image.isConnected) image.replaceWith(renderMissingImage(kind, id));
+    });
+    return image;
+  }
+
   function renderMissingImage(kind, id) {
     const box = element('div', 'pixiv-rescue-image-missing', '此处原有插图（私人备份未收录插图）');
     if (kind === 'pixivimage' && /^\d+$/.test(String(id).split('-')[0])) {
@@ -1533,10 +1551,10 @@
   function retrySeriesChapters(panel, data, seriesId, button) {
     button.disabled = true;
     const stale = function () { return !readerRoot || !readerRoot.contains(panel); };
-    apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(seriesId)) + '/chapters')
+    apiGetBackup('/api/rescue/v1/series/' + encodeURIComponent(String(seriesId)) + '/chapters', data.archived)
       .then(function (chapters) {
         if (stale()) return;
-        renderSeries({ series: data.series, chapters: chapters, chaptersError: null }, seriesId);
+        renderSeries({ series: data.series, chapters: chapters, chaptersError: null, archived: data.archived }, seriesId);
       })
       .catch(function (error) {
         if (stale()) return;
@@ -1664,6 +1682,15 @@
     return Boolean(work) && work.type === entry.type && work.id === entry.id && cardIsBroken(source);
   }
 
+  const handledCardIdentities = new WeakMap();
+  const pendingCards = new WeakMap();
+
+  function clearPendingCard(entry) {
+    if (pendingCards.get(entry.card) !== entry) return;
+    pendingCards.delete(entry.card);
+    if (entry.card.getAttribute(ROOT_ATTRIBUTE) === 'card-pending') entry.card.removeAttribute(ROOT_ATTRIBUTE);
+  }
+
   function collectBrokenCards() {
     const broken = [];
 
@@ -1672,14 +1699,22 @@
       // 标记为 pending 而非终态：查询失败时会撤销（见 markBrokenCards 的 catch），
       // 下一轮扫描允许重试。A14-03 的根因就是这里先写了永久标记。
       card.setAttribute(ROOT_ATTRIBUTE, 'card-pending');
-      broken.push({ type: type, id: id, card: card, source: source });
+      handledCardIdentities.set(card, type + ':' + id);
+      const entry = { type: type, id: id, card: card, source: source };
+      pendingCards.set(card, entry);
+      broken.push(entry);
     }
 
     // 卡片已被处理过（终态 card / 处理中 card-pending）都跳过，等待中的卡片由
     // 上一轮的回调负责收尾——pending 挂太久（请求超时等）会由 catch 撤销。
-    function alreadyHandled(card) {
+    function alreadyHandled(card, type, id) {
       const state = card.getAttribute(ROOT_ATTRIBUTE);
-      return state === 'card' || state === 'card-pending';
+      if (state !== 'card' && state !== 'card-pending') return false;
+      if (handledCardIdentities.get(card) === type + ':' + id) return true;
+      pendingCards.delete(card);
+      card.removeAttribute(ROOT_ATTRIBUTE);
+      card.classList.remove('pixiv-rescue-rescued-card');
+      return false;
     }
 
     // 1) 有链接的失效卡片。去重键是共享容器（div.works-item / li）而不是链接
@@ -1695,10 +1730,10 @@
       if (link.closest(OWN_UI_SELECTOR) || link.closest('.novel-series-thumbnail-detail')) return;
       const card = link.closest('div.works-item, li') || link;
       if (handledCards.has(card)) return;
-      if (alreadyHandled(card)) { handledCards.add(card); return; }
-      if (!cardIsBroken(link)) return;
       const work = linkWork(link);
       if (!work) return;
+      if (alreadyHandled(card, work.type, work.id)) { handledCards.add(card); return; }
+      if (!cardIsBroken(link)) return;
       handledCards.add(card);
       register(card, work.id, work.type, link);
     });
@@ -1711,8 +1746,8 @@
       if (node.closest(OWN_UI_SELECTOR)) return;
       const card = climbToCard(node);
       if (!card || card === document.body) return;
-      if (alreadyHandled(card)) return;
       if (card.querySelector('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]')) return;
+      if (alreadyHandled(card, 'unknown', value)) return;
       // 卡片本身（或其附近文本）必须就是失效提示，避免把健康卡片的 gtm 值也抓进来
       if (!cardIsBroken(card) && !elementMatchesUnavailable(card)) return;
       register(card, value, 'unknown', node);
@@ -1808,6 +1843,7 @@
 
     link.append(coverBox, body);
     card.append(link);
+    handledCardIdentities.set(card, (isNovel ? 'novel:' : 'series:') + (isNovel ? match.novel_id : (match.series_id || match.novel_id)));
   }
 
   function markBrokenCards() {
@@ -1836,6 +1872,7 @@
         : readCachedLookup(cachedEntries, entry.id, entry.type);
       if (cached) {
         renderRescuedCard(entry.card, cached, entry.type === 'series');
+        pendingCards.delete(entry.card);
         entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
       } else {
         pendingEntries.push(entry);
@@ -1852,10 +1889,11 @@
         batch.entries.forEach(function (entry) {
           // 卡片已经不是登记时那部作品：不写，撤掉 pending 让下一轮扫描按它现在的样子重新判断
           // （查到的结果已进缓存，同一部作品再出现时直接命中）
-          if (!entryStillMatches(entry)) {
-            if (entry.card.getAttribute(ROOT_ATTRIBUTE) === 'card-pending') entry.card.removeAttribute(ROOT_ATTRIBUTE);
+          if (pendingCards.get(entry.card) !== entry || !entryStillMatches(entry)) {
+            clearPendingCard(entry);
             return;
           }
+          pendingCards.delete(entry.card);
           const novelMatch = novels[entry.id];
           const seriesMatch = series[entry.id];
           const match = entry.type === 'series' ? seriesMatch
@@ -1868,11 +1906,7 @@
       }).catch(function (error) {
         // 失败撤销 pending 标记：下一轮扫描（3 秒后）会对这些卡片重试。
         // A14-03 的根因是旧版在查询前就写永久标记且失败不撤销。
-        batch.entries.forEach(function (entry) {
-          if (entry.card.getAttribute(ROOT_ATTRIBUTE) === 'card-pending') {
-            entry.card.removeAttribute(ROOT_ATTRIBUTE);
-          }
-        });
+        batch.entries.forEach(clearPendingCard);
         // 不再静默：Token 缺失/失效、网络故障给出可见提示（同种错误只提示一次）
         const kind = error && error.message;
         if (kind === 'missing_token' || kind === 'unauthorized' ||
@@ -2706,7 +2740,7 @@
     coverObserver.observe(img);
   }
 
-  function renderChapterDirectory(panel, data, seriesId) {
+  function renderChapterDirectory(panel, data, seriesId, archived) {
     const staleError = panel.querySelector('.pixiv-rescue-directory-error');
     if (staleError) staleError.remove();
     let list = panel.querySelector('.pixiv-rescue-directory');
@@ -2736,11 +2770,11 @@
         const nextPage = currentPage + 1;
         const path = '/api/rescue/v1/series/' + encodeURIComponent(String(seriesId))
           + '/chapters?page=' + encodeURIComponent(String(nextPage)) + '&page_size=100';
-        apiGet(path)
+        apiGetBackup(path, archived)
           .then(function (nextDirectory) {
             // 异步回调可能在切页、目录被清空后才到达：目录已不在面板里就放弃本轮
             if (!panel.isConnected || !panel.contains(list)) return;
-            renderChapterDirectory(panel, nextDirectory, seriesId);
+            renderChapterDirectory(panel, nextDirectory, seriesId, archived);
           })
           .catch(function (error) {
             if (panel.isConnected) renderDirectoryError(panel, error);
@@ -2794,7 +2828,7 @@
     const tab = element('div', 'pixiv-rescue-series-tab');
     tab.append(element('span', 'pixiv-rescue-series-tab-label', '作品'));
     panel.append(tab);
-    if (chapters) renderChapterDirectory(panel, chapters, seriesId);
+    if (chapters) renderChapterDirectory(panel, chapters, seriesId, data.archived);
     else renderDirectoryError(panel, data.chaptersError, function (button) { retrySeriesChapters(panel, data, seriesId, button); });
     body.append(panel);
   }
@@ -2890,10 +2924,17 @@
   //      不动 DOM）；确认失效或状态不明 → 静默查备份，查到才打开。
   // 旧版的「页面文案」「有没有 <main>」「等 1.2 秒」全部删除——那些都是猜，
   // 而且猜错的代价是在每个健康正文页底部塞一条「未找到可用的救援数据」。
+  function apiGetBackup(path, archived, timeoutMs) {
+    return apiGet(path, timeoutMs).catch(function (error) {
+      if (!archived || !error || error.message !== 'not_found') throw error;
+      return apiGet(path + (path.includes('?') ? '&' : '?') + 'archive=1', timeoutMs);
+    });
+  }
+
   function rescueDetailPage(type, id, isStale, loadBackup, renderBackup) {
     const show = function () {
       renderPending();
-      loadBackup()
+      loadBackup(true)
         .then(function (data) {
           if (!isStale()) renderBackup(data);
         })
@@ -2912,7 +2953,7 @@
         if (type === 'novel') learnReaderTheme(isStale);
         return;
       }
-      loadBackup()
+      loadBackup(state === 'unavailable')
         .then(function (data) {
           if (!isStale()) renderBackup(data);
         })
@@ -2930,8 +2971,9 @@
     const generation = bumpRouteGeneration();
     rescueDetailPage('novel', novelId, function () {
       return routeGeneration() !== generation || novelIdFromPage() !== novelId;
-    }, function () {
-      return apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId), FULL_TEXT_TIMEOUT_MS);
+    }, function (archived) {
+      return apiGetBackup('/api/rescue/v1/novels/' + encodeURIComponent(novelId), archived, FULL_TEXT_TIMEOUT_MS)
+        .then(function (data) { data.archiveAccess = Boolean(archived); return data; });
     }, renderNovel);
   }
 
@@ -2941,16 +2983,16 @@
     const generation = bumpRouteGeneration();
     rescueDetailPage('series', seriesId, function () {
       return routeGeneration() !== generation || seriesIdFromPage() !== seriesId;
-    }, function () {
+    }, function (archived) {
       // 系列信息与第一页目录一起取，页面一次画完（不再要求先点「加载目录」）。
       // 目录失败不拖垮整页：系列头照常显示，目录位置给错误提示。
       const base = '/api/rescue/v1/series/' + encodeURIComponent(seriesId);
       return Promise.all([
-        apiGet(base),
-        apiGet(base + '/chapters').catch(function (error) { return { __error: error }; })
+        apiGetBackup(base, archived),
+        apiGetBackup(base + '/chapters', archived).catch(function (error) { return { __error: error }; })
       ]).then(function (results) {
         const chapters = results[1] && results[1].__error ? null : results[1];
-        return { series: results[0], chapters: chapters, chaptersError: chapters ? null : results[1].__error };
+        return { series: results[0], chapters: chapters, chaptersError: chapters ? null : results[1].__error, archived: archived };
       });
     }, function (data) {
       renderSeries(data, seriesId);

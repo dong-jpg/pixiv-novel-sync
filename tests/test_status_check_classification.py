@@ -141,6 +141,113 @@ def test_novel_rate_limit_logs_warning(caplog: pytest.LogCaptureFixture) -> None
 
 
 # --------------------------------------------------------------------------
+# 认证失败（access token 过期）判定
+#
+# 生产事故背景（2026-11-20~23）：pixivpy3 无自动 token 刷新，access token 硬
+# 1 小时过期后 Pixiv 回 OAuth 层错误体，旧实现归入 unknown，要烧满 15 个条目
+# 才触发「疑似 Pixiv 限流」熔断——归因完全错误。auth_failed 是确定性错误：
+# 该次重试无意义，应当立即中止（或重登）。
+# --------------------------------------------------------------------------
+
+
+INVALID_GRANT_RESPONSE = JsonDict(
+    {
+        "error": {
+            "user_message": "",
+            "message": "Error occurred at the OAuth process. Please check your Access Token to fix this. Error Message: invalid_grant",
+            "reason": "",
+        }
+    }
+)
+
+
+def test_novel_invalid_grant_is_auth_failed_not_unknown() -> None:
+    assert web_utils._check_novel_status(FakeApi(INVALID_GRANT_RESPONSE), 123) == "auth_failed"
+
+
+def test_series_invalid_grant_is_auth_failed() -> None:
+    assert web_utils._check_series_status(FakeApi(INVALID_GRANT_RESPONSE), 55) == "auth_failed"
+
+
+def test_user_invalid_grant_is_auth_failed() -> None:
+    assert web_utils._check_pixiv_user_status(FakeApi(INVALID_GRANT_RESPONSE), 1) == "auth_failed"
+
+
+def test_auth_failed_does_not_reach_missing_keywords() -> None:
+    """认证失败文案里即便混入「不存在」类词，也优先归 auth_failed。"""
+    mixed = JsonDict(
+        {
+            "error": {
+                "user_message": "",
+                "message": "Error occurred at the OAuth process. invalid_grant",
+                "reason": "user does not exist or invalid token",
+            }
+        }
+    )
+    assert web_utils._classify_pixiv_response(mixed, ("novel",))[0] == "auth_failed"
+
+
+def test_process_status_items_auth_failed_aborts_with_reauth() -> None:
+    """认证失败：回调重登一次后重查当前条目；再失败立即中止，不烧 15 个条目。"""
+    api = FakeApi(INVALID_GRANT_RESPONSE)
+    statuses = []
+    reauth_calls = []
+
+    def check(item: int) -> str:
+        statuses.append(item)
+        return "auth_failed"
+
+    def upsert(db: Any, item: int, status: str) -> None:
+        return None
+
+    class _Cfg:
+        class sync:
+            delay_seconds_between_skips = 0
+
+    stats = services._process_status_items(
+        settings=_Cfg(),
+        reporter=None,
+        stop_requested=None,
+        db=None,
+        items=[1, 2, 3, 4],
+        check_status=check,
+        upsert_status=upsert,
+        item_label="小说",
+        item_name=str,
+        total_key="total_novels",
+        on_auth_failed=lambda: reauth_calls.append(1) or True,
+    )
+    assert stats["aborted_reason"] == "auth_failed"
+    assert stats["stopped"] is True
+    assert stats["checked_count"] == 0
+    # 第 1 个条目查了 2 次（认证失败 → 重登 → 再查仍失败），其后中止
+    assert statuses == [1, 1]
+    assert len(reauth_calls) == 1
+
+
+def test_process_status_items_auth_failed_without_reauth_aborts_immediately() -> None:
+    """未提供重登回调时立即中止——不再把 token 过期误报成 rate_limited。"""
+
+    def check(item: int) -> str:
+        return "auth_failed"
+
+    stats = services._process_status_items(
+        settings=SimpleNamespace(sync=SimpleNamespace(delay_seconds_between_skips=0)),
+        reporter=None,
+        stop_requested=None,
+        db=None,
+        items=list(range(50)),
+        check_status=check,
+        upsert_status=lambda db, item, status: None,
+        item_label="小说",
+        item_name=str,
+        total_key="total_novels",
+    )
+    assert stats["aborted_reason"] == "auth_failed"
+    assert stats["checked_count"] == 0
+
+
+# --------------------------------------------------------------------------
 # 系列状态判定
 # --------------------------------------------------------------------------
 

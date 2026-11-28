@@ -759,7 +759,7 @@
         // The body is untrusted Pixiv author content rendered via v-html below.
         // pixiv_markup.html emits whitelisted tags only and escapes every text
         // run and attribute; never return the text itself (stored-XSS sink).
-        return window.pixivMarkup.renderHtml(text);
+        return window.pixivMarkup.renderHtml(text, novel.value.illustrations);
       });
 
       // [jump:N] 页内跳转：拦下默认的锚点跳转，不改 location.hash——

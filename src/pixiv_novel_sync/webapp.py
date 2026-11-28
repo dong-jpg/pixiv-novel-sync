@@ -20,6 +20,7 @@ import requests as http_requests
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, send_file, url_for
 
 from . import __version__
+from .illustrations import asset_urls, export_images
 from .jobs.manager import JobManager
 from .jobs.models import JobSource, JobSpec, JobState, JobStatus, JobType
 from .jobs.runner import JobRunner
@@ -564,11 +565,6 @@ def create_app(
         return execute_task(task_type, current_settings, context)
 
     shared_job_runner: JobRunner | None = None
-
-    def _has_active_shared_jobs() -> bool:
-        with shared_job_manager._lock:
-            active_statuses = {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCEL_REQUESTED}
-            return any(job.status in active_statuses for job in shared_job_manager._jobs.values())
 
     def _api_error(error: str, status: int = 400, detail: Any | None = None):
         payload: dict[str, Any] = {"ok": False, "error": error}
@@ -1468,7 +1464,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         db = _open_database(current_settings)
         try:
-            stats = json.loads(db.export_stats())
+            stats = db.dashboard_stats(current_settings.pixiv.user_id)
             current_user = db.get_user_summary(current_settings.pixiv.user_id)
         finally:
             db.close()
@@ -1498,7 +1494,11 @@ def create_app(
         page_size = 10
         db = _open_database(current_settings)
         try:
-            payload = db.list_followed_users(page=page, page_size=page_size)
+            from .sync.following_snapshot import known_following_members
+            members = known_following_members(db, current_settings.pixiv.user_id)
+            if members is None:
+                return jsonify({"error": "请先同步完整关注名单"}), 409
+            payload = db.list_followed_users(member_ids=set(members), page=page, page_size=page_size)
         finally:
             db.close()
         return jsonify(payload)
@@ -1545,6 +1545,7 @@ def create_app(
         try:
             payload = db.get_novel_detail(novel_id)
             if payload is not None:
+                payload["illustrations"] = asset_urls(db, novel_id)
                 payload["rescue"] = db.evaluate_rescue_novel(novel_id)
         finally:
             db.close()
@@ -1567,18 +1568,30 @@ def create_app(
         import io
 
         data = request.get_json() or {}
-        novel_ids = data.get("novel_ids", [])
-        if not novel_ids or not isinstance(novel_ids, list):
+        requested = data.get("novel_ids") if isinstance(data, dict) else None
+        if not requested or not isinstance(requested, list):
             return jsonify({"error": "novel_ids required"}), 400
+        novel_ids = []
+        seen = set()
+        for value in requested:
+            if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 19:
+                value = int(value)
+            if type(value) is not int or not 0 < value < 2**63:
+                return jsonify({"error": "作品 ID 必须为正整数"}), 400
+            if value not in seen:
+                seen.add(value)
+                novel_ids.append(value)
+                if len(novel_ids) > 50:
+                    return jsonify({"error": "每次最多导出 50 部不同作品"}), 400
 
         current_settings = settings_manager.load(env_path=env_path)
         db = _open_database(current_settings)
         storage = FileStorage(current_settings)
 
         try:
-            if len(novel_ids) == 1:
+            if len(requested) == 1:
                 # 单本小说直接返回EPUB
-                novel_id = int(novel_ids[0])
+                novel_id = novel_ids[0]
                 novel_data = db.get_novel_detail(novel_id)
                 if not novel_data:
                     return jsonify({"error": "novel not found"}), 404
@@ -1591,7 +1604,8 @@ def create_app(
                 if novel_data.get("cover_url"):
                     cover_path = storage.get_novel_cover_path(novel_data)
 
-                epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path)
+                epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path,
+                                                    inline_images=export_images(db, current_settings, novel_id))
                 filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
 
                 return send_file(
@@ -1603,35 +1617,40 @@ def create_app(
             else:
                 # 多本小说打包为ZIP
                 zip_buffer = io.BytesIO()
-                exported: set[int] = set()
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for novel_id in novel_ids[:50]:  # 限制最多50本
-                        novel_id = int(novel_id)
-                        # 同一 ID 重复出现只导一次，否则 zip 里会有两个同名条目
-                        if novel_id in exported:
-                            continue
-                        exported.add(novel_id)
+                skipped = []
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
+                    for novel_id in novel_ids:
                         novel_data = db.get_novel_detail(novel_id)
                         if not novel_data or not novel_data.get("text_raw"):
+                            skipped.append(novel_id)
                             continue
 
                         cover_path = None
                         if novel_data.get("cover_url"):
                             cover_path = storage.get_novel_cover_path(novel_data)
 
-                        epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
+                        epub_bytes = create_epub_from_novel(
+                            novel_data, novel_data["text_raw"], cover_path,
+                            inline_images=export_images(db, current_settings, novel_id),
+                            image_budget=(32 * 1024**2) // len(novel_ids),
+                        )
                         # 文件名带 _{novel_id}：同名作品（同一系列的「番外」、不同作者的同题作）不再互相覆盖
                         title = str(novel_data.get("title") or "").strip()
                         stem = f"{safe_name(title, str(novel_id))}_{novel_id}" if title else str(novel_id)
                         zf.writestr(f"{stem}.epub", epub_bytes)
 
+                if len(skipped) == len(novel_ids):
+                    return jsonify({"error": "所选作品均无可导出的正文", "skipped_novel_ids": skipped}), 422
                 zip_buffer.seek(0)
-                return send_file(
+                response = send_file(
                     zip_buffer,
                     mimetype="application/zip",
                     as_attachment=True,
                     download_name="novels.zip"
                 )
+                if skipped:
+                    response.headers["X-Skipped-Novel-Ids"] = ",".join(map(str, skipped))
+                return response
         finally:
             db.close()
 
@@ -1664,7 +1683,17 @@ def create_app(
         search = str(request.args.get("search", "") or "").strip()
         db = _open_database(current_settings)
         try:
-            payload = db.list_users(page=page, page_size=page_size, status=status, search=search)
+            from .sync.following_snapshot import known_following_members
+            members = known_following_members(db, current_settings.pixiv.user_id)
+            scope = request.args.get("scope", "all")
+            if scope not in ("all", "following"):
+                return jsonify({"error": "无效作者范围"}), 400
+            if scope == "following" and members is None:
+                return jsonify({"error": "请先同步完整关注名单"}), 409
+            payload = db.list_users(page=page, page_size=page_size, status=status, search=search,
+                                    member_ids=set(members) if scope == "following" else None)
+            for item in payload["items"]:
+                item["following_scopes"] = members.get(item["user_id"], []) if members is not None else None
         finally:
             db.close()
         return jsonify(payload)

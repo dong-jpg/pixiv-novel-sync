@@ -119,6 +119,9 @@ def _parse_page(page: str) -> list[dict[str, Any]]:
 
 
 def _parse_line(line: str, blocks: list[dict[str, Any]]) -> None:
+    if "]" not in line or not _BLOCK_RE.search(line):
+        _push_paragraph(blocks, line, first=True)
+        return
     pairs = _pair_brackets(line)
     last = 0
     for match in _BLOCK_RE.finditer(line):
@@ -165,7 +168,7 @@ def _pair_brackets(text: str) -> dict[int, int]:
 def parse_inline(text: str, depth: int = 0) -> list[Any]:
     if not text:
         return []
-    if depth >= MAX_INLINE_DEPTH:
+    if depth >= MAX_INLINE_DEPTH or ":" not in text or "[" not in text or "]" not in text:
         return [text]
     pairs = _pair_brackets(text)
     nodes: list[Any] = []

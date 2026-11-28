@@ -120,6 +120,23 @@ class Database(
         ).fetchone()
         return json.dumps(dict(row), ensure_ascii=False)
 
+    def dashboard_stats(self, owner_id: int | None) -> dict[str, Any]:
+        from .sync.following_snapshot import known_following_members
+
+        with self.read_transaction():
+            if not owner_id:
+                profile = self.get_watermark("self_profile") or self.get_watermark("following_owner") or {}
+                owner_id = profile.get("user_id")
+            members = known_following_members(self, owner_id)
+            stats = dict(self.conn.execute(
+                "SELECT (SELECT COUNT(*) FROM novels) AS novels_count, "
+                "(SELECT COUNT(*) FROM series WHERE is_subscribed=1) AS series_count, "
+                "(SELECT COUNT(*) FROM pending_deletions WHERE status='pending') AS pending_count, "
+                "(SELECT COUNT(*) FROM following_feed_pending WHERE owner_id=?) AS feed_pending", (owner_id,)
+            ).fetchone())
+            stats["users_count"] = len(members) if members is not None else None
+        return stats
+
     def collect_library_export(self) -> dict[str, Any]:
         """仪表盘导出统计。查询放在存储层，路由不再拼 SQL。"""
         totals = json.loads(self.export_stats())

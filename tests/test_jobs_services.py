@@ -58,6 +58,8 @@ class FakeConn:
     def __init__(self, users: list[tuple[int, str]]) -> None:
         self.users = users
         self.executed: list[tuple[str, tuple[object, ...]]] = []
+        # 已删/已封禁且「近期复查过」的条目：模拟 series_status 的 7 天降频查询
+        self.recently_rechecked: set[int] = set()
 
     def execute(self, query: str, params: tuple[object, ...] = ()):
         self.executed.append((query, params))
@@ -69,10 +71,21 @@ class FakeConn:
                 if user_id == target_id:
                     return SimpleNamespace(fetchone=lambda: (name,))
             return SimpleNamespace(fetchone=lambda: None)
+        if "SELECT series_id FROM series" in query and "status IN ('deleted', 'suspended')" in query:
+            return SimpleNamespace(
+                fetchall=lambda: [(sid,) for sid in sorted(self.recently_rechecked)]
+            )
         raise AssertionError(f"Unexpected query: {query}")
 
 
 class FakeDatabase:
+    def get_watermark(self, sync_type, key="_"):
+        if sync_type.startswith("following_public:"):
+            return {"members": {str(item["user_id"]): "" for page in self.user_pages for item in page["items"]}}
+        if sync_type.startswith("following_private:"):
+            return {"members": {}}
+        return None
+
     def __init__(self, db_path) -> None:
         self.db_path = db_path
         self.init_schema_called = False
@@ -86,6 +99,8 @@ class FakeDatabase:
         self.user_status_upserts: list[tuple[int, str]] = []
         self.novel_ids = [11, 22]
         self.known_missing_novel_ids: set[int] = set()
+        self.known_missing_series_ids: set[int] = set()
+        self.known_suspended_user_ids: set[int] = set()
         self.novel_status_upserts: list[tuple[int, str]] = []
         self.status_batch_calls: list[int | None] = []
         self.pending_count_calls: list[str | None] = []
@@ -118,6 +133,12 @@ class FakeDatabase:
 
     def get_known_missing_novel_ids(self) -> set[int]:
         return set(self.known_missing_novel_ids)
+
+    def get_known_missing_series_ids(self) -> set[int]:
+        return set(self.known_missing_series_ids)
+
+    def get_known_suspended_user_ids(self) -> set[int]:
+        return set(self.known_suspended_user_ids)
 
     def get_all_novel_ids(self) -> list[int]:
         return list(self.novel_ids)
@@ -251,7 +272,7 @@ class FakeAuthManager:
         self.auth_result = SimpleNamespace(user_id=999)
         self.login_called = False
 
-    def login(self):
+    def login(self, **kwargs):
         self.login_called = True
         return self.api, self.auth_result
 
@@ -396,6 +417,28 @@ def test_novel_status_task_batch_size_comes_from_settings(settings, service_env,
 
     assert service_env["db"].status_batch_calls == [1]
     assert result["batch_size"] == 1
+
+
+def test_series_status_limits_new_migrated_series_per_round(settings, service_env, monkeypatch):
+    monkeypatch.setattr(FakeDatabase, "get_series_ids_for_status_check", lambda self: list(range(1, 502)))
+    checked = []
+
+    def check(api, series_id):
+        checked.append(series_id)
+        return "normal"
+
+    monkeypatch.setattr(services, "_check_series_status", check)
+    result = services.run_series_status_task(settings)
+    assert checked == list(range(1, 301))
+    assert result["series_status_remaining"] == 201 and result["rotation_pending"]
+
+
+def test_user_status_without_complete_membership_does_not_scan_other_authors(settings, service_env, monkeypatch):
+    monkeypatch.setattr(FakeDatabase, "get_watermark", lambda *args: None)
+    monkeypatch.setattr(services, "_check_pixiv_user_status", lambda *args: pytest.fail("No complete membership"))
+    result = services.run_user_status_task(settings)
+    assert result["checked_count"] == 0
+    assert result["aborted_reason"] == "following_snapshot_unavailable"
 
 
 def test_novel_status_task_aborts_and_skips_catalog_when_rate_limited(settings, service_env, monkeypatch):
@@ -672,6 +715,8 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
     assert db.closed is True
     assert result == {
         "user_id": 202,
+        "novels_created": 0, "metadata_updated": 0, "texts_updated": 0,
+        "failed_assets": 0, "assets_repaired": 0, "body_rechecks": 0,
         "novels": 2,
         "skipped": 0,
         # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
@@ -1040,6 +1085,8 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
     assert result == {
         "user_id": 101,
         "novels": 2,
+        "novels_created": 0, "metadata_updated": 0, "texts_updated": 0,
+        "failed_assets": 0, "assets_repaired": 0, "body_rechecks": 0,
         "skipped": 0,
         # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
         "skipped_archived": 0,
@@ -1062,6 +1109,8 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
     assert result == {
         "user_id": 101,
         "novels": 1,
+        "novels_created": 0, "metadata_updated": 0, "texts_updated": 0,
+        "failed_assets": 0, "assets_repaired": 0, "body_rechecks": 0,
         "skipped": 0,
         # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
         "skipped_archived": 0,
@@ -1133,7 +1182,7 @@ def test_run_user_backup_task_pagination_has_safety_limit(settings, service_env,
         def __init__(self, pixiv_settings) -> None:
             self.api = EndlessApi()
 
-        def login(self):
+        def login(self, **kwargs):
             return self.api, SimpleNamespace(user_id=999)
 
     created_auth: dict[str, object] = {}
@@ -1178,3 +1227,163 @@ def test_run_user_backup_task_page_cap_marks_truncated_and_incomplete(
     assert auth.api.user_novels_calls == [{"user_id": 202}]  # 只请求了第一页
     assert result["truncated"] is True
     assert result["incomplete"] is True
+
+
+def test_user_backup_production_combo_page_cap(tmp_path, monkeypatch):
+    """「专用字段未设 + max_pages_per_run=2」的生产组合：
+    带着自引用 next_url 时应翻满 200 页，而不是 2 页（旧回退链的截断）。"""
+
+    class CountingApi:
+        def __init__(self) -> None:
+            self.user_novels_calls = 0
+
+        def user_novels(self, **query):
+            self.user_novels_calls += 1
+            return SimpleNamespace(novels=[], next_url="loop")
+
+        def parse_qs(self, next_url):
+            return {"user_id": 202, "page": self.user_novels_calls} if next_url == "loop" else None
+
+    counting_api = CountingApi()
+
+    monkeypatch.setattr(
+        services,
+        "PixivAuthManager",
+        lambda pixiv_settings: SimpleNamespace(
+            login=lambda **kwargs: (counting_api, SimpleNamespace(user_id=999))
+        ),
+    )
+    monkeypatch.setattr(
+        services, "_ensure_storage_dirs", lambda settings: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        services,
+        "Database",
+        lambda db_path: SimpleNamespace(
+            __enter__=lambda s: s,
+            __exit__=lambda s, *a: False,
+            close=lambda: None,
+        ),
+    )
+    monkeypatch.setattr(services, "prepare_schema", lambda db: None)
+    monkeypatch.setattr(
+        services,
+        "BookmarkNovelSyncService",
+        lambda api, db, storage, settings: SimpleNamespace(stop_requested=None),
+    )
+    monkeypatch.setattr(services, "_lookup_user_name", lambda db, user_id: "测试作者")
+    monkeypatch.setattr(services, "_load_full_refresh_marks", lambda db: {})
+    monkeypatch.setattr(
+        services, "_rebuild_rescue_catalog", lambda db, reporter: {}
+    )
+    settings = SimpleNamespace(
+        pixiv=SimpleNamespace(user_id=999),
+        storage=SimpleNamespace(db_path=tmp_path / "t.db"),
+        sync=SimpleNamespace(
+            max_pages_per_run=2,  # 生产共享上限
+            user_backup_max_pages_per_run=None,  # 专用字段未设（生产缺行）
+            delay_seconds_between_items=0,
+            delay_seconds_between_pages=0,
+            download_assets=False,
+            write_markdown=False,
+            write_raw_text=False,
+        ),
+    )
+    reporter = DummyReporter()
+    result = services.run_user_backup_task(settings, user_id=202, reporter=reporter)
+    assert counting_api.user_novels_calls == services.USER_BACKUP_MAX_PAGES
+    assert result["truncated"] is True
+    assert result["incomplete"] is True
+
+
+def test_series_status_known_deleted_block_no_false_missing_streak(settings, service_env, monkeypatch):
+    """生产事故回归（2026-11）：已知 deleted 系列连号复查不得触发 30 连熔断。
+
+    生产形态：45 个已删系列按 last_checked_at 聚集，每轮 99% 完成度处凑满
+    30 连把整轮打成 suspicious_missing_streak。豁免后这批应计 confirmed_missing。
+    """
+    # 45 个已知 deleted 系列 + 2 个正常系列，顺序模拟「已删块在队列尾部」
+    known_deleted = list(range(100, 145))
+    db = FakeDatabase(settings.storage.db_path)
+    db.known_missing_series_ids = set(known_deleted)
+    db.series_ids = [200, 201] + known_deleted
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+
+    status_map: dict[int, str] = {sid: "normal" for sid in (200, 201)}
+    status_map.update({sid: "deleted" for sid in known_deleted})
+
+    monkeypatch.setattr(services, "_check_series_status", lambda api, sid: status_map[sid])
+    monkeypatch.setattr(services, "_rebuild_rescue_catalog", lambda db, reporter: {})
+
+    result = services.run_series_status_task(settings)
+
+    assert result["stopped"] is False
+    assert "aborted_reason" not in result
+    assert result["status_counts"]["deleted"] == 45
+    # 45 个全部是「早已知删除的再次确认」，不推进 consecutive_missing
+    assert result.get("confirmed_missing") == 45
+    assert result["checked_count"] == 47
+
+
+def test_series_status_new_missing_still_triggers_streak_guard(settings, service_env, monkeypatch):
+    """豁免只对已知 deleted 生效：未知系列的连续删除仍是异常信号，30 连照常熔断。"""
+    db = FakeDatabase(settings.storage.db_path)
+    db.known_missing_series_ids = set()
+    db.series_ids = list(range(300, 340))  # 40 个全新「消失」的系列
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+
+    monkeypatch.setattr(
+        services, "_check_series_status", lambda api, sid: "deleted"
+    )
+    monkeypatch.setattr(services, "_rebuild_rescue_catalog", lambda db, reporter: {})
+
+    result = services.run_series_status_task(settings)
+
+    assert result["stopped"] is True
+    assert result["aborted_reason"] == "suspicious_missing_streak"
+    assert result["checked_count"] == 30  # 到 30 连即中止
+
+
+def test_series_status_recently_rechecked_deleted_deferred(settings, service_env, monkeypatch):
+    """7 天内复查过的已删系列不进本批（省请求），并计入 deleted_recheck_deferred。"""
+    db = FakeDatabase(settings.storage.db_path)
+    db.conn.recently_rechecked = {100, 101}
+    db.series_ids = [100, 101, 200]
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+
+    def fake_check(api, sid: int) -> str:
+        assert sid == 200, "已降频的系列不得发检查请求"
+        return "normal"
+
+    monkeypatch.setattr(services, "_check_series_status", fake_check)
+    monkeypatch.setattr(services, "_rebuild_rescue_catalog", lambda db, reporter: {})
+
+    result = services.run_series_status_task(settings)
+
+    assert result["checked_count"] == 1
+    assert result["status_counts"] == {"normal": 1}
+    assert result.get("deleted_recheck_deferred") == 2
+
+
+def test_user_status_known_suspended_confirmed_not_streak(settings, service_env, monkeypatch):
+    """已知 suspended 用户再次确认不计入 30 连（MISSING_STATUSES 含 suspended）。"""
+    db = FakeDatabase(settings.storage.db_path)
+    db.known_suspended_user_ids = {101}
+
+    monkeypatch.setattr(services, "Database", lambda db_path: db)
+    monkeypatch.setattr(
+        services,
+        "_check_pixiv_user_status",
+        lambda api, uid: "suspended",
+    )
+
+    # 单页 101/202 两人：101 已知 suspended，202 不在名单
+    db.user_pages = [
+        {"items": [{"user_id": 101, "name": "Alice"}, {"user_id": 202, "name": "Bob"}], "total_pages": 1},
+    ]
+
+    result = services.run_user_status_task(settings)
+    assert result["stopped"] is False
+    assert result["status_counts"]["suspended"] == 2
+    # 只有 202 是新确认；101 是已知封禁的再次确认
+    assert result.get("confirmed_missing") == 1

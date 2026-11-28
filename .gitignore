@@ -23,6 +23,7 @@ Thumbs.db
 
 # Local runtime data
 .backup/
+/.probe012/
 .env
 .env.*
 !.env.example
@@ -33,12 +34,19 @@ config/config.yaml.bak
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Local agent state
 /.claude/
 /memory/
 /.superpowers/
 /.worktrees/
+/docs/codex-for-oss-application.md
 
 # Python tooling
 .pytest_cache/

@@ -261,10 +261,19 @@ def test_failed_or_cancelled_fetch_cannot_overwrite_an_existing_archive(tmp_path
         if failure == "cancel_after_detail":
             with pytest.raises(InterruptedError):
                 service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
+        elif failure == "detail_error":
+            with pytest.raises(sync_engine.SyncRateLimited):
+                service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
         else:
             assert service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")["failed"] == 1
         assert storage.text_writes == initial_writes
-        assert dict(db.conn.execute("SELECT * FROM novels WHERE novel_id=100").fetchone()) == original
+        # 归档内容字段不得被失败改动；fetch_fail_* 是新增的失败退避列，
+        # 普通失败累加计数属预期行为，从「覆写归档」断言中排除。
+        after = dict(db.conn.execute("SELECT * FROM novels WHERE novel_id=100").fetchone())
+        for key in ("fetch_fail_count", "fetch_fail_until"):
+            after.pop(key, None)
+            original.pop(key, None)
+        assert after == original
         assert db.conn.execute("SELECT text_raw FROM novel_texts WHERE novel_id=100").fetchone()[0] == "body\n"
     finally:
         db.close()
@@ -553,7 +562,7 @@ def test_sync_subscribed_series_marks_abort_reason_after_consecutive_failures(tm
         db.close()
 
     assert api.calls == 5  # 连续失败达到阈值立即中止，剩余 3 个系列没被触碰
-    assert stats["aborted_reason"] == "rate_limited"
+    assert stats["aborted_reason"] == "series_detail_unavailable"
     assert stats["incomplete"] is True
     assert stats["series_synced"] == 0
     assert stats["series_total"] == 8
@@ -726,7 +735,7 @@ def test_sync_subscribed_series_marks_abort_reason_on_empty_responses(tmp_path: 
         db.close()
 
     assert api.calls == 5
-    assert stats["aborted_reason"] == "rate_limited"
+    assert stats["aborted_reason"] == "series_detail_unavailable"
     assert stats["incomplete"] is True
 
 
@@ -823,7 +832,8 @@ def test_sync_bookmarks_marks_truncated_when_page_limit_reached(tmp_path: Path) 
 
         def user_bookmarks_novel(self, **kwargs):
             self.calls += 1
-            return SimpleNamespace(novels=[], next_url="loop")
+            return SimpleNamespace(novels=[SimpleNamespace(id=self.calls)],
+                next_url=f"https://app-api.pixiv.net/v1/user/bookmarks/novel?offset={self.calls * 30}")
 
         def parse_qs(self, next_url):
             if next_url == "loop":
@@ -1001,7 +1011,7 @@ def test_sync_novel_keeps_failed_path_when_error_json_unparsable(tmp_path: Path)
     assert "content_unavailable" not in counters
 
 
-def test_sync_novel_treats_rate_limit_error_json_as_retryable_failure(tmp_path: Path) -> None:
+def test_sync_novel_propagates_account_rate_limit(tmp_path: Path) -> None:
     """限流的 error JSON 是临时失败，不能被归类为"正文不可获取"。"""
 
     class _RateLimitedApi(_Api):
@@ -1017,14 +1027,11 @@ def test_sync_novel_treats_rate_limit_error_json_as_retryable_failure(tmp_path: 
     service = BookmarkNovelSyncService(_RateLimitedApi(), db, _Storage(), settings)
 
     try:
-        counters = service._sync_novel(
-            _Novel(), "public", True, True, True, source_type="bookmark_public"
-        )
+        with pytest.raises(sync_engine.SyncRateLimited):
+            service._sync_novel(_Novel(), "public", True, True, True, source_type="bookmark_public")
+        assert db.conn.execute("SELECT COUNT(*) FROM novel_fetch_attempts").fetchone()[0] == 0
     finally:
         db.close()
-
-    assert counters["failed"] == 1
-    assert "content_unavailable" not in counters
 
 
 def test_sync_subscribed_series_counts_content_unavailable_separately(
@@ -1468,7 +1475,7 @@ def test_following_list_pagination_keeps_self_referencing_loop_guard(tmp_path: P
 
         def parse_qs(self, next_url):
             if next_url == "loop":
-                return {"user_id": 1, "restrict": "public", "page": self.following_calls + 1}
+                return {"user_id": 1, "restrict": "public", "offset": self.following_calls * 30}
             return None
 
     settings = _settings(tmp_path)
@@ -1790,3 +1797,245 @@ def test_sync_following_novels_cancellation_saves_watermark(tmp_path: Path) -> N
     last = db.watermark_updates[-1]
     assert "1" in last["user_last_synced"]
 
+
+
+# --------------------------------------------------------------------------
+# 认证失败（access token 过期）的引擎侧语义，T-auth-01~04
+#
+# 生产事故（2026-11-20~23）：token 1 小时 TTL 过期后，长轮任务的尾部调用
+# 全部失败，旧实现把它们堆成 failed / 触发 rate_limited 熔断——归因错误且
+# 浪费一整轮预算。auth_failed 是确定性错误：立即中止本轮并显式记因。
+# --------------------------------------------------------------------------
+
+
+class _AuthFailApi:
+    """novel_detail 返回 OAuth 错误体（token 过期的真实形态）。"""
+
+    def novel_detail(self, novel_id: int) -> dict:
+        return {
+            "error": {
+                "user_message": "",
+                "message": (
+                    "Error occurred at the OAuth process. Please check your "
+                    "Access Token to fix this. Error Message: invalid_grant"
+                ),
+                "reason": "",
+            }
+        }
+
+    def webview_novel(self, novel_id: int) -> dict:
+        return {"text": ""}
+
+
+def test_fetch_novel_invalid_grant_raises_auth_failed_code(tmp_path: Path) -> None:
+    """fetch_novel：认证失败错误页必须带着 auth_failed 码抛出（而非 pixiv_error_page）。"""
+    err = None
+    try:
+        sync_engine.fetch_novel(_AuthFailApi(), 100)
+    except Exception as exc:
+        err = exc
+    assert isinstance(err, sync_engine.PixivFetchError)
+    assert err.code == "auth_failed"
+
+
+def test_sync_novel_auth_failed_raises_sync_auth_failed(tmp_path: Path) -> None:
+    """_sync_novel：认证失败转抛 SyncAuthFailed，调用方据此中止（而非计 failed）。"""
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    service = BookmarkNovelSyncService(_AuthFailApi(), db, _Storage(), settings)
+    with pytest.raises(sync_engine.SyncAuthFailed):
+        service._sync_novel(_Novel(), "public", True, True, True, source_type="bookmark_public")
+
+
+class _AuthFailBookmarkApi(_AuthFailApi):
+    """user_bookmarks_novel 正常返回两本，novel_detail 全部认证失败。"""
+
+    def user_bookmarks_novel(self, **kwargs):
+        return SimpleNamespace(
+            novels=[SimpleNamespace(id=100), SimpleNamespace(id=101)], next_url=None
+        )
+
+    def parse_qs(self, next_url):
+        return None
+
+
+def test_bookmark_sync_aborts_with_auth_failed_reason(tmp_path: Path) -> None:
+    """收藏同步：token 失效立即中止并记 auth_failed，不把错误页堆成 failed。"""
+    settings = _settings(tmp_path)
+    settings.sync.max_items_per_run = 10
+    settings.sync.max_pages_per_run = 2
+    settings.sync.bookmark_max_pages_per_run = None
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    service = BookmarkNovelSyncService(_AuthFailBookmarkApi(), db, _Storage(), settings)
+    stats = service.sync(user_id=1, restricts=["public"], write_raw_text=True)
+    assert stats.get("aborted_reason") == "auth_failed"
+    assert stats.get("incomplete") is True
+    assert stats.get("failed", 0) == 0
+
+
+# --------------------------------------------------------------------------
+# 订阅系列轮转与小说失败退避，T-rot-01~02
+#
+# 生产事故（2026-11）：队列按 watchlist 固定顺序从头线性走，熔断后 193/216
+# 个系列连续 3.5 天零访问；连败章节无失败记忆，每轮原样重试烧掉整轮预算。
+# --------------------------------------------------------------------------
+
+
+def test_order_subscribed_series_ignores_status_checks(tmp_path: Path) -> None:
+    """已检查过的系列排到队尾：熔断后下一轮从断点续跑而非从队头重来。"""
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    db.upsert_subscribed_series(1, "A", "", 1, None, 2)
+    db.upsert_subscribed_series(2, "B", "", 1, None, 2)
+    db.upsert_series_status(2, "normal")
+    db.update_watermark("subscribed_series_visit", {}, key="1")
+    service = BookmarkNovelSyncService(_Api(), db, _Storage(), settings)
+
+    queue = [{"series_id": "1"}, {"series_id": "3"}, {"series_id": "2"}]
+    ordered = service._order_subscribed_series_for_rotation(queue)
+    assert [item["series_id"] for item in ordered] == ["2", "3", "1"]
+
+
+def test_partial_follow_refresh_preserves_complete_snapshot(tmp_path: Path):
+    from types import SimpleNamespace
+    from pixiv_novel_sync.sync.following_snapshot import read_following_snapshot, save_following_snapshot
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 99
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1, name="first")])
+        api = SimpleNamespace(user_following=lambda **query: {"error": {"message": "failed"}})
+        service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+        assert service.sync_following_list()["incomplete"]
+        assert [user.id for user in read_following_snapshot(db, 99)] == [1]
+        assert read_following_snapshot(db, 100) is None
+        db.update_watermark("following_public:99", {"observed_at": "2020-01-01T00:00:00+00:00", "members": {"1": "first"}})
+        assert read_following_snapshot(db, 99) is None
+        save_following_snapshot(db, 99, [])
+        assert read_following_snapshot(db, 99) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("continuation", [{}, {"offset": 0}, {"offset": 30, "user_id": 100},
+                                         {"offset": 30, "restrict": "private"}])
+def test_invalid_public_list_continuation_cannot_replace_snapshot(tmp_path, continuation):
+    from pixiv_novel_sync.sync.following_snapshot import read_following_snapshot, save_following_snapshot
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 99
+    requests = []
+
+    def user_following(**query):
+        requests.append(query)
+        return SimpleNamespace(user_previews=[SimpleNamespace(id=2)], next_url="next" if len(requests) == 1 else None)
+
+    api = SimpleNamespace(user_following=user_following, parse_qs=lambda url: continuation if url else None)
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        save_following_snapshot(db, 99, [SimpleNamespace(id=1)])
+        stats = BookmarkNovelSyncService(api, db, _Storage(), settings).sync_following_list()
+        assert stats.get("aborted_reason") == "fetch_failed"
+        assert requests == [{"user_id": 99, "restrict": "public"}]
+        assert [user.id for user in read_following_snapshot(db, 99)] == [1]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("entry", ["list", "novels"])
+def test_cancelled_public_list_cannot_publish_snapshot(tmp_path, entry):
+    from pixiv_novel_sync.sync.following_snapshot import read_following_snapshot
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 99
+    stopped = False
+
+    def user_following(**query):
+        nonlocal stopped
+        stopped = True
+        return SimpleNamespace(user_previews=[SimpleNamespace(id=1)], next_url=None)
+
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        api = SimpleNamespace(user_following=user_following, parse_qs=lambda url: None)
+        service = BookmarkNovelSyncService(api, db, _Storage(), settings, lambda: stopped)
+        with pytest.raises(InterruptedError):
+            if entry == "list":
+                service.sync_following_list()
+            else:
+                service.sync_following_novels(users_limit=1)
+        assert read_following_snapshot(db, 99) is None
+    finally:
+        db.close()
+
+
+def test_following_novels_reuses_list_without_repeating_network_fetch(tmp_path):
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        api = _PagedFollowingApi(author_count=70)
+        service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+        service.sync_following_list()
+        calls_after_list = api.following_calls
+        for iteration in range(3):
+            result = service.sync_following_novels(users_limit=5)
+            assert result["following_snapshot_used"] is True
+        assert api.following_calls == calls_after_list == 3
+        assert len(set(api.scanned_user_ids)) == 15
+    finally:
+        db.close()
+
+
+def test_order_subscribed_series_falls_back_on_db_error(tmp_path: Path) -> None:
+    """轮转时间戳读取失败时原样退回（fail-safe），不阻同步。"""
+    settings = _settings(tmp_path)
+
+    class _BrokenDb:
+        @property
+        def conn(self):
+            raise RuntimeError("conn unavailable")
+
+    service = BookmarkNovelSyncService(_Api(), _BrokenDb(), _Storage(), settings)
+    queue = [{"series_id": "5"}, {"series_id": "6"}]
+    assert service._order_subscribed_series_for_rotation(queue) == queue
+
+
+def test_sync_novel_failure_records_cooldown(tmp_path: Path) -> None:
+    """三连败进入冷却：_novel_in_fetch_cooldown 变真；成功后清零。"""
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    db.upsert_user(UserRecord(user_id=1, name="author", account="acc", raw_json="{}"))
+    db.upsert_novel(
+        NovelRecord(
+            novel_id=100, user_id=1, series_id=None, title="t", caption="",
+            visible=True, restrict="public", x_restrict=0, text_length=4,
+            total_bookmarks=0, total_views=0, cover_url=None, tags_json="[]",
+            create_date="2026-01-01T00:00:00+00:00", raw_json="{}", meta_hash="h",
+        )
+    )
+    # 每次调用都报错页的 API
+    class _FailApi:
+        def novel_detail(self, novel_id: int) -> dict:
+            return {"error": {"user_message": "", "message": "temporary detail failure", "reason": ""}}
+
+        def webview_novel(self, novel_id: int) -> dict:
+            return {"text": ""}
+
+    service = BookmarkNovelSyncService(_FailApi(), db, _Storage(), settings)
+    for _ in range(3):
+        service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
+    assert db.novel_in_fetch_cooldown(100) is True
+    row = db.conn.execute(
+        "SELECT fetch_fail_count FROM novels WHERE novel_id = 100"
+    ).fetchone()
+    assert row[0] == 3

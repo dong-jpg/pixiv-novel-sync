@@ -164,6 +164,8 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
             "max_items_per_run",
             "max_pages_per_run",
             "bookmark_max_pages_per_run",
+            "user_backup_max_pages_per_run",
+            "user_backup_users_per_run",
             "archive_rescan_days",
             "following_max_novels_per_author",
             "series_max_pages_per_run",
@@ -224,6 +226,7 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
     ),
     "system": frozenset(
         {
+            "rescue_archive_read_enabled",
             "pending_deletion_cleanup_confirmed_days",
             "task_log_retention_days",
         }
@@ -1038,6 +1041,10 @@ class SettingsManager:
         config_data = _load_yaml_file(config_path)
         sync_data = config_data.setdefault("sync", {})
 
+        if "rescue_archive_read_enabled" in payload:
+            if type(payload["rescue_archive_read_enabled"]) is not bool:
+                raise ValueError("扩展救援阅读权限必须为布尔值")
+            sync_data["rescue_archive_read_enabled"] = payload["rescue_archive_read_enabled"]
         sync_data["enabled"] = bool(payload.get("enabled", sync_data.get("enabled", False)))
         sync_data["initial_manual_only"] = bool(payload.get("initial_manual_only", sync_data.get("initial_manual_only", True)))
         sync_data["download_assets"] = bool(payload.get("download_assets", sync_data.get("download_assets", True)))
@@ -1060,6 +1067,11 @@ class SettingsManager:
         sync_data["max_pages_per_run"] = _normalize_optional_int(payload.get("max_pages_per_run", sync_data.get("max_pages_per_run")))
         sync_data["bookmark_max_pages_per_run"] = _normalize_optional_int(
             payload.get("bookmark_max_pages_per_run", sync_data.get("bookmark_max_pages_per_run"))
+        )
+        # 备份是整库导出，缺省走 jobs/services.USER_BACKUP_MAX_PAGES（200），
+        # 绝不再回退共享的 max_pages_per_run（2026-11 生产事故形态）。
+        sync_data["user_backup_max_pages_per_run"] = _normalize_optional_int(
+            payload.get("user_backup_max_pages_per_run", sync_data.get("user_backup_max_pages_per_run"))
         )
         # 旧配置可直接迁移到本地运行；保存时移除已退役的执行位置选项。
         sync_data.pop("pixiv_execution", None)
@@ -1161,6 +1173,7 @@ class SettingsManager:
         sync_data["auto_sync_user_backup_enabled"] = bool(payload.get("auto_sync_user_backup_enabled", sync_data.get("auto_sync_user_backup_enabled", False)))
         sync_data["auto_sync_user_backup_interval_hours"] = _save_int("auto_sync_user_backup_interval_hours", 24)
         sync_data["auto_sync_user_backup_cron"] = _save_cron("auto_sync_user_backup_cron")
+        sync_data["user_backup_users_per_run"] = _save_int("user_backup_users_per_run", 5)
         sync_data["auto_sync_pending_detection_enabled"] = bool(payload.get("auto_sync_pending_detection_enabled", sync_data.get("auto_sync_pending_detection_enabled", True)))
         sync_data["auto_sync_pending_detection_interval_hours"] = _save_int("auto_sync_pending_detection_interval_hours", 12)
         sync_data["auto_sync_pending_detection_cron"] = _save_cron("auto_sync_pending_detection_cron")
@@ -1172,7 +1185,7 @@ class SettingsManager:
         sync_data["auto_sync_recommendation_run_interval_hours"] = _save_int("auto_sync_recommendation_run_interval_hours", 24)
         # 回落默认值必须与 SyncSettings 的默认值一致：这里若回落成空串，"什么都没改就点
         # 保存"会把新默认 cron 写成空，任务悄悄退回按 interval 跑。
-        sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron", "50 8 * * *")
+        sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron", "0 11 * * *")
         sync_data["pending_deletion_cleanup_confirmed_days"] = _save_int("pending_deletion_cleanup_confirmed_days", 7)
         sync_data["task_log_retention_days"] = _save_int("task_log_retention_days", 14)
         # 顺手擦掉历史遗留的空设置：它从来没被任何代码读过，留在 YAML 里只会让人

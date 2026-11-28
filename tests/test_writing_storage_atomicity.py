@@ -36,6 +36,34 @@ def test_chapter_outline_batch_rolls_back_when_a_later_update_fails(db):
     assert db.conn.in_transaction is False
 
 
+def test_automatic_chapter_numbers_are_allocated_under_a_database_write_transaction(db, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from pixiv_novel_sync.ai.services.projects import AIProjectsMixin
+
+    project = db.create_ai_writing_project({"name": "concurrent chapters"})
+    barrier = Barrier(2)
+    original = Database.get_next_chapter_number
+
+    def next_number(database, project_id):
+        assert database.conn.in_transaction
+        return original(database, project_id)
+
+    monkeypatch.setattr(Database, "get_next_chapter_number", next_number)
+
+    def create(title):
+        payload = {"project_id": project, "title": title}
+        barrier.wait(timeout=5)
+        identity = AIProjectsMixin.create_chapter(SimpleNamespace(_db=lambda: Database(db.path)), payload)
+        assert "chapter_number" not in payload
+        return identity
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        identities = list(executor.map(create, ("one", "two")))
+    assert len(set(identities)) == 2
+    assert [row["chapter_number"] for row in db.list_ai_chapter_refs(project)] == [1, 2]
+
+
 @pytest.mark.parametrize("operation", ["append", "delete"])
 def test_chat_multi_statement_failure_keeps_original_messages(db, operation):
     session = db.create_ai_chat_session({"title": "atomic chat"})

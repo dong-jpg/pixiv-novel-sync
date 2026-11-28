@@ -66,6 +66,10 @@ def test_scheduled_backup_propagates_terminal_state(tmp_path: Path, monkeypatch,
     db = Database(settings.storage.db_path)
     db.init_schema()
     db.conn.execute("INSERT INTO users(user_id, name, raw_json) VALUES (1, 'u', '{}')")
+    from pixiv_novel_sync.sync.following_snapshot import save_following_snapshot
+    from types import SimpleNamespace
+    settings.pixiv.user_id = 99
+    save_following_snapshot(db, 99, [SimpleNamespace(id=1)])
     db.close()
     def backup(*args, **kwargs):
         if mode == 'failed':
@@ -73,6 +77,7 @@ def test_scheduled_backup_propagates_terminal_state(tmp_path: Path, monkeypatch,
         if mode == 'cancelled':
             raise InterruptedError('cancelled')
         return {'novels': 0, 'truncated': True, 'incomplete': True}
+    monkeypatch.setattr('pixiv_novel_sync.jobs.services._login', lambda settings, **kwargs: object())
     monkeypatch.setattr('pixiv_novel_sync.jobs.quick_sync.job_services.run_user_backup_task', backup)
     result = run_scheduled_user_backup(settings)
     if mode == 'cancelled':

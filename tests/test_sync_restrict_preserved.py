@@ -111,7 +111,7 @@ def test_user_backup_keeps_private_bookmark_in_private_tree(tmp_path: Path, monk
     assert restrict_value == "private"
 
     # 作者改了正文，全量备份重访这本
-    monkeypatch.setattr(services, "_login", lambda s: _Api("v2"))
+    monkeypatch.setattr(services, "_login", lambda settings, **kwargs: _Api("v2"))
     monkeypatch.setattr(services, "FileStorage", _OfflineStorage)
     stats = services.run_user_backup_task(settings, user_id=7)
 
@@ -142,8 +142,7 @@ def test_new_novel_without_bookmark_context_lands_in_public_tree(tmp_path: Path)
     assert (settings.storage.public_dir / archive_dir / "text.txt").exists()
 
 
-def test_only_bookmark_sync_passes_an_explicit_restrict() -> None:
-    """`_sync_novel` 的第二个参数只能是收藏同步的 `restrict` 变量或 None。"""
+def test_only_bookmark_and_private_following_pass_an_explicit_restrict() -> None:
     offenders: list[str] = []
     call_sites = 0
     for relative in ("sync_engine.py", "jobs/services.py"):
@@ -158,7 +157,8 @@ def test_only_bookmark_sync_passes_an_explicit_restrict() -> None:
             arg = node.args[1]
             is_restrict_var = isinstance(arg, ast.Name) and arg.id == "restrict"
             is_none = isinstance(arg, ast.Constant) and arg.value is None
-            if not (is_restrict_var or is_none):
+            is_private_backup = relative == "jobs/services.py" and ast.unparse(arg) == "'private' if private_author else None"
+            if not (is_restrict_var or is_none or is_private_backup):
                 offenders.append(f"{relative}:{node.lineno} {ast.unparse(arg)}")
     assert offenders == []
     assert call_sites >= 4  # 收藏、关注扫描、追更章节、全量备份

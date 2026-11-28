@@ -11,6 +11,7 @@ sync:
   download_assets: true
   write_markdown: true
   write_raw_text: true
+  rescue_archive_read_enabled: false
   bookmark_restricts:
     - public
     - private
@@ -29,9 +30,10 @@ sync:
   # 系列章节分页专用上限。留空则跟随 max_pages_per_run。
   # 跟随时 max_pages_per_run=2 会把长系列的章节列表截断，缺章永远补不齐。
   series_max_pages_per_run: 10
-  # 用户全量备份翻页上限。留空则跟随 max_pages_per_run。
-  # 备份是整库导出，共用 2 页上限会把几百篇收藏截成 60 篇，任务日志却显示绿色。
+  # 手动作者备份留空默认为 200 页；定时备份每人最多 2 页并续跑。
+  # user_backup_users_per_run 单独控制每轮作者数，不与关注作品同步共用。
   user_backup_max_pages_per_run: 200
+  user_backup_users_per_run: 5
   delay_seconds_between_items: 1.5
   delay_seconds_between_pages: 2.0
   delay_seconds_between_series: 3.0
@@ -79,14 +81,13 @@ sync:
   auto_sync_following_list_interval_hours: 24
   auto_sync_following_list_cron: "30 10 * * *"
 
-  # 关注用户小说：最大预算项。每轮只跑 users_limit 个作者，按 user_last_synced 轮转，
-  # 配合 following_max_novels_per_author 后单轮从 42 分钟降到约 24 分钟，
-  # 同频率下覆盖率提升 5 倍，所以频率保持每天 4 次不动
+  # 定时关注作品读取公开/私密新作流；按全局页数和作品数预算续跑。
+  # 历史补档由 user_backup 独立处理，具体规则见 docs/JOB_SYSTEM.md。
   auto_sync_following_novels_enabled: true
   auto_sync_following_novels_interval_hours: 6
   auto_sync_following_novels_cron: "0 3,9,15,21 * * *"
-  # 每轮扫描几个关注用户。0 = 不限制。
-  # 注意 user_backup 复用同一个值（jobs/quick_sync.py），改动会同时影响两个任务
+  # 手动扫描每轮处理几个关注用户。0 = 不限制；定时新作流不使用此人数。
+  # 定时备份的作者数由 user_backup_users_per_run 单独设置
   auto_sync_following_novels_users_limit: 5
 
   # 小说状态巡检：预算第二大但时效性最弱，从 4 次/天降到 2 次（全库轮转周期 2.4→4.8 天）。
@@ -124,7 +125,7 @@ sync:
   # 且必须先有默认偏好画像，否则任务直接失败。默认关闭
   auto_sync_recommendation_run_enabled: false
   auto_sync_recommendation_run_interval_hours: 24
-  auto_sync_recommendation_run_cron: "50 8 * * *"
+  auto_sync_recommendation_run_cron: "0 11 * * *"
 
   # pending_deletions 清理策略。只清理「已确认 / 已恢复」的历史记录；
   # 待确认（pending）记录不会到期自动消失，必须手动确认或恢复。
